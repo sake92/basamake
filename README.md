@@ -1,0 +1,2 @@
+# basamake
+Minimalistic Scala LSP
