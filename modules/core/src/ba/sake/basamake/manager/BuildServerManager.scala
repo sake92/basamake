@@ -2,7 +2,7 @@ package ba.sake.basamake.manager
 
 import ba.sake.basamake.core.*
 import ba.sake.basamake.bsp.BspConnectionSupervisor
-import ba.sake.basamake.util.Log
+import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.services.LanguageClient
 import java.nio.file.Path
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
@@ -11,7 +11,7 @@ import scala.compiletime.uninitialized
 
 // Owns durable records, channels, and connection lifecycles.
 // Coordinates N connections (1 in M1, N in M2).
-class BuildServerManager:
+class BuildServerManager extends StrictLogging:
   private val connections = mutable.LinkedHashMap[ConnectionId, DurableRecord]()
   private val channels    = mutable.LinkedHashMap[ConnectionId, BlockingQueue[ConnectionMessage]]()
   private var client: LanguageClient = uninitialized
@@ -19,7 +19,7 @@ class BuildServerManager:
   def initialize(workspaceRoot: Path, lspClient: LanguageClient): Unit =
     client = lspClient
     val specs = Discovery.discover(workspaceRoot)
-    Log.info(s"Discovered ${specs.size} BSP connection(s)")
+    logger.info(s"Discovered ${specs.size} BSP connection(s)")
 
     for spec <- specs do
       val id = ConnectionId(spec.path.getFileName.toString)
@@ -36,7 +36,7 @@ class BuildServerManager:
       val vt = Thread.ofVirtual().start(() =>
         BspConnectionSupervisor.supervise(record, queue, client)
       )
-      Log.info(s"Spawned supervisor for $id on VT ${vt.threadId()}")
+      logger.info(s"Spawned supervisor for $id on VT ${vt.threadId()}")
 
   // Route a document URI to the owning connection's queue.
   // M1: always returns the first (only) connection.
@@ -51,4 +51,4 @@ class BuildServerManager:
   def shutdown(): Unit =
     connections.values.foreach: record =>
       record.currentState = ConnectionState.Detached
-    Log.info("All connections detached")
+    logger.info("All connections detached")

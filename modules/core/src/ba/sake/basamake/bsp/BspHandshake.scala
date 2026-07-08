@@ -1,7 +1,7 @@
 package ba.sake.basamake.bsp
 
 import ba.sake.basamake.core.*
-import ba.sake.basamake.util.Log
+import com.typesafe.scalalogging.StrictLogging
 import ch.epfl.scala.bsp4j.*
 import java.nio.file.Path
 import scala.jdk.CollectionConverters.*
@@ -13,7 +13,7 @@ final case class HandshakeResult(
     sources: SourcesResult
 )
 
-object BspHandshake:
+object BspHandshake extends StrictLogging:
 
   // Straight-line blocking handshake on the calling virtual thread.
   // Errors propagate up to the supervisor for state transition.
@@ -22,7 +22,7 @@ object BspHandshake:
       queue: java.util.concurrent.BlockingQueue[ConnectionMessage],
       timeoutSec: Long = 60
   ): HandshakeResult =
-    Log.info(s"Starting BSP handshake for ${spec.path}")
+    logger.info(s"Starting BSP handshake for ${spec.path}")
 
     val config = parseBspJson(spec.path)
 
@@ -34,7 +34,7 @@ object BspHandshake:
     pb.redirectError(java.lang.ProcessBuilder.Redirect.PIPE)
 
     val process = pb.start()
-    Log.info(s"Spawned BSP process (pid ${process.pid()}) with argv: ${config.argv.mkString(" ")}")
+    logger.info(s"Spawned BSP process (pid ${process.pid()}) with argv: ${config.argv.mkString(" ")}")
 
     val buildClient = OurBuildClient(queue)
 
@@ -48,7 +48,7 @@ object BspHandshake:
 
     val buildServer = launcher.getRemoteProxy
     launcher.startListening()
-    Log.info("BSP launcher started, reader thread listening")
+    logger.info("BSP launcher started, reader thread listening")
 
     // Handshake sequence
     val caps = new BuildClientCapabilities(List("scala").asJava)
@@ -60,22 +60,22 @@ object BspHandshake:
       caps
     )
 
-    Log.info("Sending buildInitialize...")
+    logger.info("Sending buildInitialize...")
     buildServer.buildInitialize(initParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-    Log.info("buildInitialize OK")
+    logger.info("buildInitialize OK")
 
     buildServer.onBuildInitialized()
-    Log.info("onBuildInitialized sent")
+    logger.info("onBuildInitialized sent")
 
-    Log.info("Requesting workspaceBuildTargets...")
+    logger.info("Requesting workspaceBuildTargets...")
     val targetsResult = buildServer.workspaceBuildTargets().get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
     val targetIds = targetsResult.getTargets.asScala.map(_.getId).toList
-    Log.info(s"Found ${targetIds.size} build targets: ${targetIds.map(_.getUri).mkString(", ")}")
+    logger.info(s"Found ${targetIds.size} build targets: ${targetIds.map(_.getUri).mkString(", ")}")
 
-    Log.info("Requesting buildTargetSources...")
+    logger.info("Requesting buildTargetSources...")
     val sourcesParams = new SourcesParams(targetIds.asJava)
     val sourcesResult = buildServer.buildTargetSources(sourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-    Log.info("buildTargetSources OK")
+    logger.info("buildTargetSources OK")
 
     HandshakeResult(process, buildServer, targetsResult, sourcesResult)
 
@@ -96,7 +96,7 @@ object BspHandshake:
         val inner = m.group(1)
         "\"(.*?)\"".r.findAllMatchIn(inner).map(_.group(1)).toList
       case None =>
-        Log.warn(s"Could not find '$key' in BSP JSON")
+        logger.warn(s"Could not find '$key' in BSP JSON")
         Nil
 
   // Kill leftover deder bsp processes for this workspace directory
@@ -106,6 +106,6 @@ object BspHandshake:
         .filter(p => p.info().command().orElse("").contains("deder bsp"))
         .filter(p => p.info().arguments().orElse(Array()).mkString(" ").contains("bsp"))
         .forEach: p =>
-          Log.info(s"Killing stale BSP process ${p.pid()}")
+          logger.info(s"Killing stale BSP process ${p.pid()}")
           p.destroyForcibly()
     catch case _: Exception => ()

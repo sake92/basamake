@@ -1,13 +1,13 @@
 package ba.sake.basamake.bsp
 
 import ba.sake.basamake.core.*
-import ba.sake.basamake.util.Log
+import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
 import java.util.concurrent.BlockingQueue
 import scala.jdk.CollectionConverters.*
 
-object BspConnectionSupervisor:
+object BspConnectionSupervisor extends StrictLogging:
   val MaxAttempts = 10
   val MaxBackoffMs = 30000L
   val HandshakeTimeoutSec = 20L
@@ -20,7 +20,7 @@ object BspConnectionSupervisor:
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient
   ): Unit =
-    Log.info(s"Supervisor started for ${durable.spec.path}")
+    logger.info(s"Supervisor started for ${durable.spec.path}")
 
     while durable.currentState != ConnectionState.Failed
         && durable.currentState != ConnectionState.Detached
@@ -33,11 +33,11 @@ object BspConnectionSupervisor:
           backoffSleep(durable, queue)
 
         case ConnectionState.Connected =>
-          Log.warn(s"Connected state at top level — triggering reload")
+          logger.warn(s"Connected state at top level — triggering reload")
           durable.currentState = ConnectionState.Reloading
 
         case cs =>
-          Log.warn(s"Unexpected top-level state $cs, resetting to Idle")
+          logger.warn(s"Unexpected top-level state $cs, resetting to Idle")
           durable.currentState = ConnectionState.Idle
 
     durable.currentState match
@@ -48,13 +48,13 @@ object BspConnectionSupervisor:
             s"BSP connection failed after $MaxAttempts attempts"
           )
         )
-        Log.error(s"Connection ${durable.spec.path} reached Failed state")
+        logger.error(s"Connection ${durable.spec.path} reached Failed state")
       case _ =>
-        Log.info(s"Connection ${durable.spec.path} detached")
+        logger.info(s"Connection ${durable.spec.path} detached")
 
   private def destroyProcess(process: java.lang.Process): Unit =
     if process != null && process.isAlive then
-      Log.info(s"Destroying BSP process ${process.pid()}")
+      logger.info(s"Destroying BSP process ${process.pid()}")
       process.destroyForcibly()
       try process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
       catch case _: InterruptedException => ()
@@ -67,7 +67,7 @@ object BspConnectionSupervisor:
       lspClient: LanguageClient
   ): Unit =
     durable.currentState = ConnectionState.Spawning
-    Log.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
+    logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
 
     try
       val result = BspHandshake.execute(durable.spec, queue, HandshakeTimeoutSec)
@@ -77,7 +77,7 @@ object BspConnectionSupervisor:
 
       durable.currentState = ConnectionState.Connected
       durable.attemptCounter = 0
-      Log.info(s"Connected (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
+      logger.info(s"Connected (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
 
       // Message loop — blocks until state changes from Connected
       try
@@ -85,11 +85,11 @@ object BspConnectionSupervisor:
           val msg = queue.take()
           msg match
             case ConnectionMessage.ProcessExited =>
-              Log.warn(s"BSP process exited")
+              logger.warn(s"BSP process exited")
               transitionToBackoff(durable)
 
             case ConnectionMessage.ReloadRequested(newSpec) =>
-              Log.info(s"Reload requested")
+              logger.info(s"Reload requested")
               durable.spec = newSpec
               durable.currentState = ConnectionState.Reloading
 
@@ -103,7 +103,7 @@ object BspConnectionSupervisor:
               () // debounce later; for now compile-on-save only
 
             case ConnectionMessage.DidSave(params) =>
-              Log.info(s"didSave: ${params.getTextDocument.getUri}")
+              logger.info(s"didSave: ${params.getTextDocument.getUri}")
               triggerCompile(params.getTextDocument.getUri, buildServer, targets)
 
             case ConnectionMessage.DidClose(_) =>
@@ -116,7 +116,7 @@ object BspConnectionSupervisor:
 
     catch
       case e: Exception =>
-        Log.error(s"Scope failure", e)
+        logger.error(s"Scope failure", e)
         transitionToBackoff(durable)
 
   private def triggerCompile(
@@ -125,16 +125,16 @@ object BspConnectionSupervisor:
       targets: List[ch.epfl.scala.bsp4j.BuildTarget]
   ): Unit =
     if targets.isEmpty then return
-    Log.info(s"Compile triggered for $uri")
+    logger.info(s"Compile triggered for $uri")
     try
       val params = new ch.epfl.scala.bsp4j.CompileParams(
         targets.map(_.getId).asJava
       )
       buildServer.buildTargetCompile(params).get()
-      Log.info(s"Compile completed for $uri")
+      logger.info(s"Compile completed for $uri")
     catch
       case e: Exception =>
-        Log.error(s"Compile failed for $uri", e)
+        logger.error(s"Compile failed for $uri", e)
 
   // ---- Diagnostics ----
 
@@ -200,12 +200,12 @@ object BspConnectionSupervisor:
     durable.attemptCounter += 1
     if durable.attemptCounter >= MaxAttempts then
       durable.currentState = ConnectionState.Failed
-      Log.error(
+      logger.error(
         s"Connection ${durable.spec.path} reached max attempts (${durable.attemptCounter})"
       )
     else
       durable.currentState = ConnectionState.BackoffWait
-      Log.info(
+      logger.info(
         s"Connection ${durable.spec.path} → BackoffWait (attempt ${durable.attemptCounter})"
       )
 
@@ -217,7 +217,7 @@ object BspConnectionSupervisor:
       1000L * (1L << (durable.attemptCounter - 1)),
       MaxBackoffMs
     )
-    Log.info(s"Backing off for ${delay}ms")
+    logger.info(s"Backing off for ${delay}ms")
     val msg = queue.poll(delay, java.util.concurrent.TimeUnit.MILLISECONDS)
     if durable.currentState == ConnectionState.Detached then return
     msg match

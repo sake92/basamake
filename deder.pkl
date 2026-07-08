@@ -10,6 +10,7 @@ local const core: ScalaModule = new {
     "ch.epfl.scala:bsp4j:2.1.1"
     "com.softwaremill.ox::core:1.0.5"
     "com.lihaoyi::os-lib:0.11.5-M8"
+    "com.typesafe.scala-logging::scala-logging:3.9.5"
     "org.slf4j:slf4j-api:2.0.16"
     "ch.qos.logback:logback-classic:1.5.12"
   }

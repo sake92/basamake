@@ -2,7 +2,8 @@ package ba.sake.basamake.lsp
 
 import ba.sake.basamake.core.ConnectionMessage
 import ba.sake.basamake.manager.BuildServerManager
-import ba.sake.basamake.util.Log
+import ba.sake.basamake.util.LoggingUtils
+import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 import java.nio.file.Paths
@@ -10,7 +11,7 @@ import java.util.concurrent.CompletableFuture
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
 
-class BasamakeLanguageServer extends LanguageServer, TextDocumentService, LanguageClientAware:
+class BasamakeLanguageServer extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging:
 
   private val manager = BuildServerManager()
   private var client: LanguageClient = uninitialized
@@ -31,8 +32,8 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
                           .map(f => Paths.get(java.net.URI.create(f.getUri)))
                           .getOrElse(Paths.get("."))
     // Reconfigure file logging to the actual workspace
-    ba.sake.basamake.Main.reconfigureFileLogging(workspaceRoot)
-    Log.info(s"initialize: workspace=$workspaceRoot")
+    LoggingUtils.configureFileLogging(workspaceRoot)
+    logger.info(s"initialize: workspace=$workspaceRoot")
 
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
@@ -40,17 +41,17 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
 
   override def initialized(params: InitializedParams): Unit =
-    Log.info("initialized — spawning BSP connections")
+    logger.info("initialized — spawning BSP connections")
     isInitialized = true
     manager.initialize(workspaceRoot, client)
 
   override def shutdown(): CompletableFuture[Object] =
-    Log.info("shutdown")
+    logger.info("shutdown")
     manager.shutdown()
     CompletableFuture.completedFuture(null)
 
   override def exit(): Unit =
-    Log.info("exit — terminating")
+    logger.info("exit — terminating")
     manager.shutdown()
     sys.exit(0)
 
@@ -65,7 +66,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
 
   override def didOpen(params: DidOpenTextDocumentParams): Unit =
     val uri = params.getTextDocument.getUri
-    Log.info(s"didOpen: $uri")
+    logger.info(s"didOpen: $uri")
     offerToConnection(uri, ConnectionMessage.DidOpen(params))
 
   override def didChange(params: DidChangeTextDocumentParams): Unit =
@@ -74,20 +75,20 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
 
   override def didSave(params: DidSaveTextDocumentParams): Unit =
     val uri = params.getTextDocument.getUri
-    Log.info(s"didSave: $uri")
+    logger.info(s"didSave: $uri")
     offerToConnection(uri, ConnectionMessage.DidSave(params))
 
   override def didClose(params: DidCloseTextDocumentParams): Unit =
     val uri = params.getTextDocument.getUri
-    Log.info(s"didClose: $uri")
+    logger.info(s"didClose: $uri")
     offerToConnection(uri, ConnectionMessage.DidClose(params))
 
   private def offerToConnection(uri: String, msg: ConnectionMessage): Unit =
     if !isInitialized then
-      Log.warn(s"Not initialized, dropping message for $uri")
+      logger.warn(s"Not initialized, dropping message for $uri")
       return
     try manager.route(uri).offer(msg)
-    catch case e: Exception => Log.error(s"Failed to route message for $uri", e)
+    catch case e: Exception => logger.error(s"Failed to route message for $uri", e)
 
   // ---- Unsupported M3/M4 methods — return empty results ----
 
