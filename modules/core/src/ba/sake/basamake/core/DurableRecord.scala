@@ -12,6 +12,6 @@ final case class DurableRecord(
     var bspFile: BspConnectionFile,
     var attemptCounter: Int,
     var lastKnownDiagnostics: Map[String, Map[String, List[Diagnostic]]],
-    var currentState: BspConnectionState,
-    var bspProcess: Option[java.lang.Process] = None
+    @volatile var currentState: BspConnectionState,
+    @volatile var bspProcess: Option[java.lang.Process] = None
 )

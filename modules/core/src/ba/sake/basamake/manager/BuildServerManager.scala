@@ -16,6 +16,9 @@ private case class ConnectionContext(
 
 // Owns durable records, channels, and connection lifecycles.
 // Coordinates N connections (1 in M1, N in M2).
+/**
+  * Manages BSP connections, including their lifecycle, message routing, and shutdown.
+  */
 class BuildServerManager extends StrictLogging {
   private val connections = mutable.LinkedHashMap[BspConnectionId, ConnectionContext]()
   private var client: LanguageClient = uninitialized

@@ -8,9 +8,9 @@ import java.util.concurrent.BlockingQueue
 import scala.jdk.CollectionConverters.*
 
 object BspConnectionSupervisor extends StrictLogging:
-  val MaxAttempts = 10
-  val MaxBackoffMs = 30000L
-  val HandshakeTimeoutSec = 20L
+  private val MaxAttempts = 10
+  private val MaxBackoffMs = 30000L
+  private val HandshakeTimeoutSec = 20L
 
   // Outer loop: owns DurableRecord.currentState. Each state either handles messages
   // or transitions. ox scopes are nested within state blocks and torn down on transition.
@@ -65,7 +65,7 @@ object BspConnectionSupervisor extends StrictLogging:
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient
-  ): Unit =
+  ): Unit = {
     durable.currentState = BspConnectionState.Spawning
     logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
 
@@ -77,7 +77,7 @@ object BspConnectionSupervisor extends StrictLogging:
 
       durable.currentState = BspConnectionState.Connected
       durable.attemptCounter = 0
-      logger.info(s"Connected (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
+      logger.info(s"Connected with ${durable.bspFile.path} (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
 
       // Message loop — blocks until state changes from Connected
       try
@@ -123,6 +123,7 @@ object BspConnectionSupervisor extends StrictLogging:
       case e: Exception =>
         logger.error(s"Scope failure", e)
         transitionToBackoff(durable)
+  }
 
   private def triggerCompile(
       uri: String,
@@ -147,7 +148,7 @@ object BspConnectionSupervisor extends StrictLogging:
       params: ch.epfl.scala.bsp4j.PublishDiagnosticsParams,
       durable: DurableRecord,
       lspClient: LanguageClient
-  ): Unit =
+  ): Unit = {
     val uri      = params.getTextDocument.getUri
     val targetId = Option(params.getBuildTarget).map(_.getUri).getOrElse("")
     val newDiags = Option(params.getDiagnostics)
@@ -168,8 +169,9 @@ object BspConnectionSupervisor extends StrictLogging:
     // Republish union across all targets
     val allDiags = updated.values.flatten.toList.asJava
     lspClient.publishDiagnostics(new PublishDiagnosticsParams(uri, allDiags))
+  }
 
-  private def bspDiagToLsp(bsp: ch.epfl.scala.bsp4j.Diagnostic): Diagnostic =
+  private def bspDiagToLsp(bsp: ch.epfl.scala.bsp4j.Diagnostic): Diagnostic = {
     val diag = new Diagnostic()
     diag.setRange(
       new Range(
@@ -185,6 +187,7 @@ object BspConnectionSupervisor extends StrictLogging:
     diag.setMessage(stripAnsi(Option(bsp.getMessage).getOrElse("")))
     Option(bsp.getSource).foreach(diag.setSource)
     diag
+  }
 
   private def convertSeverity(bspSev: ch.epfl.scala.bsp4j.DiagnosticSeverity): DiagnosticSeverity =
     import ch.epfl.scala.bsp4j.DiagnosticSeverity as B

@@ -70,7 +70,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
 
   override def didOpen(params: DidOpenTextDocumentParams): Unit =
     val uri = params.getTextDocument.getUri
-    logger.info(s"didOpen: $uri")
+    logger.debug(s"didOpen: $uri")
     offerToConnection(uri, ConnectionMessage.DidOpen(params))
 
   override def didChange(params: DidChangeTextDocumentParams): Unit =
@@ -79,12 +79,12 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
 
   override def didSave(params: DidSaveTextDocumentParams): Unit =
     val uri = params.getTextDocument.getUri
-    logger.info(s"didSave: $uri")
+    logger.debug(s"didSave: $uri")
     offerToConnection(uri, ConnectionMessage.DidSave(params))
 
   override def didClose(params: DidCloseTextDocumentParams): Unit =
     val uri = params.getTextDocument.getUri
-    logger.info(s"didClose: $uri")
+    logger.debug(s"didClose: $uri")
     offerToConnection(uri, ConnectionMessage.DidClose(params))
 
   private def offerToConnection(uri: String, msg: ConnectionMessage): Unit =
