@@ -1,15 +1,15 @@
 package ba.sake.basamake.lsp
 
-import ba.sake.basamake.core.ConnectionMessage
-import ba.sake.basamake.manager.BuildServerManager
-import ba.sake.basamake.util.LoggingUtils
-import com.typesafe.scalalogging.StrictLogging
-import org.eclipse.lsp4j.*
-import org.eclipse.lsp4j.services.*
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
+import com.typesafe.scalalogging.StrictLogging
+import org.eclipse.lsp4j.*
+import org.eclipse.lsp4j.services.*
+import ba.sake.basamake.core.ConnectionMessage
+import ba.sake.basamake.manager.BuildServerManager
+import ba.sake.basamake.util.LoggingUtils
 
 class BasamakeLanguageServer extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging:
 
@@ -23,7 +23,6 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     this.client = client
 
   // ---- LanguageServer ----
-
   override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] =
     workspaceRoot = Option(params.getRootUri) match
       case Some(uri) => Paths.get(java.net.URI.create(uri))
@@ -37,7 +36,6 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
 
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
-
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
 
   override def initialized(params: InitializedParams): Unit =

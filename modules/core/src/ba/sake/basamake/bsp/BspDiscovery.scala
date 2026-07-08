@@ -1,15 +1,14 @@
-package ba.sake.basamake.manager
+package ba.sake.basamake.bsp
 
-import ba.sake.basamake.core.*
 import com.typesafe.scalalogging.StrictLogging
 import java.nio.file.{Files, Path}
 
-object Discovery extends StrictLogging:
+object BspDiscovery extends StrictLogging:
 
   // Discover BSP connection specs from the workspace root.
   // M1: returns exactly one spec from .bsp/*.json.
   // M2: returns all discovered/explicitly-configured specs.
-  def discover(workspaceRoot: Path): List[ConnectionSpec] =
+  def discover(workspaceRoot: Path): List[BspConnectionFile] =
     val bspDir = workspaceRoot.resolve(".bsp")
     if !Files.isDirectory(bspDir) then
       logger.warn(s"No .bsp directory found at $bspDir")
@@ -25,7 +24,7 @@ object Discovery extends StrictLogging:
 
     jsonFiles.flatMap(parseBspSpec)
 
-  private def parseBspSpec(jsonPath: Path): Option[ConnectionSpec] =
+  private def parseBspSpec(jsonPath: Path): Option[BspConnectionFile] =
     try
       val raw = Files.readString(jsonPath)
       val argv = extractJsonArray(raw, "argv")
@@ -38,7 +37,7 @@ object Discovery extends StrictLogging:
       else
         logger.info(s"Discovered BSP connection from $jsonPath: ${argv.mkString(", ")}")
         Some(
-          ConnectionSpec(
+          BspConnectionFile(
             path = jsonPath,
             argv = argv,
             workingDir = workingDir,

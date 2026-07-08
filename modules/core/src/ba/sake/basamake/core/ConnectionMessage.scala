@@ -1,5 +1,6 @@
 package ba.sake.basamake.core
 
+import ba.sake.basamake.bsp.BspConnectionFile
 import org.eclipse.lsp4j.*
 
 /**
@@ -15,7 +16,7 @@ object ConnectionMessage:
   final case class DidSave(params: DidSaveTextDocumentParams)     extends ConnectionMessage
   final case class DidClose(params: DidCloseTextDocumentParams)   extends ConnectionMessage
 
-  // BSP-originated messages (via OurBuildClient callback)
+  // BSP-originated messages (via BasamakeBuildClient callback)
   final case class BspPublishDiagnostics(params: ch.epfl.scala.bsp4j.PublishDiagnosticsParams)
       extends ConnectionMessage
 
@@ -23,5 +24,5 @@ object ConnectionMessage:
   case object ProcessExited         extends ConnectionMessage  // process.waitFor() returned → crash
   case object HandshakeCompleted    extends ConnectionMessage
   final case class HandshakeFailed(cause: Throwable) extends ConnectionMessage
-  final case class ReloadRequested(newSpec: ConnectionSpec) extends ConnectionMessage
+  final case class ReloadRequested(newSpec: BspConnectionFile) extends ConnectionMessage
   case object Shutdown              extends ConnectionMessage  // poison pill → unblock queue, kill BSP

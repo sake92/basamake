@@ -1,6 +1,6 @@
-package ba.sake.basamake.core
+package ba.sake.basamake.bsp
 
-enum ConnectionState:
+enum BspConnectionState:
   case Idle
   case Spawning
   case Handshaking

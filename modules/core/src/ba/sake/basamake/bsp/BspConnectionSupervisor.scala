@@ -20,37 +20,37 @@ object BspConnectionSupervisor extends StrictLogging:
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient
   ): Unit =
-    logger.info(s"Supervisor started for ${durable.spec.path}")
+    logger.info(s"Supervisor started for ${durable.bspFile.path}")
 
-    while durable.currentState != ConnectionState.Failed
-        && durable.currentState != ConnectionState.Detached
+    while durable.currentState != BspConnectionState.Failed
+        && durable.currentState != BspConnectionState.Detached
     do
       durable.currentState match
-        case ConnectionState.Idle | ConnectionState.Reloading =>
+        case BspConnectionState.Idle | BspConnectionState.Reloading =>
           transitionToRunning(durable, queue, lspClient)
 
-        case ConnectionState.BackoffWait =>
+        case BspConnectionState.BackoffWait =>
           backoffSleep(durable, queue)
 
-        case ConnectionState.Connected =>
+        case BspConnectionState.Connected =>
           logger.warn(s"Connected state at top level — triggering reload")
-          durable.currentState = ConnectionState.Reloading
+          durable.currentState = BspConnectionState.Reloading
 
         case cs =>
           logger.warn(s"Unexpected top-level state $cs, resetting to Idle")
-          durable.currentState = ConnectionState.Idle
+          durable.currentState = BspConnectionState.Idle
 
     durable.currentState match
-      case ConnectionState.Failed =>
+      case BspConnectionState.Failed =>
         lspClient.showMessage(
           new MessageParams(
             MessageType.Error,
             s"BSP connection failed after $MaxAttempts attempts"
           )
         )
-        logger.error(s"Connection ${durable.spec.path} reached Failed state")
+        logger.error(s"Connection ${durable.bspFile.path} reached Failed state")
       case _ =>
-        logger.info(s"Connection ${durable.spec.path} detached")
+        logger.info(s"Connection ${durable.bspFile.path} detached")
 
   private def destroyProcess(process: java.lang.Process): Unit =
     if process != null && process.isAlive then
@@ -66,22 +66,22 @@ object BspConnectionSupervisor extends StrictLogging:
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient
   ): Unit =
-    durable.currentState = ConnectionState.Spawning
+    durable.currentState = BspConnectionState.Spawning
     logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
 
     try
-      val result = BspHandshake.execute(durable.spec, queue, durable, HandshakeTimeoutSec)
+      val result = BspHandshake.execute(durable.bspFile, queue, durable, HandshakeTimeoutSec)
       val process     = result.process
       val buildServer = result.buildServer
       val targets     = result.targets.getTargets.asScala.toList
 
-      durable.currentState = ConnectionState.Connected
+      durable.currentState = BspConnectionState.Connected
       durable.attemptCounter = 0
       logger.info(s"Connected (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
 
       // Message loop — blocks until state changes from Connected
       try
-        while durable.currentState == ConnectionState.Connected do
+        while durable.currentState == BspConnectionState.Connected do
           val msg = queue.take()
           msg match
             case ConnectionMessage.ProcessExited =>
@@ -90,8 +90,8 @@ object BspConnectionSupervisor extends StrictLogging:
 
             case ConnectionMessage.ReloadRequested(newSpec) =>
               logger.info(s"Reload requested")
-              durable.spec = newSpec
-              durable.currentState = ConnectionState.Reloading
+              durable.bspFile = newSpec
+              durable.currentState = BspConnectionState.Reloading
 
             case ConnectionMessage.BspPublishDiagnostics(params) =>
               handleDiagnostics(params, durable, lspClient)
@@ -111,7 +111,7 @@ object BspConnectionSupervisor extends StrictLogging:
 
             case ConnectionMessage.Shutdown =>
               logger.info(s"Received shutdown poison pill")
-              durable.currentState = ConnectionState.Detached
+              durable.currentState = BspConnectionState.Detached
 
             case _ =>
               ()
@@ -204,19 +204,19 @@ object BspConnectionSupervisor extends StrictLogging:
   private def transitionToBackoff(durable: DurableRecord): Unit =
     // Don't overwrite Detached or Failed — shutdown() may have set Detached
     // during a Scope failure, and backoff must not resurrect the connection.
-    if durable.currentState == ConnectionState.Detached
-        || durable.currentState == ConnectionState.Failed
+    if durable.currentState == BspConnectionState.Detached
+        || durable.currentState == BspConnectionState.Failed
     then return
     durable.attemptCounter += 1
     if durable.attemptCounter >= MaxAttempts then
-      durable.currentState = ConnectionState.Failed
+      durable.currentState = BspConnectionState.Failed
       logger.error(
-        s"Connection ${durable.spec.path} reached max attempts (${durable.attemptCounter})"
+        s"Connection ${durable.bspFile.path} reached max attempts (${durable.attemptCounter})"
       )
     else
-      durable.currentState = ConnectionState.BackoffWait
+      durable.currentState = BspConnectionState.BackoffWait
       logger.info(
-        s"Connection ${durable.spec.path} → BackoffWait (attempt ${durable.attemptCounter})"
+        s"Connection ${durable.bspFile.path} → BackoffWait (attempt ${durable.attemptCounter})"
       )
 
   private def backoffSleep(
@@ -229,13 +229,13 @@ object BspConnectionSupervisor extends StrictLogging:
     )
     logger.info(s"Backing off for ${delay}ms")
     val msg = queue.poll(delay, java.util.concurrent.TimeUnit.MILLISECONDS)
-    if durable.currentState == ConnectionState.Detached then return
+    if durable.currentState == BspConnectionState.Detached then return
     msg match
       case ConnectionMessage.ReloadRequested(newSpec) =>
-        durable.spec = newSpec
-        durable.currentState = ConnectionState.Reloading
+        durable.bspFile = newSpec
+        durable.currentState = BspConnectionState.Reloading
       case ConnectionMessage.Shutdown =>
-        durable.currentState = ConnectionState.Detached
+        durable.currentState = BspConnectionState.Detached
       case _ =>
-        if durable.currentState == ConnectionState.Detached then return
-        durable.currentState = ConnectionState.Spawning
+        if durable.currentState == BspConnectionState.Detached then return
+        durable.currentState = BspConnectionState.Spawning

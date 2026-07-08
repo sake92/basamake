@@ -1,5 +1,6 @@
 package ba.sake.basamake.util
 
+import java.nio.file.{Files, Path}
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.classic.spi.ILoggingEvent
@@ -7,9 +8,7 @@ import ch.qos.logback.core.FileAppender
 import com.typesafe.scalalogging.StrictLogging
 import org.slf4j.LoggerFactory
 
-import java.nio.file.{Files, Path}
-
-object LoggingUtils extends StrictLogging:
+object LoggingUtils extends StrictLogging {
 
   def configureFileLogging(workspace: Path): Unit =
     val ctx = LoggerFactory.getILoggerFactory.asInstanceOf[LoggerContext]
@@ -40,3 +39,4 @@ object LoggingUtils extends StrictLogging:
 
     rootLogger.addAppender(appender)
     logger.info(s"File logging configured: $logFile")
+}

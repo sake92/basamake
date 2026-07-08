@@ -1,11 +1,12 @@
 package ba.sake.basamake.bsp
 
 import ba.sake.basamake.core.*
+import ba.sake.basamake.bsp.{BspConnectionFile, BspConnectionState}
 import java.nio.file.Paths
 
 class StateMachineTest extends munit.FunSuite:
   test("backoff increments") {
-    val r = DurableRecord(ConnectionSpec(Paths.get("."), List("e"), Paths.get(".")), 0, Map.empty, ConnectionState.Idle)
+    val r = DurableRecord(BspConnectionFile(Paths.get("."), List("e"), Paths.get(".")), 0, Map.empty, BspConnectionState.Idle)
     r.attemptCounter += 1
     assertEquals(r.attemptCounter, 1)
   }
@@ -15,7 +16,7 @@ class StateMachineTest extends munit.FunSuite:
     assertEquals(math.min(1000L*16384, 30000L), 30000L)
   }
   test("loop stops at Failed") {
-    def loop(s: ConnectionState) = s != ConnectionState.Failed && s != ConnectionState.Detached
-    assert(!loop(ConnectionState.Failed))
-    assert(loop(ConnectionState.Idle))
+    def loop(s: BspConnectionState) = s != BspConnectionState.Failed && s != BspConnectionState.Detached
+    assert(!loop(BspConnectionState.Failed))
+    assert(loop(BspConnectionState.Idle))
   }

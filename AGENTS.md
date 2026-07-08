@@ -31,6 +31,24 @@ The code also auto-kills stale `deder bsp` processes on handshake start (`BspHan
 
 Requires **JDK 24+** (JEP 491 unpins VTs on `synchronized`). Current env has JDK 21 — works for dev but must be 24 for production. Scala 3.7.4.
 
+## Code Style
+
+**Prefer curly braces `{}` over colon-syntax `:` for class/object/def bodies** longer than ~15 lines. Short bodies can keep the colon.
+
+```scala
+// Good — short body, colon is fine
+object BspConnectionId:
+  def apply(value: String): BspConnectionId = value
+  extension (id: BspConnectionId) def value: String = id
+
+// Good — longer body, use curlies
+object BspDiscovery extends StrictLogging {
+  def discover(workspaceRoot: Path): List[BspConnectionFile] = {
+    // ... 20+ lines
+  }
+}
+```
+
 ## Smoke Test
 
 ```bash
@@ -90,7 +108,7 @@ Build tools emit ANSI color codes in compile error messages. `BspConnectionSuper
 
 ### State machine
 
-`ConnectionState` enum: `Idle → Spawning → Handshaking → Connected → BackoffWait → Failed/Detached`. Crash (reader fork EOF) and Reload (`.json` changed) are distinct paths. Backoff is exponential with 30s cap, 10 max attempts. `DurableRecord` owns `attemptCounter` and `lastKnownDiagnostics` — they survive scope teardown.
+`BspConnectionState` enum: `Idle → Spawning → Handshaking → Connected → BackoffWait → Failed/Detached`. Crash (reader fork EOF) and Reload (`.json` changed) are distinct paths. Backoff is exponential with 30s cap, 10 max attempts. `DurableRecord` owns `attemptCounter` and `lastKnownDiagnostics` — they survive scope teardown.
 
 ### Process cleanup
 
