@@ -53,7 +53,13 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
   override def exit(): Unit =
     logger.info("exit — terminating")
     manager.shutdown()
+    manager.killBspProcesses()
     sys.exit(0)
+
+  /** Called after transport closes (stdin EOF) to clean up child BSP processes. */
+  def cleanup(): Unit =
+    manager.shutdown()
+    manager.killBspProcesses()
 
   override def getTextDocumentService: TextDocumentService = this
 

@@ -26,11 +26,14 @@ object Main extends StrictLogging:
 
     logger.info("LSP launcher created, listening on stdio...")
 
-    launcher.startListening() // starts async message processing on lsp4j thread pool
+    val future = launcher.startListening() // starts async message processing; future completes when stdin closes
     logger.info("LSP message processor started")
 
-    // Keep JVM alive until exit() calls System.exit
-    java.util.concurrent.locks.LockSupport.park()
+    // Block until LSP transport closes (stdin EOF) or exit() calls System.exit.
+    // When VS Code closes, stdin reaches EOF, the future completes.
+    future.get()
+    // Clean up BSP connections — kills child BSP processes so they don't linger
+    server.cleanup()
     logger.info("LSP server stopped")
 
   private def parseWorkspace(args: Array[String]): Path =

@@ -24,3 +24,4 @@ object ConnectionMessage:
   case object HandshakeCompleted    extends ConnectionMessage
   final case class HandshakeFailed(cause: Throwable) extends ConnectionMessage
   final case class ReloadRequested(newSpec: ConnectionSpec) extends ConnectionMessage
+  case object Shutdown              extends ConnectionMessage  // poison pill → unblock queue, kill BSP

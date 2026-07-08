@@ -11,5 +11,6 @@ final case class DurableRecord(
     var spec: ConnectionSpec,
     var attemptCounter: Int,
     var lastKnownDiagnostics: Map[String, Map[String, List[Diagnostic]]],
-    var currentState: ConnectionState
+    var currentState: ConnectionState,
+    var bspProcess: Option[java.lang.Process] = None
 )

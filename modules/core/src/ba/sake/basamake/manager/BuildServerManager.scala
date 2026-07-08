@@ -49,6 +49,27 @@ class BuildServerManager extends StrictLogging:
     channels.values.head
 
   def shutdown(): Unit =
+    // Signal all supervisors to detach
     connections.values.foreach: record =>
       record.currentState = ConnectionState.Detached
+    // Send poison pill to unblock any supervisor stuck in queue.take()
+    channels.values.foreach: queue =>
+      queue.offer(ConnectionMessage.Shutdown)
     logger.info("All connections detached")
+
+  /** Force-kill any BSP processes that survived the graceful shutdown.
+    * Does a second pass after a grace period to catch processes spawned
+    * by supervisors that were mid-retry when shutdown was called. */
+  def killBspProcesses(): Unit =
+    Thread.sleep(500)
+    killAllBspProcesses()
+    Thread.sleep(200)
+    killAllBspProcesses() // catch late spawns during first pass
+
+  private def killAllBspProcesses(): Unit =
+    connections.values.foreach: record =>
+      record.bspProcess.foreach: p =>
+        if p.isAlive then
+          logger.info(s"Force-killing BSP process ${p.pid()}")
+          p.destroyForcibly()
+        record.bspProcess = None

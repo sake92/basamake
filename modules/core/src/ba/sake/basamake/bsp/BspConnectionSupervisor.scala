@@ -70,7 +70,7 @@ object BspConnectionSupervisor extends StrictLogging:
     logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
 
     try
-      val result = BspHandshake.execute(durable.spec, queue, HandshakeTimeoutSec)
+      val result = BspHandshake.execute(durable.spec, queue, durable, HandshakeTimeoutSec)
       val process     = result.process
       val buildServer = result.buildServer
       val targets     = result.targets.getTargets.asScala.toList
@@ -109,10 +109,15 @@ object BspConnectionSupervisor extends StrictLogging:
             case ConnectionMessage.DidClose(_) =>
               ()
 
+            case ConnectionMessage.Shutdown =>
+              logger.info(s"Received shutdown poison pill")
+              durable.currentState = ConnectionState.Detached
+
             case _ =>
               ()
       finally
         destroyProcess(process)
+        durable.bspProcess = None
 
     catch
       case e: Exception =>
@@ -197,6 +202,11 @@ object BspConnectionSupervisor extends StrictLogging:
   // ---- Backoff ----
 
   private def transitionToBackoff(durable: DurableRecord): Unit =
+    // Don't overwrite Detached or Failed — shutdown() may have set Detached
+    // during a Scope failure, and backoff must not resurrect the connection.
+    if durable.currentState == ConnectionState.Detached
+        || durable.currentState == ConnectionState.Failed
+    then return
     durable.attemptCounter += 1
     if durable.attemptCounter >= MaxAttempts then
       durable.currentState = ConnectionState.Failed
@@ -224,5 +234,8 @@ object BspConnectionSupervisor extends StrictLogging:
       case ConnectionMessage.ReloadRequested(newSpec) =>
         durable.spec = newSpec
         durable.currentState = ConnectionState.Reloading
+      case ConnectionMessage.Shutdown =>
+        durable.currentState = ConnectionState.Detached
       case _ =>
+        if durable.currentState == ConnectionState.Detached then return
         durable.currentState = ConnectionState.Spawning

@@ -132,5 +132,12 @@ try:
         print("  Additional messages:", recv_msg(proc))
 
 finally:
-    proc.terminate()
-    proc.wait(timeout=2)
+    # Send proper LSP shutdown/exit so the server cleans up child processes
+    proc.stdin.write(rpc_msg({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": None}).encode())
+    proc.stdin.write(rpc_msg({"jsonrpc": "2.0", "method": "exit", "params": None}).encode())
+    proc.stdin.flush()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
