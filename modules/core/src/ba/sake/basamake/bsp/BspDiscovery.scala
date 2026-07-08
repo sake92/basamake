@@ -1,7 +1,9 @@
 package ba.sake.basamake.bsp
 
+import com.google.gson.JsonParser
 import com.typesafe.scalalogging.StrictLogging
 import java.nio.file.{Files, Path}
+import scala.jdk.CollectionConverters.*
 
 object BspDiscovery extends StrictLogging:
 
@@ -14,7 +16,6 @@ object BspDiscovery extends StrictLogging:
       logger.warn(s"No .bsp directory found at $bspDir")
       return Nil
 
-    import scala.jdk.CollectionConverters.*
     val jsonFiles = Files
       .list(bspDir)
       .filter(p => p.getFileName.toString.endsWith(".json"))
@@ -50,13 +51,13 @@ object BspDiscovery extends StrictLogging:
         None
 
   private def extractJsonArray(raw: String, key: String): List[String] =
-    val pattern = s""""$key"\\s*:\\s*\\[(.*?)\\]""".r
-    pattern.findFirstMatchIn(raw) match
-      case Some(m) =>
-        val inner = m.group(1)
-        "\"(.*?)\"".r
-          .findAllMatchIn(inner)
-          .map(_.group(1))
-          .toList
-      case None =>
+    try
+      val json = JsonParser.parseString(raw).getAsJsonObject
+      if json.has(key) then
+        json.getAsJsonArray(key).iterator().asScala.map(_.getAsString).toList
+      else
+        List.empty
+    catch
+      case e: Exception =>
+        logger.warn(s"Failed to extract '$key' from BSP JSON", e)
         List.empty
