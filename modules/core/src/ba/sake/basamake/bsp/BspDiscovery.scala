@@ -1,63 +1,70 @@
 package ba.sake.basamake.bsp
 
-import com.google.gson.JsonParser
 import com.typesafe.scalalogging.StrictLogging
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
+import ba.sake.tupson.{given, *}
+
+/** Tupson-parsed BSP connection spec from .bsp JSON files.
+  * The `name` field is for BSP protocol display; buildToolName comes from the filename. */
+private case class BspDiscoverySpec(name: String, argv: List[String]) derives JsonRW
 
 object BspDiscovery extends StrictLogging:
 
-  // Discover BSP connection specs from the workspace root.
-  // M1: returns exactly one spec from .bsp/*.json.
-  // M2: returns all discovered/explicitly-configured specs.
+  /** Autodiscover ALL .bsp JSON files recursively under workspace root.
+    * No filtering — the manager applies overrides post-discovery. */
   def discover(workspaceRoot: Path): List[BspConnectionFile] =
-    val bspDir = workspaceRoot.resolve(".bsp")
-    if !Files.isDirectory(bspDir) then
-      logger.warn(s"No .bsp directory found at $bspDir")
+    val bspDirs = findBspDirs(workspaceRoot)
+    if bspDirs.isEmpty then
+      logger.warn(s"No .bsp directories found under $workspaceRoot")
       return Nil
 
-    val jsonFiles = Files
-      .list(bspDir)
-      .filter(p => p.getFileName.toString.endsWith(".json"))
-      .iterator()
-      .asScala
-      .toList
+    val allSpecs = bspDirs.flatMap: bspDir =>
+      val jsonFiles = Files.list(bspDir)
+        .filter(p => p.getFileName.toString.endsWith(".json"))
+        .iterator().asScala.toList
+      jsonFiles.flatMap(parseBspSpec)
 
-    jsonFiles.flatMap(parseBspSpec)
+    logger.info(s"Discovered ${allSpecs.size} BSP connection(s)")
+    allSpecs
+
+  /** Parse a single .bsp JSON file. Public for the file watcher. */
+  def parseSingleSpec(jsonPath: Path): Option[BspConnectionFile] =
+    parseBspSpec(jsonPath)
+
+  /** Find all .bsp directories under the given root, recursively. */
+  private def findBspDirs(root: Path): List[Path] =
+    if !Files.isDirectory(root) then return Nil
+    val dirs = scala.collection.mutable.ListBuffer[Path]()
+    Files.walk(root).forEach: p =>
+      if Files.isDirectory(p) && p.getFileName.toString == ".bsp" then dirs += p
+    dirs.toList
 
   private def parseBspSpec(jsonPath: Path): Option[BspConnectionFile] =
     try
       val raw = Files.readString(jsonPath)
-      val argv = extractJsonArray(raw, "argv")
-      val workingDir = Option(jsonPath.getParent.getParent)
-        .getOrElse(Path.of("."))
+      val spec = raw.parseJson[BspDiscoverySpec]
 
-      if argv.isEmpty then
+      val bspDir = jsonPath.getParent
+      val workingDir = Option(bspDir.getParent).getOrElse(Path.of("."))
+
+      val fileName = jsonPath.getFileName.toString
+      val buildToolName =
+        if fileName.endsWith(".json") then fileName.dropRight(5) else fileName
+
+      if spec.argv.isEmpty then
         logger.warn(s"No argv found in $jsonPath")
         None
       else
-        logger.info(s"Discovered BSP connection from $jsonPath: ${argv.mkString(", ")}")
-        Some(
-          BspConnectionFile(
-            path = jsonPath,
-            argv = argv,
-            workingDir = workingDir,
-            debounceMs = 500L
-          )
-        )
+        logger.info(s"Discovered $buildToolName from $jsonPath: ${spec.argv.mkString(", ")}")
+        Some(BspConnectionFile(
+          path = jsonPath,
+          argv = spec.argv,
+          workingDir = workingDir,
+          debounceMs = 500L,
+          buildToolName = buildToolName
+        ))
     catch
       case e: Exception =>
-        logger.error(s"Failed to parse BSP spec from $jsonPath", e)
+        logger.error(s"Failed to parse BSP spec from $jsonPath: ${e.getMessage}")
         None
-
-  private def extractJsonArray(raw: String, key: String): List[String] =
-    try
-      val json = JsonParser.parseString(raw).getAsJsonObject
-      if json.has(key) then
-        json.getAsJsonArray(key).iterator().asScala.map(_.getAsString).toList
-      else
-        List.empty
-    catch
-      case e: Exception =>
-        logger.warn(s"Failed to extract '$key' from BSP JSON", e)
-        List.empty
