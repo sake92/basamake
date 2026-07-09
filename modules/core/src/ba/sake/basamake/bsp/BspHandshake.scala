@@ -19,20 +19,20 @@ object BspHandshake extends StrictLogging {
   // durable.bspProcess is set IMMEDIATELY after spawn, before any blocking calls,
   // so killBspProcesses() can always find and destroy the child process.
   def execute(
-      bspFile: BspConnectionFile,
+      bspFile: BspConnectionSpec,
       queue: java.util.concurrent.BlockingQueue[ConnectionMessage],
       durable: DurableRecord,
       timeoutSec: Long = 60
   ): HandshakeResult = {
     logger.info(s"Starting BSP handshake for ${bspFile.path}")
 
-    val pb = new java.lang.ProcessBuilder(bspFile.argv*)
+    val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
     pb.directory(bspFile.workingDir.toFile)
     pb.redirectError(java.lang.ProcessBuilder.Redirect.PIPE)
 
     val process = pb.start()
     durable.bspProcess = Some(process) // store IMMEDIATELY — killable even if handshake fails
-    logger.info(s"Spawned BSP process (pid ${process.pid()}) with argv: ${bspFile.argv.mkString(" ")}")
+    logger.info(s"Spawned BSP process (pid ${process.pid()}) with argv: ${bspFile.content.argv.mkString(" ")}")
 
     val buildClient = BasamakeBuildClient(queue)
 

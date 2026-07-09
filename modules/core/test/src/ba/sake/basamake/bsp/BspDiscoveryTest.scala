@@ -22,7 +22,7 @@ class BspDiscoveryTest extends FunSuite:
 
       val results = BspDiscovery.discover(tmp)
       assertEquals(results.size, 2)
-      val names = results.map(_.buildToolName).toSet
+      val names = results.map(_.content.name).toSet
       assertEquals(names, Set("sbt", "scalacli"))
     finally
       deleteRecursively(tmp)
@@ -62,7 +62,7 @@ class BspDiscoveryTest extends FunSuite:
 
       val result = BspDiscovery.parseSingleSpec(bspDir.resolve("my-cool-tool.json"))
       assert(result.isDefined)
-      assertEquals(result.get.buildToolName, "my-cool-tool")
+      assertEquals(result.get.content.name, "my-cool-tool")
     finally
       deleteRecursively(tmp)
   }

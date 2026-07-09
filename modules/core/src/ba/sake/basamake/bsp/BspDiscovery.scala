@@ -5,15 +5,11 @@ import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
 import ba.sake.tupson.{given, *}
 
-/** Tupson-parsed BSP connection spec from .bsp JSON files.
-  * The `name` field is for BSP protocol display; buildToolName comes from the filename. */
-private case class BspDiscoverySpec(name: String, argv: List[String]) derives JsonRW
-
 object BspDiscovery extends StrictLogging:
 
   /** Autodiscover ALL .bsp JSON files recursively under workspace root.
     * No filtering — the manager applies overrides post-discovery. */
-  def discover(workspaceRoot: Path): List[BspConnectionFile] =
+  def discover(workspaceRoot: Path): List[BspConnectionSpec] =
     val bspDirs = findBspDirs(workspaceRoot)
     if bspDirs.isEmpty then
       logger.warn(s"No .bsp directories found under $workspaceRoot")
@@ -29,7 +25,7 @@ object BspDiscovery extends StrictLogging:
     allSpecs
 
   /** Parse a single .bsp JSON file. Public for the file watcher. */
-  def parseSingleSpec(jsonPath: Path): Option[BspConnectionFile] =
+  def parseSingleSpec(jsonPath: Path): Option[BspConnectionSpec] =
     parseBspSpec(jsonPath)
 
   /** Find all .bsp directories under the given root, recursively. */
@@ -40,29 +36,26 @@ object BspDiscovery extends StrictLogging:
       if Files.isDirectory(p) && p.getFileName.toString == ".bsp" then dirs += p
     dirs.toList
 
-  private def parseBspSpec(jsonPath: Path): Option[BspConnectionFile] =
+  private def parseBspSpec(jsonPath: Path): Option[BspConnectionSpec] =
     try
       val raw = Files.readString(jsonPath)
-      val spec = raw.parseJson[BspDiscoverySpec]
+      val content = raw.parseJson[BspDiscoveryFile]
 
       val bspDir = jsonPath.getParent
       val workingDir = Option(bspDir.getParent).getOrElse(Path.of("."))
 
       val fileName = jsonPath.getFileName.toString
-      val buildToolName =
-        if fileName.endsWith(".json") then fileName.dropRight(5) else fileName
 
-      if spec.argv.isEmpty then
+      if content.argv.isEmpty then
         logger.warn(s"No argv found in $jsonPath")
         None
       else
-        logger.info(s"Discovered $buildToolName from $jsonPath: ${spec.argv.mkString(", ")}")
-        Some(BspConnectionFile(
+        logger.info(s"Discovered ${content.name} from $jsonPath: ${content.argv.mkString(", ")}")
+        Some(BspConnectionSpec(
+          content = content,
           path = jsonPath,
-          argv = spec.argv,
           workingDir = workingDir,
           debounceMs = 500L,
-          buildToolName = buildToolName
         ))
     catch
       case e: Exception =>

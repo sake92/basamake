@@ -1,6 +1,6 @@
 package ba.sake.basamake.watcher
 
-import ba.sake.basamake.bsp.{BspConnectionFile, BspDiscovery}
+import ba.sake.basamake.bsp.{BspConnectionSpec, BspDiscovery}
 import com.typesafe.scalalogging.StrictLogging
 import java.nio.file.{Files, Path, Paths}
 import java.util.concurrent.ConcurrentHashMap
@@ -12,9 +12,9 @@ import scala.jdk.CollectionConverters.*
   * before and after each watch callback batch. */
 class BspFileWatcher(
     workspaceRoot: Path,
-    onAttach: BspConnectionFile => Unit,
+    onAttach: BspConnectionSpec => Unit,
     onDetach: java.nio.file.Path => Unit,
-    onReload: BspConnectionFile => Unit
+    onReload: BspConnectionSpec => Unit
 ) extends StrictLogging:
 
   private val workspaceOsPath = os.Path(workspaceRoot.toAbsolutePath)

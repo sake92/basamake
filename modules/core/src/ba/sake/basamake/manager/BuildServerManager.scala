@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
 import scala.collection.mutable
 import scala.compiletime.uninitialized
+import ba.sake.basamake.bsp.BspConnectionSpec
 
 private case class ConnectionContext(
     record: DurableRecord,
@@ -54,7 +55,7 @@ class BuildServerManager extends StrictLogging {
   }
 
   /** Apply per-.bsp-file overrides. Returns None if the connection is disabled. */
-  private def applyOverrides(spec: BspConnectionFile): Option[BspConnectionFile] =
+  private def applyOverrides(spec: BspConnectionSpec): Option[BspConnectionSpec] =
     val relPath = workspaceRoot.relativize(spec.path).toString
     config.bspOverrides.find(_.bspFile == relPath) match
       case Some(ov) if !ov.enabled =>
@@ -68,7 +69,7 @@ class BuildServerManager extends StrictLogging {
         Some(spec)
 
   /** Create a durable record, queue, and VT for a new connection spec. */
-  private def attachConnection(bspFile: BspConnectionFile): Unit = {
+  private def attachConnection(bspFile: BspConnectionSpec): Unit = {
     val id = BspConnectionId(bspFile.path.toAbsolutePath.toString)
     val record = DurableRecord(
       bspFile = bspFile,
@@ -89,7 +90,7 @@ class BuildServerManager extends StrictLogging {
     val vt = Thread.ofVirtual().start(() =>
       BspConnectionSupervisor.supervise(record, queue, client, routingCallback)
     )
-    logger.info(s"Spawned supervisor for $id (${bspFile.buildToolName}) on VT ${vt.threadId()}")
+    logger.info(s"Spawned supervisor for $id (${bspFile.content.name}) on VT ${vt.threadId()}")
   }
 
   /** Cleanly detach a connection: publish empty diagnostics, remove routing, kill process. */
@@ -119,7 +120,7 @@ class BuildServerManager extends StrictLogging {
         logger.warn(s"Cannot detach unknown connection $connId")
 
   /** Request a reload for a connection with a new spec. Re-applies overrides. */
-  private def reloadConnection(connId: BspConnectionId, newSpec: BspConnectionFile): Unit =
+  private def reloadConnection(connId: BspConnectionId, newSpec: BspConnectionSpec): Unit =
     applyOverrides(newSpec) match
       case Some(merged) =>
         connections.get(connId) match

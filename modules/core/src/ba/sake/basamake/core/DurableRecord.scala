@@ -1,6 +1,6 @@
 package ba.sake.basamake.core
 
-import ba.sake.basamake.bsp.{BspConnectionFile, BspConnectionState}
+import ba.sake.basamake.bsp.{BspConnectionSpec, BspConnectionState}
 import org.eclipse.lsp4j.Diagnostic
 
 /**
@@ -9,7 +9,7 @@ import org.eclipse.lsp4j.Diagnostic
  * doesn't reset it and cause a hot-loop.
  */
 final case class DurableRecord(
-    var bspFile: BspConnectionFile,
+    var bspFile: BspConnectionSpec,
     var attemptCounter: Int,
     var lastKnownDiagnostics: Map[String, Map[String, List[Diagnostic]]],
     @volatile var currentState: BspConnectionState,

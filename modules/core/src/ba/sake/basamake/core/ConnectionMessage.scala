@@ -2,6 +2,7 @@ package ba.sake.basamake.core
 
 import ba.sake.basamake.bsp.BspConnectionFile
 import org.eclipse.lsp4j.*
+import ba.sake.basamake.bsp.BspConnectionSpec
 
 /**
  * Sealed trait for the actor queue. Protocol payloads are lsp4j/bsp4j types
@@ -24,5 +25,5 @@ object ConnectionMessage:
   case object ProcessExited         extends ConnectionMessage  // process.waitFor() returned → crash
   case object HandshakeCompleted    extends ConnectionMessage
   final case class HandshakeFailed(cause: Throwable) extends ConnectionMessage
-  final case class ReloadRequested(newSpec: BspConnectionFile) extends ConnectionMessage
+  final case class ReloadRequested(newSpec: BspConnectionSpec) extends ConnectionMessage
   case object Shutdown              extends ConnectionMessage  // poison pill → unblock queue, kill BSP

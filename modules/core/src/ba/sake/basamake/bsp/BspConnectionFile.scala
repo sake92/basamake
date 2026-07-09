@@ -1,11 +1,16 @@
 package ba.sake.basamake.bsp
 
 import java.nio.file.Path
+import ba.sake.tupson.JsonRW
 
-final case class BspConnectionFile(
+
+/** Tupson-parsed BSP connection spec from .bsp JSON files.
+  * The `name` field is for BSP protocol display; buildToolName comes from the filename. */
+private case class BspDiscoveryFile(name: String, argv: List[String]) derives JsonRW
+
+final case class BspConnectionSpec(
+    content: BspDiscoveryFile,
     path: Path,
-    argv: List[String],
     workingDir: Path,
-    debounceMs: Long = 500,
-    buildToolName: String = ""
+    debounceMs: Long = 500
 )
