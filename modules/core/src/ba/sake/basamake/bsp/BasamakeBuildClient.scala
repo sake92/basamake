@@ -27,7 +27,8 @@ class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends Build
     logger.info(s"BSP TASK START: $taskId ${params.getMessage}")
 
   override def onBuildTaskProgress(params: TaskProgressParams): Unit =
-    logger.info(s"BSP TASK PROGRESS: ${params.getTaskId.getId} ${params.getMessage}")
+    val taskId = Option(params.getTaskId).map(_.getId).getOrElse("?")
+    logger.info(s"BSP TASK PROGRESS: $taskId ${params.getMessage}")
 
   override def onBuildTaskFinish(params: TaskFinishParams): Unit =
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("?")

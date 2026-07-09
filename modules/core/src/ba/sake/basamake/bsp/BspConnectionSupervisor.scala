@@ -1,6 +1,7 @@
 package ba.sake.basamake.bsp
 
 import ba.sake.basamake.core.*
+import ch.epfl.scala.bsp4j.{BuildTarget, SourceItemKind, SourcesResult}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
@@ -18,7 +19,8 @@ object BspConnectionSupervisor extends StrictLogging:
   def supervise(
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
-      lspClient: LanguageClient
+      lspClient: LanguageClient,
+      onRoutingReady: (List[BuildTarget], SourcesResult) => Unit
   ): Unit =
     logger.info(s"Supervisor started for ${durable.bspFile.path}")
 
@@ -27,7 +29,7 @@ object BspConnectionSupervisor extends StrictLogging:
     do
       durable.currentState match
         case BspConnectionState.Idle | BspConnectionState.Reloading =>
-          transitionToRunning(durable, queue, lspClient)
+          transitionToRunning(durable, queue, lspClient, onRoutingReady)
 
         case BspConnectionState.BackoffWait =>
           backoffSleep(durable, queue)
@@ -64,7 +66,8 @@ object BspConnectionSupervisor extends StrictLogging:
   private def transitionToRunning(
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
-      lspClient: LanguageClient
+      lspClient: LanguageClient,
+      onRoutingReady: (List[BuildTarget], SourcesResult) => Unit
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
     logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
@@ -78,6 +81,13 @@ object BspConnectionSupervisor extends StrictLogging:
       durable.currentState = BspConnectionState.Connected
       durable.attemptCounter = 0
       logger.info(s"Connected with ${durable.bspFile.path} (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
+
+      // Announce routing info to the manager
+      try
+        onRoutingReady(targets, result.sources)
+      catch
+        case e: Exception =>
+          logger.error(s"Failed to announce routing info", e)
 
       // Message loop — blocks until state changes from Connected
       try
@@ -242,3 +252,12 @@ object BspConnectionSupervisor extends StrictLogging:
       case _ =>
         if durable.currentState == BspConnectionState.Detached then return
         durable.currentState = BspConnectionState.Spawning
+
+  /** Extract source directory URIs from a SourcesResult.
+    * Only directory-kind sources are used for prefix-based routing. */
+  def extractSourceDirs(sources: SourcesResult): List[String] =
+    sources.getItems.asScala.toList.flatMap: item =>
+      Option(item.getSources).toList.flatMap(_.asScala).collect {
+        case si if si.getKind == SourceItemKind.DIRECTORY && !si.getGenerated =>
+          si.getUri
+      }

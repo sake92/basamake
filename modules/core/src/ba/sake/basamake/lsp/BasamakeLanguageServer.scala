@@ -8,6 +8,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 import ba.sake.basamake.core.ConnectionMessage
+import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.manager.BuildServerManager
 import ba.sake.basamake.util.LoggingUtils
 
@@ -41,7 +42,9 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
   override def initialized(params: InitializedParams): Unit =
     logger.info("initialized — spawning BSP connections")
     isInitialized = true
-    manager.initialize(workspaceRoot, client)
+    val config = BasamakeConfig.load(workspaceRoot)
+    logger.info(s"Config loaded: ${config.bspOverrides.size} override(s)")
+    manager.initialize(workspaceRoot, client, config)
 
   override def shutdown(): CompletableFuture[Object] =
     logger.info("shutdown")
