@@ -31,6 +31,7 @@ object Main extends StrictLogging {
     // Block until LSP transport closes (stdin EOF) or exit() calls System.exit.
     // When VS Code closes, stdin reaches EOF, the future completes.
     future.get()
+
     // Clean up BSP connections — kills child BSP processes so they don't linger
     server.cleanup()
     logger.info("LSP server stopped")

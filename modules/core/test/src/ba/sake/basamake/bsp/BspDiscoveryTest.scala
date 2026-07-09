@@ -23,7 +23,7 @@ class BspDiscoveryTest extends FunSuite:
       val results = BspDiscovery.discover(tmp)
       assertEquals(results.size, 2)
       val names = results.map(_.content.name).toSet
-      assertEquals(names, Set("sbt", "scalacli"))
+      assertEquals(names, Set("sbt", "scala-cli"))
     finally
       deleteRecursively(tmp)
   }
@@ -52,7 +52,7 @@ class BspDiscoveryTest extends FunSuite:
       deleteRecursively(tmp)
   }
 
-  test("parseSingleSpec extracts buildToolName from filename") {
+  test("parseSingleSpec returns content.name from JSON") {
     val tmp = Files.createTempDirectory("basamake-test")
     try
       val bspDir = tmp.resolve(".bsp")

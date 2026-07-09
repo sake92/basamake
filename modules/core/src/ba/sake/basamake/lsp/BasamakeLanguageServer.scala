@@ -27,6 +27,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
   override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] =
     workspaceRoot = Option(params.getRootUri) match
       case Some(uri) => Paths.get(java.net.URI.create(uri))
+      // TODO support multi-root workspaces
       case None      => Option(params.getWorkspaceFolders)
                           .flatMap(_.asScala.headOption)
                           .map(f => Paths.get(java.net.URI.create(f.getUri)))
@@ -40,10 +41,10 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
 
   override def initialized(params: InitializedParams): Unit =
-    logger.info("initialized — spawning BSP connections")
+    logger.info("Initialized. Spawning BSP connections...")
     isInitialized = true
     val config = BasamakeConfig.load(workspaceRoot)
-    logger.info(s"Config loaded: ${config.bspOverrides.size} override(s)")
+    logger.info(s"Config loaded with ${config.bspOverrides.size} override(s)")
     manager.initialize(workspaceRoot, client, config)
 
   override def shutdown(): CompletableFuture[Object] =

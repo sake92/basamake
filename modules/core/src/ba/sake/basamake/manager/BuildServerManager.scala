@@ -1,18 +1,19 @@
 package ba.sake.basamake.manager
 
 import ba.sake.basamake.core.*
-import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionFile}
+import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.routing.RoutingTable
-import ba.sake.basamake.watcher.BspFileWatcher
+import ba.sake.basamake.watcher.FileChangeWatcher
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.services.LanguageClient
 import java.nio.file.Path
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
+import java.util.Timer
+import java.util.TimerTask
 import scala.collection.mutable
 import scala.compiletime.uninitialized
-import ba.sake.basamake.bsp.BspConnectionSpec
 
 private case class ConnectionContext(
     record: DurableRecord,
@@ -26,8 +27,10 @@ class BuildServerManager extends StrictLogging {
   private var workspaceRoot: Path = uninitialized
   private var config: BasamakeConfig = uninitialized
   private val routingTable = RoutingTable.empty
-  private var watcher: BspFileWatcher = uninitialized
-  private var watcherThread: Thread = uninitialized
+  private var watcher: FileChangeWatcher = uninitialized
+  private var knownBspFiles: Set[Path] = Set.empty
+  private val debounceMs = 300L
+  private var debounceTimer: Timer = uninitialized
 
   def initialize(workspaceRoot: Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -40,17 +43,14 @@ class BuildServerManager extends StrictLogging {
     for bspFile <- bspFiles do
       applyOverrides(bspFile).foreach(attachConnection)
 
-    // Start file watcher for live attach/detach/reload
-    watcher = BspFileWatcher(
-      workspaceRoot,
-      onAttach = spec => applyOverrides(spec).foreach(attachConnection),
-      onDetach = path => detachConnection(BspConnectionId(path.toAbsolutePath.toString)),
-      onReload = spec => {
-        val connId = BspConnectionId(spec.path.toAbsolutePath.toString)
-        reloadConnection(connId, spec)
-      }
-    )
-    watcherThread = Thread.ofVirtual().start(() => watcher.start())
+    // Snapshot initial .bsp JSON files for change detection
+    knownBspFiles = BspDiscovery.findBspJsonFiles(workspaceRoot)
+    debounceTimer = Timer("bsp-debounce", true)
+
+    // Start file watcher — generic, fires on ANY filesystem change
+    watcher = FileChangeWatcher(workspaceRoot, onFileChanged)
+    Thread.ofVirtual().start(() => watcher.start())
+    // VT exits immediately — os.watch.watch spawns internal daemon threads
     logger.info("File watcher started")
   }
 
@@ -145,11 +145,50 @@ class BuildServerManager extends StrictLogging {
           throw IllegalStateException("No BSP connections available. Is the workspace initialized?")
         )
 
+  // ---- File watcher → BSP event classification ----
+
+  /** Generic callback from FileChangeWatcher — fires on os-lib's internal threads.
+    * Debounces then diffs current vs known .bsp JSON files to classify events. */
+  private def onFileChanged(changedPaths: Set[Path]): Unit =
+    debounceTimer.schedule(new TimerTask {
+      override def run(): Unit = classifyBspEvents(changedPaths)
+    }, debounceMs)
+
+  /** Compare current filesystem to knownBspFiles snapshot.
+    * Runs on debounce timer thread — must touch only manager-owned state. */
+  private def classifyBspEvents(changed: Set[Path]): Unit = {
+    val current = BspDiscovery.findBspJsonFiles(workspaceRoot)
+    val newFiles     = current -- knownBspFiles
+    val deletedFiles = knownBspFiles -- current
+    val modifiedFiles = knownBspFiles.intersect(current).intersect(changed)
+
+    synchronized {
+      // Deletions first — clean state before potential re-adds
+      for p <- deletedFiles do
+        logger.info(s"BSP config deleted: $p")
+        knownBspFiles -= p
+        detachConnection(BspConnectionId(p.toAbsolutePath.toString))
+
+      for p <- newFiles do
+        logger.info(s"New BSP config detected: $p")
+        knownBspFiles += p
+        BspDiscovery.parseSingleSpec(p).foreach(spec => applyOverrides(spec).foreach(attachConnection))
+
+      for p <- modifiedFiles do
+        logger.info(s"BSP config modified: $p")
+        BspDiscovery.parseSingleSpec(p).foreach: spec =>
+          val connId = BspConnectionId(spec.path.toAbsolutePath.toString)
+          reloadConnection(connId, spec)
+    }
+  }
+
+  // ---- Lifecycle ----
+
   /** Graceful shutdown: stop watcher, detach all connections. */
   def shutdown(): Unit =
     // Stop watcher first so no new connections spawned during shutdown
     if watcher != null then watcher.stop()
-    if watcherThread != null then watcherThread.interrupt()
+    if debounceTimer != null then debounceTimer.cancel()
 
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)
