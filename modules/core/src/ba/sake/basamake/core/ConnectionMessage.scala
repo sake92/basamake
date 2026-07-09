@@ -1,6 +1,5 @@
 package ba.sake.basamake.core
 
-import ba.sake.basamake.bsp.BspConnectionFile
 import org.eclipse.lsp4j.*
 import ba.sake.basamake.bsp.BspConnectionSpec
 
