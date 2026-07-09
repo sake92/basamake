@@ -13,26 +13,40 @@ object BspConnectionSupervisor extends StrictLogging:
   private val MaxBackoffMs = 30000L
   private val HandshakeTimeoutSec = 20L
 
-  // Outer loop: owns DurableRecord.currentState. Each state either handles messages
-  // or transitions. ox scopes are nested within state blocks and torn down on transition.
-  // Runs on a dedicated virtual thread.
   def supervise(
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
       onRoutingReady: (List[BuildTarget], SourcesResult) => Unit
   ): Unit =
-    logger.info(s"Supervisor started for ${durable.bspFile.path}")
+    logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle — no process)")
 
     while durable.currentState != BspConnectionState.Failed
         && durable.currentState != BspConnectionState.Detached
     do
       durable.currentState match
-        case BspConnectionState.Idle | BspConnectionState.Reloading =>
-          transitionToRunning(durable, queue, lspClient, onRoutingReady)
+        case BspConnectionState.Idle =>
+          val msg = queue.take()
+          msg match
+            case ConnectionMessage.Shutdown =>
+              durable.currentState = BspConnectionState.Detached
+
+            case ConnectionMessage.ReloadRequested(newSpec) =>
+              durable.bspFile = newSpec
+
+            case _ =>
+              logger.info(s"Idle → Spawning (triggered by ${msg.getClass.getSimpleName})")
+              transitionToRunning(durable, queue, lspClient, onRoutingReady, Some(msg))
+
+        case BspConnectionState.Reloading =>
+          transitionToRunning(durable, queue, lspClient, onRoutingReady, None)
 
         case BspConnectionState.BackoffWait =>
           backoffSleep(durable, queue)
+
+        case BspConnectionState.Spawning | BspConnectionState.Handshaking =>
+          logger.warn(s"Unexpected top-level state $durable.currentState, resetting to Idle")
+          durable.currentState = BspConnectionState.Idle
 
         case BspConnectionState.Connected =>
           logger.warn(s"Connected state at top level — triggering reload")
@@ -47,7 +61,7 @@ object BspConnectionSupervisor extends StrictLogging:
         lspClient.showMessage(
           new MessageParams(
             MessageType.Error,
-            s"BSP connection failed after $MaxAttempts attempts"
+            s"BSP connection failed after ${durable.attemptCounter} attempt(s)"
           )
         )
         logger.error(s"Connection ${durable.bspFile.path} reached Failed state")
@@ -67,7 +81,8 @@ object BspConnectionSupervisor extends StrictLogging:
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
-      onRoutingReady: (List[BuildTarget], SourcesResult) => Unit
+      onRoutingReady: (List[BuildTarget], SourcesResult) => Unit,
+      triggerMsg: Option[ConnectionMessage]
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
     logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
@@ -82,58 +97,65 @@ object BspConnectionSupervisor extends StrictLogging:
       durable.attemptCounter = 0
       logger.info(s"Connected with ${durable.bspFile.path} (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
 
-      // Announce routing info to the manager
-      try
-        onRoutingReady(targets, result.sources)
-      catch
-        case e: Exception =>
-          logger.error(s"Failed to announce routing info", e)
+      try onRoutingReady(targets, result.sources)
+      catch case e: Exception => logger.error(s"Failed to announce routing info", e)
 
-      // Message loop — blocks until state changes from Connected
+      triggerMsg.foreach: msg =>
+        logger.debug(s"Dispatching trigger message: ${msg.getClass.getSimpleName}")
+        dispatch(msg, durable, lspClient, buildServer, targets)
+
       try
         while durable.currentState == BspConnectionState.Connected do
           val msg = queue.take()
-          msg match
-            case ConnectionMessage.ProcessExited =>
-              logger.warn(s"BSP process exited")
-              transitionToBackoff(durable)
-
-            case ConnectionMessage.ReloadRequested(newSpec) =>
-              logger.info(s"Reload requested")
-              durable.bspFile = newSpec
-              durable.currentState = BspConnectionState.Reloading
-
-            case ConnectionMessage.BspPublishDiagnostics(params) =>
-              handleDiagnostics(params, durable, lspClient)
-
-            case ConnectionMessage.DidOpen(params) =>
-              triggerCompile(params.getTextDocument.getUri, buildServer, targets)
-
-            case ConnectionMessage.DidChange(_) =>
-              () // debounce later; for now compile-on-save only
-
-            case ConnectionMessage.DidSave(params) =>
-              logger.info(s"didSave: ${params.getTextDocument.getUri}")
-              triggerCompile(params.getTextDocument.getUri, buildServer, targets)
-
-            case ConnectionMessage.DidClose(_) =>
-              ()
-
-            case ConnectionMessage.Shutdown =>
-              logger.info(s"Received shutdown poison pill")
-              durable.currentState = BspConnectionState.Detached
-
-            case _ =>
-              ()
+          dispatch(msg, durable, lspClient, buildServer, targets)
       finally
         destroyProcess(process)
         durable.bspProcess = None
 
     catch
       case e: Exception =>
-        logger.error(s"Scope failure", e)
-        transitionToBackoff(durable)
+        logger.error(s"Handshake failed", e)
+        durable.currentState = BspConnectionState.Failed
   }
+
+  private def dispatch(
+      msg: ConnectionMessage,
+      durable: DurableRecord,
+      lspClient: LanguageClient,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      targets: List[ch.epfl.scala.bsp4j.BuildTarget]
+  ): Unit =
+    msg match
+      case ConnectionMessage.ProcessExited =>
+        logger.warn("BSP process exited")
+        transitionToBackoff(durable)
+
+      case ConnectionMessage.ReloadRequested(newSpec) =>
+        logger.info("Reload requested")
+        durable.bspFile = newSpec
+        durable.currentState = BspConnectionState.Reloading
+
+      case ConnectionMessage.BspPublishDiagnostics(params) =>
+        handleDiagnostics(params, durable, lspClient)
+
+      case ConnectionMessage.DidOpen(params) =>
+        triggerCompile(params.getTextDocument.getUri, buildServer, targets)
+
+      case ConnectionMessage.DidChange(_) =>
+        ()
+
+      case ConnectionMessage.DidSave(params) =>
+        logger.info(s"didSave: ${params.getTextDocument.getUri}")
+        triggerCompile(params.getTextDocument.getUri, buildServer, targets)
+
+      case ConnectionMessage.DidClose(_) =>
+        ()
+
+      case ConnectionMessage.Shutdown =>
+        logger.info("Received shutdown poison pill")
+        durable.currentState = BspConnectionState.Detached
+
+      case _ => ()
 
   private def triggerCompile(
       uri: String,
