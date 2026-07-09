@@ -1,4 +1,4 @@
 //> using scala 3.7
 
-fds.println("Hello, Basamake!")
-
+@main def bla(): Unit =
+  println("Hello, Basamake!"gfgd)

@@ -1,6 +1,5 @@
 package ba.sake.basamake.bsp
 
-import java.nio.file.Path
 import ba.sake.tupson.JsonRW
 
 
@@ -10,7 +9,7 @@ private case class BspDiscoveryFile(name: String, argv: List[String]) derives Js
 
 final case class BspConnectionSpec(
     content: BspDiscoveryFile,
-    path: Path,
-    workingDir: Path,
+    path: os.Path,
+    workingDir: os.Path,
     debounceMs: Long = 500
 )

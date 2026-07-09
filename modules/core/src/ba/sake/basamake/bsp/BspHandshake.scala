@@ -24,10 +24,10 @@ object BspHandshake extends StrictLogging {
       durable: DurableRecord,
       timeoutSec: Long = 60
   ): HandshakeResult = {
-    logger.info(s"Starting BSP handshake for ${bspFile.path}")
+    logger.info(s"Starting BSP handshake for ${bspFile.path} in ${bspFile.workingDir}. Args: ${bspFile.content.argv.mkString(" ")}")
 
     val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
-    pb.directory(bspFile.workingDir.toFile)
+    pb.directory(bspFile.workingDir.toIO)
     pb.redirectError(java.lang.ProcessBuilder.Redirect.PIPE)
 
     val process = pb.start()
@@ -53,7 +53,7 @@ object BspHandshake extends StrictLogging {
       "basamake",
       "0.1.0",
       "2.1.0",
-      bspFile.workingDir.toUri.toString,
+      bspFile.workingDir.toNIO.toUri.toString,
       caps
     )
 

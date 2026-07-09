@@ -1,6 +1,5 @@
 package ba.sake.basamake
 
-import java.nio.file.{Path, Paths}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.launch.LSPLauncher
 import ba.sake.basamake.lsp.BasamakeLanguageServer
@@ -16,9 +15,8 @@ object Main extends StrictLogging {
     logger.info(s"Workspace: $workspacePath")
     logger.info(s"Java: ${System.getProperty("java.version")}")
 
-    // Wrap stdout in auto-flush so LSP messages go out immediately
+    // auto-flush LSP messages
     val autoFlushOut = new java.io.PrintStream(System.out, true, "UTF-8")
-
     val server = BasamakeLanguageServer()
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
     server.connect(launcher.getRemoteProxy)
@@ -30,15 +28,15 @@ object Main extends StrictLogging {
 
     // Block until LSP transport closes (stdin EOF) or exit() calls System.exit.
     // When VS Code closes, stdin reaches EOF, the future completes.
-    future.get()
-
-    // Clean up BSP connections — kills child BSP processes so they don't linger
-    server.cleanup()
-    logger.info("LSP server stopped")
+    try future.get()
+    finally
+      // Clean up BSP connections — kills child BSP processes so they don't linger
+      server.cleanup()
+      logger.info("LSP server stopped")
 
   // TODO use mainargs
-  private def parseWorkspace(args: Array[String]): Path =
+  private def parseWorkspace(args: Array[String]): os.Path =
     args.sliding(2).collectFirst:
-      case Array("--workspace", path) => Paths.get(path)
-    .getOrElse(Paths.get("."))
+      case Array("--workspace", path) => os.Path(path)
+    .getOrElse(os.pwd)
 }

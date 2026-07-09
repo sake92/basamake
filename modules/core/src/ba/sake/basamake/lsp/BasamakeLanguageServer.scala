@@ -1,6 +1,5 @@
 package ba.sake.basamake.lsp
 
-import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
@@ -17,7 +16,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
   private val manager = BuildServerManager()
   private var client: LanguageClient = uninitialized
   @volatile private var isInitialized = false
-  private var workspaceRoot: java.nio.file.Path = uninitialized
+  private var workspaceRoot: os.Path = uninitialized
 
   // ---- LanguageClientAware ----
   override def connect(client: LanguageClient): Unit =
@@ -26,12 +25,12 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
   // ---- LanguageServer ----
   override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] =
     workspaceRoot = Option(params.getRootUri) match
-      case Some(uri) => Paths.get(java.net.URI.create(uri))
+      case Some(uri) => os.Path(java.net.URI.create(uri))
       // TODO support multi-root workspaces
       case None      => Option(params.getWorkspaceFolders)
                           .flatMap(_.asScala.headOption)
-                          .map(f => Paths.get(java.net.URI.create(f.getUri)))
-                          .getOrElse(Paths.get("."))
+                          .map(f => os.Path(java.net.URI.create(f.getUri)))
+                          .getOrElse(os.pwd)
     // Reconfigure file logging to the actual workspace
     LoggingUtils.configureFileLogging(workspaceRoot)
     logger.info(s"initialize: workspace=$workspaceRoot")
@@ -95,7 +94,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     if !isInitialized then
       logger.warn(s"Not initialized, dropping message for $uri")
       return
-    try manager.route(uri).offer(msg)
+    try manager.route(uri).foreach(_.offer(msg))
     catch case e: Exception => logger.error(s"Failed to route message for $uri", e)
 
   // ---- Unsupported M3/M4 methods — return empty results ----

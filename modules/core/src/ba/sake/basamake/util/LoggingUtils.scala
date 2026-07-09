@@ -1,6 +1,5 @@
 package ba.sake.basamake.util
 
-import java.nio.file.{Files, Path}
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.classic.spi.ILoggingEvent
@@ -10,7 +9,7 @@ import org.slf4j.LoggerFactory
 
 object LoggingUtils extends StrictLogging {
 
-  def configureFileLogging(workspace: Path): Unit =
+  def configureFileLogging(workspace: os.Path): Unit =
     val ctx = LoggerFactory.getILoggerFactory.asInstanceOf[LoggerContext]
     val rootLogger = ctx.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)
 
@@ -21,9 +20,9 @@ object LoggingUtils extends StrictLogging {
         fa.stop()
       case _ => ()
 
-    val logsDir = workspace.resolve(".basamake").resolve("logs")
-    Files.createDirectories(logsDir)
-    val logFile = logsDir.resolve("basamake.log").toString
+    val logsDir = workspace / ".basamake/logs"
+    os.makeDir.all(logsDir)
+    val logFile = (logsDir / "basamake.log").toString
 
     val encoder = PatternLayoutEncoder()
     encoder.setContext(ctx)

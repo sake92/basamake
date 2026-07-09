@@ -2,11 +2,10 @@ package ba.sake.basamake.bsp
 
 import ba.sake.basamake.core.*
 import ba.sake.basamake.bsp.{BspConnectionFile, BspDiscoveryFile, BspConnectionState}
-import java.nio.file.Paths
 
 class StateMachineTest extends munit.FunSuite:
   test("backoff increments") {
-    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), Paths.get("."), Paths.get(".")), 0, Map.empty, BspConnectionState.Idle)
+    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd, os.pwd), 0, Map.empty, BspConnectionState.Idle)
     r.attemptCounter += 1
     assertEquals(r.attemptCounter, 1)
   }

@@ -8,7 +8,6 @@ import ba.sake.basamake.watcher.FileChangeWatcher
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.services.LanguageClient
-import java.nio.file.Path
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
 import java.util.Timer
 import java.util.TimerTask
@@ -24,39 +23,47 @@ private case class ConnectionContext(
 class BuildServerManager extends StrictLogging {
   private val connections = mutable.LinkedHashMap[BspConnectionId, ConnectionContext]()
   private var client: LanguageClient = uninitialized
-  private var workspaceRoot: Path = uninitialized
+  private var workspaceRoot: os.Path = uninitialized
   private var config: BasamakeConfig = uninitialized
   private val routingTable = RoutingTable.empty
   private var watcher: FileChangeWatcher = uninitialized
-  private var knownBspFiles: Set[Path] = Set.empty
+  private var knownBspFiles: Set[os.Path] = Set.empty
   private val debounceMs = 300L
-  private var debounceTimer: Timer = uninitialized
 
-  def initialize(workspaceRoot: Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
+  def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
     this.workspaceRoot = workspaceRoot
     this.config = config
 
-    val bspFiles = BspDiscovery.discover(workspaceRoot)
-    logger.info(s"Discovered ${bspFiles.size} BSP connection(s)")
-
-    for bspFile <- bspFiles do
-      applyOverrides(bspFile).foreach(attachConnection)
-
+    val bspSpecs = BspDiscovery.discover(workspaceRoot)
+    if bspSpecs.isEmpty then
+      logger.warn(s"No .bsp JSON files discovered under $workspaceRoot. No BSP connections will be established.")
+    else
+      logger.info(s"Discovered BSP specs:\n${bspSpecs.mkString("\n")}")
     // Snapshot initial .bsp JSON files for change detection
-    knownBspFiles = BspDiscovery.findBspJsonFiles(workspaceRoot)
-    debounceTimer = Timer("bsp-debounce", true)
+    knownBspFiles = bspSpecs.map(_.path).toSet
+
+    for bspSpec <- bspSpecs do
+      val overriddenSpec = applyOverrides(bspSpec)
+      overriddenSpec.foreach(attachConnection)
 
     // Start file watcher — generic, fires on ANY filesystem change
-    watcher = FileChangeWatcher(workspaceRoot, onFileChanged)
-    Thread.ofVirtual().start(() => watcher.start())
-    // VT exits immediately — os.watch.watch spawns internal daemon threads
-    logger.info("File watcher started")
+    watcher = FileChangeWatcher(workspaceRoot, onFileChanged,
+    filter = { p => 
+      val segments = p.segments.toSeq
+      segments.sliding(2).exists(_ == Seq(".basamake", "logs")) ||
+      segments.head == "target" ||
+      segments.head == ".deder" ||
+      segments.head == ".metals"
+      }
+    )
+    watcher.start()
+    logger.debug(s"File watcher started for workspace $workspaceRoot")
   }
 
   /** Apply per-.bsp-file overrides. Returns None if the connection is disabled. */
   private def applyOverrides(spec: BspConnectionSpec): Option[BspConnectionSpec] =
-    val relPath = workspaceRoot.relativize(spec.path).toString
+    val relPath = workspaceRoot.subRelativeTo(spec.path).toString
     config.bspOverrides.find(_.bspFile == relPath) match
       case Some(ov) if !ov.enabled =>
         logger.info(s"BSP connection $relPath is disabled by override")
@@ -69,10 +76,11 @@ class BuildServerManager extends StrictLogging {
         Some(spec)
 
   /** Create a durable record, queue, and VT for a new connection spec. */
-  private def attachConnection(bspFile: BspConnectionSpec): Unit = {
-    val id = BspConnectionId(bspFile.path.toAbsolutePath.toString)
+  private def attachConnection(bspSpec: BspConnectionSpec): Unit = try {
+    logger.info(s"Attaching BSP connection for ${bspSpec.path} (${bspSpec.content.name})")
+    val id = BspConnectionId(bspSpec.path.toString)
     val record = DurableRecord(
-      bspFile = bspFile,
+      bspFile = bspSpec,
       attemptCounter = 0,
       lastKnownDiagnostics = Map.empty,
       currentState = BspConnectionState.Idle
@@ -90,7 +98,10 @@ class BuildServerManager extends StrictLogging {
     val vt = Thread.ofVirtual().start(() =>
       BspConnectionSupervisor.supervise(record, queue, client, routingCallback)
     )
-    logger.info(s"Spawned supervisor for $id (${bspFile.content.name}) on VT ${vt.threadId()}")
+    logger.info(s"Spawned supervisor for $id (${bspSpec.content.name}) on VT ${vt.threadId()}")
+  } catch {
+    case e: Exception =>
+      logger.error(s"Failed to attach BSP connection for ${bspSpec.path}: ${e.getMessage}", e)
   }
 
   /** Cleanly detach a connection: publish empty diagnostics, remove routing, kill process. */
@@ -133,31 +144,39 @@ class BuildServerManager extends StrictLogging {
         detachConnection(connId)
 
   /** Route a document URI to the owning connection's queue via longest-prefix matching. */
-  def route(uri: String): BlockingQueue[ConnectionMessage] =
+  def route(uri: String): Option[BlockingQueue[ConnectionMessage]] =
     routingTable.lookup(uri) match
       case Some(connId) =>
         connections.get(connId) match
-          case Some(ctx) => ctx.queue
+          case Some(ctx) => Some(ctx.queue)
           case None =>
-            throw IllegalStateException(s"Connection $connId not found for $uri")
+            logger.warn(s"Connection $connId not found for $uri")
+            None
       case None =>
-        connections.values.headOption.map(_.queue).getOrElse(
-          throw IllegalStateException("No BSP connections available. Is the workspace initialized?")
-        )
+        connections.values.headOption.map(_.queue) match
+          case Some(value) => Some(value)
+          case None =>
+            logger.warn(s"No connection found for $uri. Probably the BSP process is still starting up.")
+            None
+        
 
   // ---- File watcher → BSP event classification ----
 
   /** Generic callback from FileChangeWatcher — fires on os-lib's internal threads.
     * Debounces then diffs current vs known .bsp JSON files to classify events. */
-  private def onFileChanged(changedPaths: Set[Path]): Unit =
-    debounceTimer.schedule(new TimerTask {
-      override def run(): Unit = classifyBspEvents(changedPaths)
-    }, debounceMs)
+  private def onFileChanged(changedPaths: Set[os.Path]): Unit =
+    logger.info(s"File watcher detected ${changedPaths.size} change(s): ${changedPaths.mkString(", ")}")
+    val changedBspFiles = changedPaths.filter(p => p.toString.contains(".bsp"))
+    if changedBspFiles.nonEmpty then
+      logger.info(s"Detected .bsp file change(s): ${changedBspFiles.mkString(", ")}")
+      // classifyBspEvents(changedPaths)
+    
+    
 
   /** Compare current filesystem to knownBspFiles snapshot.
     * Runs on debounce timer thread — must touch only manager-owned state. */
-  private def classifyBspEvents(changed: Set[Path]): Unit = {
-    val current = BspDiscovery.findBspJsonFiles(workspaceRoot)
+  private def classifyBspEvents(changed: Set[os.Path]): Unit = {
+    val current = BspDiscovery.discover(workspaceRoot).map(_.path).toSet
     val newFiles     = current -- knownBspFiles
     val deletedFiles = knownBspFiles -- current
     val modifiedFiles = knownBspFiles.intersect(current).intersect(changed)
@@ -167,7 +186,7 @@ class BuildServerManager extends StrictLogging {
       for p <- deletedFiles do
         logger.info(s"BSP config deleted: $p")
         knownBspFiles -= p
-        detachConnection(BspConnectionId(p.toAbsolutePath.toString))
+        detachConnection(BspConnectionId(p.toString))
 
       for p <- newFiles do
         logger.info(s"New BSP config detected: $p")
@@ -177,7 +196,7 @@ class BuildServerManager extends StrictLogging {
       for p <- modifiedFiles do
         logger.info(s"BSP config modified: $p")
         BspDiscovery.parseSingleSpec(p).foreach: spec =>
-          val connId = BspConnectionId(spec.path.toAbsolutePath.toString)
+          val connId = BspConnectionId(spec.path.toString)
           reloadConnection(connId, spec)
     }
   }
@@ -188,7 +207,6 @@ class BuildServerManager extends StrictLogging {
   def shutdown(): Unit =
     // Stop watcher first so no new connections spawned during shutdown
     if watcher != null then watcher.stop()
-    if debounceTimer != null then debounceTimer.cancel()
 
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)

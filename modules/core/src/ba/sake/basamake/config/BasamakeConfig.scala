@@ -1,6 +1,5 @@
 package ba.sake.basamake.config
 
-import java.nio.file.{Files, Path}
 import ba.sake.tupson.{given, *}
 
 /** Per-.bsp-file override. bspFile is relative path from workspace root. */
@@ -18,11 +17,11 @@ final case class BasamakeConfig(
 object BasamakeConfig:
 
   /** Load config from .basamake/config.json if present, otherwise defaults (allow all). */
-  def load(workspaceRoot: Path): BasamakeConfig =
-    val configPath = workspaceRoot.resolve(".basamake").resolve("config.json")
-    if Files.isRegularFile(configPath) then
+  def load(workspaceRoot: os.Path): BasamakeConfig =
+    val configPath = workspaceRoot / ".basamake/config.json"
+    if os.isFile(configPath) then
       try
-        val raw = Files.readString(configPath)
+        val raw = os.read(configPath)
         raw.parseJson[BasamakeConfig]
       catch
         case e: Exception =>
