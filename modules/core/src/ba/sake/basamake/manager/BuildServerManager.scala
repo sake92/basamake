@@ -63,7 +63,10 @@ class BuildServerManager extends StrictLogging {
 
   /** Apply per-.bsp-file overrides. Returns None if the connection is disabled. */
   private def applyOverrides(spec: BspConnectionSpec): Option[BspConnectionSpec] =
-    val relPath = workspaceRoot.subRelativeTo(spec.path).toString
+    // Try to relativize the .bsp json path relative to workspace root.
+    // Fall back to absolute path string if os-lib can't relativize.
+    val relPath = try workspaceRoot.subRelativeTo(spec.path).toString
+      catch case _: Exception => spec.path.toString
     config.bspOverrides.find(_.bspFile == relPath) match
       case Some(ov) if !ov.enabled =>
         logger.info(s"BSP connection $relPath is disabled by override")
