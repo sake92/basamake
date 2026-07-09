@@ -9,8 +9,7 @@ import java.util.concurrent.BlockingQueue
 import scala.jdk.CollectionConverters.*
 
 object BspConnectionSupervisor extends StrictLogging:
-  private val MaxAttempts = 10
-  private val MaxBackoffMs = 30000L
+  private val MaxCrashRetries = 1  // one retry per crash sequence
   private val HandshakeTimeoutSec = 20L
 
   def supervise(
@@ -237,34 +236,31 @@ object BspConnectionSupervisor extends StrictLogging:
   // ---- Backoff ----
 
   private def transitionToBackoff(durable: DurableRecord): Unit =
-    // Don't overwrite Detached or Failed — shutdown() may have set Detached
-    // during a Scope failure, and backoff must not resurrect the connection.
     if durable.currentState == BspConnectionState.Detached
         || durable.currentState == BspConnectionState.Failed
     then return
+
     durable.attemptCounter += 1
-    if durable.attemptCounter >= MaxAttempts then
+    if durable.attemptCounter > MaxCrashRetries then
       durable.currentState = BspConnectionState.Failed
       logger.error(
-        s"Connection ${durable.bspFile.path} reached max attempts (${durable.attemptCounter})"
+        s"Connection ${durable.bspFile.path} failed after ${durable.attemptCounter} consecutive crash(es)"
       )
     else
       durable.currentState = BspConnectionState.BackoffWait
       logger.info(
-        s"Connection ${durable.bspFile.path} → BackoffWait (attempt ${durable.attemptCounter})"
+        s"Connection ${durable.bspFile.path} crashed → BackoffWait, will retry (${durable.attemptCounter}/${MaxCrashRetries})"
       )
 
   private def backoffSleep(
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage]
   ): Unit =
-    val delay = math.min(
-      1000L * (1L << (durable.attemptCounter - 1)),
-      MaxBackoffMs
-    )
-    logger.info(s"Backing off for ${delay}ms")
-    val msg = queue.poll(delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+    val delayMs = 1000L  // fixed 1 second
+    logger.info(s"Backing off for ${delayMs}ms (attempt ${durable.attemptCounter})")
+    val msg = queue.poll(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
     if durable.currentState == BspConnectionState.Detached then return
+
     msg match
       case ConnectionMessage.ReloadRequested(newSpec) =>
         durable.bspFile = newSpec
