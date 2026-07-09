@@ -1,7 +1,7 @@
 package ba.sake.basamake.bsp
 
 import ba.sake.basamake.core.*
-import ba.sake.basamake.bsp.{BspConnectionFile, BspDiscoveryFile, BspConnectionState}
+import ba.sake.basamake.bsp.{BspDiscoveryFile, BspConnectionState}
 
 class StateMachineTest extends munit.FunSuite:
   test("backoff increments") {
