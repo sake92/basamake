@@ -11,6 +11,8 @@ import scala.jdk.CollectionConverters.*
 object BspConnectionSupervisor extends StrictLogging:
   private val MaxCrashRetries = 1  // one retry per crash sequence
   private val HandshakeTimeoutSec = 20L
+  private val HealthTtlSec = 30L
+  private val HealthProbeTimeoutSec = 3L
 
   def supervise(
       durable: DurableRecord,
@@ -104,9 +106,33 @@ object BspConnectionSupervisor extends StrictLogging:
         dispatch(msg, durable, lspClient, buildServer, targets)
 
       try
+        var lastSuccessfulResponse = java.lang.System.currentTimeMillis()
+
         while durable.currentState == BspConnectionState.Connected do
-          val msg = queue.take()
-          dispatch(msg, durable, lspClient, buildServer, targets)
+          val msg = queue.poll(HealthTtlSec, java.util.concurrent.TimeUnit.SECONDS)
+
+          if msg == null then
+            if !probeHealth(buildServer) then
+              logger.warn("Health probe failed on idle timeout — backing off")
+              transitionToBackoff(durable)
+          else
+            val now = java.lang.System.currentTimeMillis()
+            val stale = (now - lastSuccessfulResponse) > HealthTtlSec * 1000
+            if stale && !probeHealth(buildServer) then
+              logger.warn("Health probe failed — re-queuing message and backing off")
+              transitionToBackoff(durable)
+              if durable.currentState != BspConnectionState.Detached then
+                queue.offer(msg)
+            else
+              try
+                dispatch(msg, durable, lspClient, buildServer, targets)
+                lastSuccessfulResponse = now
+              catch
+                case e: Exception =>
+                  logger.error(s"Dispatch failed: ${e.getMessage}", e)
+                  transitionToBackoff(durable)
+                  if durable.currentState != BspConnectionState.Detached then
+                    queue.offer(msg)
       finally
         destroyProcess(process)
         durable.bspProcess = None
@@ -270,6 +296,21 @@ object BspConnectionSupervisor extends StrictLogging:
       case _ =>
         if durable.currentState == BspConnectionState.Detached then return
         durable.currentState = BspConnectionState.Spawning
+
+  private def probeHealth(buildServer: ch.epfl.scala.bsp4j.BuildServer): Boolean =
+    try
+      logger.debug("Sending health probe (workspaceBuildTargets)...")
+      buildServer.workspaceBuildTargets()
+        .get(HealthProbeTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      logger.debug("Health probe succeeded")
+      true
+    catch
+      case _: java.util.concurrent.TimeoutException =>
+        logger.warn("Health probe timed out")
+        false
+      case e: Exception =>
+        logger.warn(s"Health probe failed: ${e.getMessage}")
+        false
 
   /** Extract source directory URIs from a SourcesResult.
     * Only directory-kind sources are used for prefix-based routing. */
