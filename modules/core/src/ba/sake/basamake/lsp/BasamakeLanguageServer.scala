@@ -94,7 +94,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     if !isInitialized then
       logger.warn(s"Not initialized, dropping message for $uri")
       return
-    try manager.route(uri).foreach(_.offer(msg))
+    try manager.route(uri).foreach(_.put(msg))
     catch case e: Exception => logger.error(s"Failed to route message for $uri", e)
 
   // ---- Unsupported M3/M4 methods — return empty results ----

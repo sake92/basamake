@@ -3,7 +3,7 @@ package ba.sake.basamake.manager
 import ba.sake.basamake.core.*
 import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
 import ba.sake.basamake.config.BasamakeConfig
-import ba.sake.basamake.routing.RoutingTable
+import ba.sake.basamake.routing.BspRouter
 import ba.sake.basamake.watcher.FileChangeWatcher
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.PublishDiagnosticsParams
@@ -25,7 +25,7 @@ class BuildServerManager extends StrictLogging {
   private var client: LanguageClient = uninitialized
   private var workspaceRoot: os.Path = uninitialized
   private var config: BasamakeConfig = uninitialized
-  private val routingTable = RoutingTable.empty
+  private val router = BspRouter()
   private var watcher: FileChangeWatcher = uninitialized
   private var knownBspFiles: Set[os.Path] = Set.empty
   private val debounceMs = 300L
@@ -39,7 +39,7 @@ class BuildServerManager extends StrictLogging {
     if bspSpecs.isEmpty then
       logger.warn(s"No .bsp JSON files discovered under $workspaceRoot. No BSP connections will be established.")
     else
-      logger.info(s"Discovered BSP specs:\n${bspSpecs.mkString("\n")}")
+      logger.info(s"Discovered ${bspSpecs.size} BSP(s) — connections set up lazily (no processes started)")
     // Snapshot initial .bsp JSON files for change detection
     knownBspFiles = bspSpecs.map(_.path).toSet
 
@@ -77,7 +77,7 @@ class BuildServerManager extends StrictLogging {
 
   /** Create a durable record, queue, and VT for a new connection spec. */
   private def attachConnection(bspSpec: BspConnectionSpec): Unit = try {
-    logger.info(s"Attaching BSP connection for ${bspSpec.path} (${bspSpec.content.name})")
+    logger.info(s"Attaching (lazy) BSP connection for ${bspSpec.path} (${bspSpec.content.name})")
     val id = BspConnectionId(bspSpec.path.toString)
     val record = DurableRecord(
       bspFile = bspSpec,
@@ -88,10 +88,13 @@ class BuildServerManager extends StrictLogging {
     val queue = new LinkedBlockingQueue[ConnectionMessage]()
     connections(id) = ConnectionContext(record, queue)
 
+    val bspDir = bspSpec.path.toNIO.getParent
+    router.registerBspRoot(bspDir, Set(id))
+
     val routingCallback = (targets: List[ch.epfl.scala.bsp4j.BuildTarget],
                            sources: ch.epfl.scala.bsp4j.SourcesResult) =>
       val dirs = BspConnectionSupervisor.extractSourceDirs(sources)
-      routingTable.update(id, dirs)
+      router.registerGroundTruth(id, dirs)
       logger.info(s"Routing updated for $id: ${dirs.size} source dirs")
       dirs.foreach(d => logger.debug(s"  $d"))
 
@@ -123,7 +126,9 @@ class BuildServerManager extends StrictLogging {
         ctx.record.lastKnownDiagnostics = Map.empty
 
         // Remove from routing and connections
-        routingTable.remove(connId)
+        router.unregisterGroundTruth(connId)
+        val bspDir = ctx.record.bspFile.path.toNIO.getParent
+        router.unregisterBspRoot(bspDir)
         connections -= connId
         logger.info(s"Connection $connId detached")
 
@@ -145,19 +150,16 @@ class BuildServerManager extends StrictLogging {
 
   /** Route a document URI to the owning connection's queue via longest-prefix matching. */
   def route(uri: String): Option[BlockingQueue[ConnectionMessage]] =
-    routingTable.lookup(uri) match
+    router.route(uri) match
       case Some(connId) =>
-        connections.get(connId) match
-          case Some(ctx) => Some(ctx.queue)
+        connections.get(connId).map(_.queue) match
+          case some @ Some(_) => some
           case None =>
-            logger.warn(s"Connection $connId not found for $uri")
+            logger.warn(s"Connection $connId not found in connections map")
             None
       case None =>
-        connections.values.headOption.map(_.queue) match
-          case Some(value) => Some(value)
-          case None =>
-            logger.warn(s"No connection found for $uri. Probably the BSP process is still starting up.")
-            None
+        logger.debug(s"No BSP found for $uri")
+        None
         
 
   // ---- File watcher → BSP event classification ----
