@@ -4,6 +4,7 @@ import ba.sake.basamake.core.*
 import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionFile}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.routing.RoutingTable
+import ba.sake.basamake.watcher.BspFileWatcher
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.services.LanguageClient
@@ -24,6 +25,8 @@ class BuildServerManager extends StrictLogging {
   private var workspaceRoot: Path = uninitialized
   private var config: BasamakeConfig = uninitialized
   private val routingTable = RoutingTable.empty
+  private var watcher: BspFileWatcher = uninitialized
+  private var watcherThread: Thread = uninitialized
 
   def initialize(workspaceRoot: Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -35,6 +38,19 @@ class BuildServerManager extends StrictLogging {
 
     for bspFile <- bspFiles do
       applyOverrides(bspFile).foreach(attachConnection)
+
+    // Start file watcher for live attach/detach/reload
+    watcher = BspFileWatcher(
+      workspaceRoot,
+      onAttach = spec => applyOverrides(spec).foreach(attachConnection),
+      onDetach = path => detachConnection(BspConnectionId(path.toAbsolutePath.toString)),
+      onReload = spec => {
+        val connId = BspConnectionId(spec.path.toAbsolutePath.toString)
+        reloadConnection(connId, spec)
+      }
+    )
+    watcherThread = Thread.ofVirtual().start(() => watcher.start())
+    logger.info("File watcher started")
   }
 
   /** Apply per-.bsp-file overrides. Returns None if the connection is disabled. */
@@ -128,8 +144,12 @@ class BuildServerManager extends StrictLogging {
           throw IllegalStateException("No BSP connections available. Is the workspace initialized?")
         )
 
-  /** Graceful shutdown: detach all connections. */
+  /** Graceful shutdown: stop watcher, detach all connections. */
   def shutdown(): Unit =
+    // Stop watcher first so no new connections spawned during shutdown
+    if watcher != null then watcher.stop()
+    if watcherThread != null then watcherThread.interrupt()
+
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)
     logger.info("All connections detached")
