@@ -167,12 +167,13 @@ class BuildServerManager extends StrictLogging {
   /** Generic callback from FileChangeWatcher — fires on os-lib's internal threads.
     * Debounces then diffs current vs known .bsp JSON files to classify events. */
   private def onFileChanged(changedPaths: Set[os.Path]): Unit =
-    logger.info(s"File watcher detected ${changedPaths.size} change(s): ${changedPaths.mkString(", ")}")
-    val changedBspFiles = changedPaths.filter(p => p.toString.contains(".bsp"))
+    val changedBspFiles = changedPaths.filter(p => p.segments.toSeq.contains(".bsp"))
     if changedBspFiles.nonEmpty then
-      logger.info(s"Detected .bsp file change(s): ${changedBspFiles.mkString(", ")}")
-      // classifyBspEvents(changedPaths)
-    
+      logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
+      // Flush bootstrap cache — routes will re-walk on next query
+      router.invalidateBootstrapCache()
+      // Classify create/delete/modify and react (attach/detach/reload)
+      classifyBspEvents(changedPaths)
     
 
   /** Compare current filesystem to knownBspFiles snapshot.
