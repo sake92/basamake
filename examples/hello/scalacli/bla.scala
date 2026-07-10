@@ -1,4 +1,4 @@
 //> using scala 3.7
 
 @main def bla(): Unit =
-  println("Hello, Basamake!") - gdfgdfsdf
+  println("Hello, Basamake!") fdsf

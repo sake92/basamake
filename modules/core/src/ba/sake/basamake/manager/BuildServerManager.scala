@@ -35,6 +35,10 @@ class BuildServerManager extends StrictLogging {
   private var knownBspFiles: Set[os.Path] = Set.empty
   private val openUris = mutable.Set.empty[String]
   private val debounceMs = 300L
+  private val debounceTimer = new Timer("basamake-bsp-watcher-debounce", true)
+  private val debounceLock = Object()
+  private var pendingBspChanges: Set[os.Path] = Set.empty
+  private var pendingDebounceTask: Option[TimerTask] = None
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -212,23 +216,42 @@ class BuildServerManager extends StrictLogging {
       val changedBspFiles = watchedChangedPaths.filter(_.segments.toSeq.contains(".bsp"))
       if changedBspFiles.nonEmpty then
         logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
-        // TODO make invalidation more granular
-        router.invalidateBootstrapCache()
-        handleBspChanges(watchedChangedPaths)
+        enqueueBspChangeBatch(changedBspFiles)
     }
   }
-    
+
+  private def enqueueBspChangeBatch(changedBspFiles: Set[os.Path]): Unit =
+    debounceLock.synchronized {
+      pendingBspChanges = pendingBspChanges ++ changedBspFiles
+      pendingDebounceTask.foreach(_.cancel())
+
+      val task = new TimerTask {
+        override def run(): Unit =
+          val batch = debounceLock.synchronized {
+            val toHandle = pendingBspChanges
+            pendingBspChanges = Set.empty
+            pendingDebounceTask = None
+            toHandle
+          }
+          if batch.nonEmpty then
+            // TODO make invalidation more granular
+            router.invalidateBootstrapCache()
+            handleBspChanges(batch)
+      }
+
+      pendingDebounceTask = Some(task)
+      debounceTimer.schedule(task, debounceMs)
+    }
 
   /** Compare current filesystem to knownBspFiles snapshot.
     * Runs on debounce timer thread — must touch only manager-owned state. */
   private def handleBspChanges(changed: Set[os.Path]): Unit = {
-    val current       = BspDiscovery.discover(workspaceRoot).map(_.path).toSet
-    val newFiles      = current -- knownBspFiles
-    val deletedFiles  = knownBspFiles -- current
-    val modifiedFiles = knownBspFiles.intersect(current).intersect(changed)
-    val hadTopologyChange = newFiles.nonEmpty || deletedFiles.nonEmpty || modifiedFiles.nonEmpty
-
     synchronized {
+      val current = BspDiscovery.discover(workspaceRoot).map(_.path).toSet
+      val (newFiles, deletedFiles, modifiedFiles) =
+        BuildServerManager.classifyBspChanges(knownBspFiles, current, changed)
+      val hadTopologyChange = newFiles.nonEmpty || deletedFiles.nonEmpty || modifiedFiles.nonEmpty
+
       // Deletions first — clean state before potential re-adds
       for p <- deletedFiles do
         logger.info(s"BSP config deleted: $p")
@@ -267,6 +290,12 @@ class BuildServerManager extends StrictLogging {
   def shutdown(): Unit =
     // Stop watcher first so no new connections spawned during shutdown
     if watcher != null then watcher.stop()
+    debounceLock.synchronized {
+      pendingDebounceTask.foreach(_.cancel())
+      pendingDebounceTask = None
+      pendingBspChanges = Set.empty
+    }
+    debounceTimer.cancel()
 
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)
@@ -287,3 +316,14 @@ class BuildServerManager extends StrictLogging {
           p.destroyForcibly()
         ctx.record.bspProcess = None
 }
+
+object BuildServerManager:
+  private[manager] def classifyBspChanges(
+      known: Set[os.Path],
+      current: Set[os.Path],
+      changed: Set[os.Path]
+  ): (Set[os.Path], Set[os.Path], Set[os.Path]) =
+    val newFiles = current -- known
+    val deletedFiles = known -- current
+    val modifiedFiles = known.intersect(current).intersect(changed)
+    (newFiles, deletedFiles, modifiedFiles)

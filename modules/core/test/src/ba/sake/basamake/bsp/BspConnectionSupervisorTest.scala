@@ -25,3 +25,24 @@ class BspConnectionSupervisorTest extends FunSuite:
     val selected = BspConnectionSupervisor.targetIdsForUri(uri, targetToSourceRoots)
     assertEquals(selected.toSet, Set("target://scripts-dir", "target://single-file"))
   }
+
+  test("targetIdsForUri matches even when source roots use file:/ and uri uses file:///") {
+    val uri = "file:///ws/sbt/src/main/scala/Main.scala"
+    val targetToSourceRoots = Map(
+      "target://sbt-main" -> List("file:/ws/sbt/src/main/scala/")
+    )
+
+    val selected = BspConnectionSupervisor.targetIdsForUri(uri, targetToSourceRoots)
+    assertEquals(selected, List("target://sbt-main"))
+  }
+
+  test("selectCompileTargetIds falls back to all connection targets when lookup misses") {
+    val uri = "file:///ws/sbt/src/main/scala/Main.scala"
+    val selected = BspConnectionSupervisor.selectCompileTargetIds(
+      uri = uri,
+      targetToSourceRoots = Map.empty,
+      allTargetIds = List("target://sbt-main", "target://sbt-test")
+    )
+
+    assertEquals(selected.toSet, Set("target://sbt-main", "target://sbt-test"))
+  }

@@ -4,8 +4,4 @@
 
 def msg = "I was compiled by Scala 3. :)"
 
-fs
-? f
-fs
-
-fsf
+fdsf

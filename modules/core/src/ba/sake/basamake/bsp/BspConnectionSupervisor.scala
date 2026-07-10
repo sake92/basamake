@@ -184,12 +184,7 @@ object BspConnectionSupervisor extends StrictLogging {
       targetToSourceRoots: Map[String, List[String]],
       allTargetIds: List[String]
   ): Unit = {
-    val targetIds = targetIdsForUri(uri, targetToSourceRoots) match
-      case Nil if allTargetIds.size == 1 => allTargetIds
-      case Nil =>
-        logger.warn(s"No matching BSP targets for $uri")
-        Nil
-      case matches => matches
+    val targetIds = selectCompileTargetIds(uri, targetToSourceRoots, allTargetIds)
 
     if targetIds.isEmpty then return
     logger.info(s"Compile triggered for $uri")
@@ -229,9 +224,26 @@ object BspConnectionSupervisor extends StrictLogging {
       case (targetId, roots) if roots.exists(matchesSourceRoot(uri, _)) => targetId
     }
 
+  private[bsp] def selectCompileTargetIds(
+      uri: String,
+      targetToSourceRoots: Map[String, List[String]],
+      allTargetIds: List[String]
+  ): List[String] =
+    targetIdsForUri(uri, targetToSourceRoots) match
+      case Nil if allTargetIds.nonEmpty =>
+        logger.warn(s"No matching BSP targets for $uri, falling back to all connection targets")
+        allTargetIds
+      case matches => matches
+
+  private def normalizeFileUri(u: String): String =
+    try java.nio.file.Path.of(java.net.URI.create(u)).toUri.toString
+    catch case _: Exception => u
+
   private def matchesSourceRoot(uri: String, sourceRoot: String): Boolean =
-    if sourceRoot.endsWith("/") then uri.startsWith(sourceRoot)
-    else uri == sourceRoot || uri.startsWith(s"$sourceRoot/")
+    val normalizedUri = normalizeFileUri(uri)
+    val normalizedSourceRoot = normalizeFileUri(sourceRoot)
+    if normalizedSourceRoot.endsWith("/") then normalizedUri.startsWith(normalizedSourceRoot)
+    else normalizedUri == normalizedSourceRoot || normalizedUri.startsWith(s"$normalizedSourceRoot/")
 
   // ---- Diagnostics ----
   private def handleDiagnostics(
