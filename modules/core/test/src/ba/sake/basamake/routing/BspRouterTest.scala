@@ -64,7 +64,7 @@ class BspRouterTest extends FunSuite:
       val subDir = Files.createDirectories(root.resolve("x/y"))
       val _ = router.route(subDir.resolve("test.scala").toUri.toString)
       router.invalidateBootstrapCache()
-      router.unregisterBspRoot(bspDir.toRealPath())
+      router.unregisterBspRoot(bspDir.toRealPath(), connId)
 
       assertEquals(router.route(subDir.resolve("test.scala").toUri.toString), None,
         "After cache invalidation + root removal, should find nothing")
@@ -85,4 +85,23 @@ class BspRouterTest extends FunSuite:
       val srcDir = Files.createDirectories(subProjectDir.resolve("src"))
       val fileUri = srcDir.resolve("SubTest.scala").toUri.toString
       assertEquals(router.route(fileUri), Some(subConn), "Nearest .bsp (sub/) should win")
+  }
+
+  test("unregistering one connection keeps other connections from same .bsp root") {
+    withTempDir: root =>
+      val bspDir = Files.createDirectory(root.resolve(".bsp"))
+      val connA = BspConnectionId("conn-a")
+      val connB = BspConnectionId("conn-b")
+      val router = BspRouter()
+      router.registerBspRoot(bspDir.toRealPath(), Set(connA))
+      router.registerBspRoot(bspDir.toRealPath(), Set(connB))
+
+      val srcDir = Files.createDirectories(root.resolve("src"))
+      val fileUri = srcDir.resolve("A.scala").toUri.toString
+      val _ = router.route(fileUri)
+
+      router.unregisterBspRoot(bspDir.toRealPath(), connA)
+      router.invalidateBootstrapCache()
+
+      assertEquals(router.route(fileUri), Some(connB))
   }

@@ -90,6 +90,8 @@ object BspConnectionSupervisor extends StrictLogging {
       val process     = result.process
       val buildServer = result.buildServer
       val targets     = result.targets.getTargets.asScala.toList
+      val allTargetIds = targets.map(_.getId.getUri)
+      val targetSourceRootsById = targetToSourceRoots(result.sources)
 
       durable.currentState = BspConnectionState.Connected
       durable.attemptCounter = 0
@@ -100,7 +102,7 @@ object BspConnectionSupervisor extends StrictLogging {
 
       triggerMsg.foreach { msg =>
         logger.debug(s"Dispatching trigger message: ${msg.getClass.getSimpleName}")
-        dispatch(msg, durable, lspClient, buildServer, targets)
+        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds)
       }
 
       try {
@@ -121,7 +123,7 @@ object BspConnectionSupervisor extends StrictLogging {
                 queue.offer(msg) // re-queue the message for next attempt
             else
               try
-                dispatch(msg, durable, lspClient, buildServer, targets)
+                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds)
                 lastSuccessfulResponse = now
               catch
                 case e: Exception =>
@@ -146,7 +148,8 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       lspClient: LanguageClient,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
-      targets: List[ch.epfl.scala.bsp4j.BuildTarget]
+      targetToSourceRoots: Map[String, List[String]],
+      allTargetIds: List[String]
   ): Unit = 
     msg match {
       case ConnectionMessage.ProcessExited =>
@@ -159,14 +162,16 @@ object BspConnectionSupervisor extends StrictLogging {
       case ConnectionMessage.BspPublishDiagnostics(params) =>
         handleDiagnostics(params, durable, lspClient)
       case ConnectionMessage.DidOpen(params) =>
-        triggerCompile(params.getTextDocument.getUri, buildServer, targets)
+        triggerCompile(params.getTextDocument.getUri, buildServer, targetToSourceRoots, allTargetIds)
       case ConnectionMessage.DidChange(_) =>
         ()
       case ConnectionMessage.DidSave(params) =>
         logger.info(s"didSave: ${params.getTextDocument.getUri}")
-        triggerCompile(params.getTextDocument.getUri, buildServer, targets)
+        triggerCompile(params.getTextDocument.getUri, buildServer, targetToSourceRoots, allTargetIds)
       case ConnectionMessage.DidClose(_) =>
         ()
+      case ConnectionMessage.RecheckUri(uri) =>
+        triggerCompile(uri, buildServer, targetToSourceRoots, allTargetIds)
       case ConnectionMessage.Shutdown =>
         logger.info("Received shutdown poison pill")
         durable.currentState = BspConnectionState.Detached
@@ -176,13 +181,21 @@ object BspConnectionSupervisor extends StrictLogging {
   private def triggerCompile(
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
-      targets: List[ch.epfl.scala.bsp4j.BuildTarget]
+      targetToSourceRoots: Map[String, List[String]],
+      allTargetIds: List[String]
   ): Unit = {
-    if targets.isEmpty then return
+    val targetIds = targetIdsForUri(uri, targetToSourceRoots) match
+      case Nil if allTargetIds.size == 1 => allTargetIds
+      case Nil =>
+        logger.warn(s"No matching BSP targets for $uri")
+        Nil
+      case matches => matches
+
+    if targetIds.isEmpty then return
     logger.info(s"Compile triggered for $uri")
     try
       val params = new ch.epfl.scala.bsp4j.CompileParams(
-        targets.map(_.getId).asJava
+        targetIds.map(id => new ch.epfl.scala.bsp4j.BuildTargetIdentifier(id)).asJava
       )
       buildServer.buildTargetCompile(params).get()
       logger.info(s"Compile completed for $uri")
@@ -190,6 +203,35 @@ object BspConnectionSupervisor extends StrictLogging {
       case e: Exception =>
         logger.error(s"Compile failed for $uri", e)
   }
+
+  private def targetToSourceRoots(sources: SourcesResult): Map[String, List[String]] =
+    sources.getItems.asScala.toList.map { item =>
+      val targetId = item.getTarget.getUri
+      val roots = Option(item.getSources)
+        .map(_.asScala.toList)
+        .getOrElse(Nil)
+        .filterNot(_.getGenerated)
+        .collect {
+          case si if si.getKind == SourceItemKind.DIRECTORY => ensureTrailingSlash(si.getUri)
+          case si if si.getKind == SourceItemKind.FILE      => si.getUri
+        }
+      targetId -> roots
+    }.toMap
+
+  private def ensureTrailingSlash(uri: String): String =
+    if uri.endsWith("/") then uri else s"$uri/"
+
+  private[bsp] def targetIdsForUri(
+      uri: String,
+      targetToSourceRoots: Map[String, List[String]]
+  ): List[String] =
+    targetToSourceRoots.toList.collect {
+      case (targetId, roots) if roots.exists(matchesSourceRoot(uri, _)) => targetId
+    }
+
+  private def matchesSourceRoot(uri: String, sourceRoot: String): Boolean =
+    if sourceRoot.endsWith("/") then uri.startsWith(sourceRoot)
+    else uri == sourceRoot || uri.startsWith(s"$sourceRoot/")
 
   // ---- Diagnostics ----
   private def handleDiagnostics(

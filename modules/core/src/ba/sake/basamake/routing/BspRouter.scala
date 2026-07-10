@@ -33,11 +33,17 @@ class BspRouter extends StrictLogging {
     logger.debug(s"Registered BSP root $canonical → ${bspRoots(canonical)}")
   }
 
-  /** Remove a .bsp root (all its connections detached). */
-  def unregisterBspRoot(bspDir: Path): Unit = {
+  /** Remove a connection from a .bsp root. Deletes the root only when it no longer owns any connection IDs. */
+  def unregisterBspRoot(bspDir: Path, connId: BspConnectionId): Unit = {
     val canonical = bspDir.toRealPath()
-    bspRoots = bspRoots - canonical
-    logger.debug(s"Unregistered BSP root $canonical")
+    bspRoots.get(canonical) match
+      case Some(connIds) =>
+        val updated = connIds - connId
+        if updated.nonEmpty then bspRoots = bspRoots + (canonical -> updated)
+        else bspRoots = bspRoots - canonical
+      case None => ()
+    bootstrapCache.clear()
+    logger.debug(s"Unregistered connection $connId from BSP root $canonical")
   }
 
   /** Register ground-truth source directories from a BSP handshake. */

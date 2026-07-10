@@ -33,6 +33,7 @@ class BuildServerManager extends StrictLogging {
   private val router = BspRouter()
   private var watcher: FileChangeWatcher = uninitialized
   private var knownBspFiles: Set[os.Path] = Set.empty
+  private val openUris = mutable.Set.empty[String]
   private val debounceMs = 300L
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
@@ -144,7 +145,7 @@ class BuildServerManager extends StrictLogging {
         // Remove from routing and connections
         router.unregisterGroundTruth(connId)
         val bspDir = ctx.record.bspFile.path.toNIO.getParent
-        router.unregisterBspRoot(bspDir)
+        router.unregisterBspRoot(bspDir, connId)
         connections -= connId
         logger.info(s"Connection $connId detached")
 
@@ -176,7 +177,14 @@ class BuildServerManager extends StrictLogging {
       case None =>
         logger.debug(s"No BSP found for $uri")
         None
-        
+
+  def trackDidOpen(uri: String): Unit = synchronized {
+    openUris += uri
+  }
+
+  def trackDidClose(uri: String): Unit = synchronized {
+    openUris -= uri
+  }
 
   // ---- File watcher → BSP event classification ----
   // TODO read gitignore..
@@ -218,6 +226,7 @@ class BuildServerManager extends StrictLogging {
     val newFiles      = current -- knownBspFiles
     val deletedFiles  = knownBspFiles -- current
     val modifiedFiles = knownBspFiles.intersect(current).intersect(changed)
+    val hadTopologyChange = newFiles.nonEmpty || deletedFiles.nonEmpty || modifiedFiles.nonEmpty
 
     synchronized {
       // Deletions first — clean state before potential re-adds
@@ -236,7 +245,20 @@ class BuildServerManager extends StrictLogging {
         BspDiscovery.parseSingleSpec(p).foreach: spec =>
           val connId = BspConnectionId(spec.path.toString)
           reloadConnection(connId, spec)
+
+      if hadTopologyChange then
+        replayOpenAndErroredUris()
     }
+  }
+
+  /** Re-dispatch compile triggers for currently open and currently errored files after BSP topology changes. */
+  private def replayOpenAndErroredUris(): Unit = {
+    val candidateUris =
+      openUris.toSet ++ connections.values.flatMap(_.record.lastKnownDiagnostics.keys)
+
+    for uri <- candidateUris do
+      router.route(uri).flatMap(connections.get).foreach: ctx =>
+        ctx.queue.offer(ConnectionMessage.RecheckUri(uri))
   }
 
   // ---- Lifecycle ----

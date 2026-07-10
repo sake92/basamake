@@ -15,6 +15,7 @@ object ConnectionMessage:
   final case class DidChange(params: DidChangeTextDocumentParams) extends ConnectionMessage
   final case class DidSave(params: DidSaveTextDocumentParams)     extends ConnectionMessage
   final case class DidClose(params: DidCloseTextDocumentParams)   extends ConnectionMessage
+  final case class RecheckUri(uri: String)                        extends ConnectionMessage
 
   // BSP-originated messages (via BasamakeBuildClient callback)
   final case class BspPublishDiagnostics(params: ch.epfl.scala.bsp4j.PublishDiagnosticsParams)
