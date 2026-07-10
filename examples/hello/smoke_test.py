@@ -3,8 +3,8 @@
 
 import subprocess, json, sys, time, threading, os
 
-JAR = os.path.expanduser("~") + "/projects/sake92/basamake/.worktrees/lazy-multibsp/.deder/out/core/assembly/out.jar"
-WORKSPACE = os.path.expanduser("~") + "/projects/sake92/basamake/.worktrees/lazy-multibsp/examples/hello"
+JAR = os.path.expanduser("~") + "/projects/sake92/basamake/.deder/out/core/assembly/out.jar"
+WORKSPACE = os.path.expanduser("~") + "/projects/sake92/basamake/examples/hello"
 
 def rpc_msg(msg):
     """Encode a JSON-RPC message with Content-Length header."""
