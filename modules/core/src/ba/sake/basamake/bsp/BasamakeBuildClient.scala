@@ -5,7 +5,7 @@ import com.typesafe.scalalogging.StrictLogging
 import ch.epfl.scala.bsp4j.*
 import java.util.concurrent.BlockingQueue
 
-/** Basamake BSP client — receives notifications from the build server. */
+/** Basamake BSP client. Receives notifications from the build server and forwards them to the queue. */
 class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends BuildClient, StrictLogging:
 
   override def onBuildPublishDiagnostics(params: PublishDiagnosticsParams): Unit =

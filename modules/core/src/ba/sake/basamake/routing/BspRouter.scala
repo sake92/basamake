@@ -14,6 +14,7 @@ import scala.collection.mutable
 class BspRouter extends StrictLogging {
 
   // Primary routing (ground truth)
+  // Maps connection ID → list of source directory URIs (from buildTarget/sources)
   private val routingTable: RoutingTable = RoutingTable.empty
 
   // Fallback routing (bootstrap heuristic)
@@ -60,7 +61,7 @@ class BspRouter extends StrictLogging {
     * Layer 2 (fallback): Bootstrap heuristic — walk up to nearest .bsp/ ancestor.
     * Returns None if no BSP found. */
   def route(uri: String): Option[BspConnectionId] =
-    routingTable.lookup(uri) match
+    routingTable.reverseLookup(uri) match
       case some @ Some(_) => some
       case None           => routeBootstrap(uri)
 

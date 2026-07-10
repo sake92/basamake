@@ -5,7 +5,7 @@ import ba.sake.basamake.bsp.{BspDiscoveryFile, BspConnectionState}
 
 class StateMachineTest extends munit.FunSuite:
   test("backoff increments") {
-    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd, os.pwd), 0, Map.empty, BspConnectionState.Idle)
+    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd), 0, Map.empty, BspConnectionState.Idle)
     r.attemptCounter += 1
     assertEquals(r.attemptCounter, 1)
   }
@@ -18,14 +18,14 @@ class StateMachineTest extends munit.FunSuite:
     assert(loop(BspConnectionState.Idle))
   }
   test("crash counter stops at 2") {
-    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd, os.pwd), 0, Map.empty, BspConnectionState.Idle)
+    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd), 0, Map.empty, BspConnectionState.Idle)
     r.attemptCounter = 1  // one crash
     r.attemptCounter += 1 // second crash
     assert(r.attemptCounter > 1, "2 consecutive crashes should exceed max retries")
   }
 
   test("crash counter resets on Connected") {
-    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd, os.pwd), 1, Map.empty, BspConnectionState.Idle)
+    val r = DurableRecord(BspConnectionSpec(BspDiscoveryFile("mybsp", List("e")), os.pwd), 1, Map.empty, BspConnectionState.Idle)
     r.currentState = BspConnectionState.Connected
     r.attemptCounter = 0  // simulate reset
     assertEquals(r.attemptCounter, 0)

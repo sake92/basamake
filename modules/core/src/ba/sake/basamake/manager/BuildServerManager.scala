@@ -1,26 +1,31 @@
 package ba.sake.basamake.manager
 
-import ba.sake.basamake.core.*
-import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
-import ba.sake.basamake.config.BasamakeConfig
-import ba.sake.basamake.routing.BspRouter
-import ba.sake.basamake.watcher.FileChangeWatcher
-import com.typesafe.scalalogging.StrictLogging
-import org.eclipse.lsp4j.PublishDiagnosticsParams
-import org.eclipse.lsp4j.services.LanguageClient
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
 import java.util.Timer
 import java.util.TimerTask
 import scala.collection.mutable
 import scala.compiletime.uninitialized
+import scala.jdk.CollectionConverters.*
+import com.typesafe.scalalogging.StrictLogging
+import org.eclipse.lsp4j.PublishDiagnosticsParams
+import org.eclipse.lsp4j.services.LanguageClient
+import ba.sake.basamake.core.*
+import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
+import ba.sake.basamake.config.BasamakeConfig
+import ba.sake.basamake.routing.BspRouter
+import ba.sake.basamake.watcher.FileChangeWatcher
+import ch.epfl.scala.bsp4j.SourcesResult
+import ch.epfl.scala.bsp4j.SourceItemKind
 
 private case class ConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage]
 )
 
-/** Manages BSP connections, including lifecycle, message routing, and shutdown. */
+/** Manages BSP connections in a workspace, including lifecycle, message routing, and shutdown. */
 class BuildServerManager extends StrictLogging {
+
+  // TODO check thread safety
   private val connections = mutable.LinkedHashMap[BspConnectionId, ConnectionContext]()
   private var client: LanguageClient = uninitialized
   private var workspaceRoot: os.Path = uninitialized
@@ -39,44 +44,49 @@ class BuildServerManager extends StrictLogging {
     if bspSpecs.isEmpty then
       logger.warn(s"No .bsp JSON files discovered under $workspaceRoot. No BSP connections will be established.")
     else
-      logger.info(s"Discovered ${bspSpecs.size} BSP(s) — connections set up lazily (no processes started)")
+      logger.info(s"Discovered ${bspSpecs.size} BSP(s) — connections set up lazily (no processes started yet)")
     // Snapshot initial .bsp JSON files for change detection
     knownBspFiles = bspSpecs.map(_.path).toSet
 
-    for bspSpec <- bspSpecs do
+    for bspSpec <- bspSpecs do {
       val overriddenSpec = applyOverrides(bspSpec)
       overriddenSpec.foreach(attachConnection)
+    }
 
-    // Start file watcher — generic, fires on ANY filesystem change
     watcher = FileChangeWatcher(workspaceRoot, onFileChanged,
-    filter = { p => 
-      val segments = p.segments.toSeq
-      segments.sliding(2).exists(_ == Seq(".basamake", "logs")) ||
-      segments.head == "target" ||
-      segments.head == ".deder" ||
-      segments.head == ".metals"
+    filter = { changedPath =>
+        val p = changedPath.relativeTo(workspaceRoot)
+        val segments = p.segments.toSeq
+        segments.sliding(2).exists(_ == Seq(".basamake", "logs")) ||
+        segments.head == "target" ||
+        segments.head == ".deder" ||
+        segments.head == ".metals"
       }
     )
     watcher.start()
     logger.debug(s"File watcher started for workspace $workspaceRoot")
   }
 
-  /** Apply per-.bsp-file overrides. Returns None if the connection is disabled. */
-  private def applyOverrides(spec: BspConnectionSpec): Option[BspConnectionSpec] =
+  /** Apply per .bsp file overrides. Returns None if the connection is disabled. */
+  private def applyOverrides(originalSpec: BspConnectionSpec): Option[BspConnectionSpec] = {
     // Try to relativize the .bsp json path relative to workspace root.
     // Fall back to absolute path string if os-lib can't relativize.
-    val relPath = try workspaceRoot.subRelativeTo(spec.path).toString
-      catch case _: Exception => spec.path.toString
-    config.bspOverrides.find(_.bspFile == relPath) match
-      case Some(ov) if !ov.enabled =>
-        logger.info(s"BSP connection $relPath is disabled by override")
-        None
+    val relPath = try originalSpec.path.relativeTo(workspaceRoot).toString
+      catch case _: Exception => originalSpec.path.toString
+    config.bspOverrides.find(_.bspFile == relPath) match {
       case Some(ov) =>
-        val merged = spec.copy(debounceMs = ov.debounceMs.getOrElse(spec.debounceMs))
-        logger.debug(s"Override applied for $relPath: debounceMs=${merged.debounceMs}")
-        Some(merged)
+        if ov.enabled then {
+          val merged = originalSpec.copy(debounceMs = ov.debounceMs.getOrElse(originalSpec.debounceMs))
+          logger.debug(s"Override applied for $relPath: debounceMs=${merged.debounceMs}")
+          Some(merged)
+        } else {
+          logger.info(s"BSP connection $relPath is disabled by override")
+          None
+        }
       case None =>
-        Some(spec)
+        Some(originalSpec)
+    }
+  }
 
   /** Create a durable record, queue, and VT for a new connection spec. */
   private def attachConnection(bspSpec: BspConnectionSpec): Unit = try {
@@ -95,20 +105,28 @@ class BuildServerManager extends StrictLogging {
     router.registerBspRoot(bspDir, Set(id))
 
     val routingCallback = (targets: List[ch.epfl.scala.bsp4j.BuildTarget],
-                           sources: ch.epfl.scala.bsp4j.SourcesResult) =>
-      val dirs = BspConnectionSupervisor.extractSourceDirs(sources)
+                           sources: ch.epfl.scala.bsp4j.SourcesResult) => {
+      val dirs = extractSourceDirs(sources)
       router.registerGroundTruth(id, dirs)
       logger.info(s"Routing updated for $id: ${dirs.size} source dirs")
       dirs.foreach(d => logger.debug(s"  $d"))
+    }
 
     val vt = Thread.ofVirtual().start(() =>
       BspConnectionSupervisor.supervise(record, queue, client, routingCallback)
     )
-    logger.info(s"Spawned supervisor for $id (${bspSpec.content.name}) on VT ${vt.threadId()}")
+    logger.info(s"Spawned supervisor thread for $id (${bspSpec.path})")
   } catch {
     case e: Exception =>
       logger.error(s"Failed to attach BSP connection for ${bspSpec.path}: ${e.getMessage}", e)
   }
+
+  private def extractSourceDirs(sources: SourcesResult): List[String] =
+    sources.getItems.asScala.toList.flatMap: item =>
+      Option(item.getSources).toList.flatMap(_.asScala).collect {
+        case si if si.getKind == SourceItemKind.DIRECTORY && !si.getGenerated =>
+          si.getUri
+      }
 
   /** Cleanly detach a connection: publish empty diagnostics, remove routing, kill process. */
   private def detachConnection(connId: BspConnectionId): Unit =

@@ -23,7 +23,7 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     this.client = client
 
   // ---- LanguageServer ----
-  override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] =
+  override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] = {
     workspaceRoot = Option(params.getRootUri) match
       case Some(uri) => os.Path(java.net.URI.create(uri))
       // TODO support multi-root workspaces
@@ -38,29 +38,34 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
+  }
 
-  override def initialized(params: InitializedParams): Unit =
+  override def initialized(params: InitializedParams): Unit = {
     logger.info("Initialized. Spawning BSP connections...")
     isInitialized = true
     val config = BasamakeConfig.load(workspaceRoot)
     logger.info(s"Config loaded with ${config.bspOverrides.size} override(s)")
     manager.initialize(workspaceRoot, client, config)
+  }
 
-  override def shutdown(): CompletableFuture[Object] =
-    logger.info("shutdown")
+  override def shutdown(): CompletableFuture[Object] = {
+    logger.info("starting shutdown...")
     manager.shutdown()
     CompletableFuture.completedFuture(null)
+  }
 
-  override def exit(): Unit =
-    logger.info("exit — terminating")
+  override def exit(): Unit = {
+    logger.info("exiting...")
     manager.shutdown()
     manager.killBspProcesses()
     sys.exit(0)
+  }
 
   /** Called after transport closes (stdin EOF) to clean up child BSP processes. */
-  def cleanup(): Unit =
+  def cleanup(): Unit = {
     manager.shutdown()
     manager.killBspProcesses()
+  }
 
   override def getTextDocumentService: TextDocumentService = this
 
@@ -70,35 +75,45 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
       override def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
 
   // ---- TextDocumentService ----
-
-  override def didOpen(params: DidOpenTextDocumentParams): Unit =
+  override def didOpen(params: DidOpenTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
     logger.debug(s"didOpen: $uri")
     offerToConnection(uri, ConnectionMessage.DidOpen(params))
+  }
 
-  override def didChange(params: DidChangeTextDocumentParams): Unit =
+  override def didChange(params: DidChangeTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
     offerToConnection(uri, ConnectionMessage.DidChange(params))
+  }
 
-  override def didSave(params: DidSaveTextDocumentParams): Unit =
+  override def didSave(params: DidSaveTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
     logger.debug(s"didSave: $uri")
     offerToConnection(uri, ConnectionMessage.DidSave(params))
+  }
 
-  override def didClose(params: DidCloseTextDocumentParams): Unit =
+  override def didClose(params: DidCloseTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
     logger.debug(s"didClose: $uri")
     offerToConnection(uri, ConnectionMessage.DidClose(params))
+  }
 
-  private def offerToConnection(uri: String, msg: ConnectionMessage): Unit =
+  private def offerToConnection(uri: String, msg: ConnectionMessage): Unit ={
     if !isInitialized then
       logger.warn(s"Not initialized, dropping message for $uri")
       return
-    try manager.route(uri).foreach(_.put(msg))
+    try manager.route(uri) match {
+      case Some(queue) =>
+        logger.debug(s"Offering message for $uri to BSP connection")
+        queue.offer(msg)
+      case None =>
+        logger.debug(s"No BSP connection found for $uri, dropping message")
+        // TODO reply with error to client? (e.g. publish diagnostics)
+    }
     catch case e: Exception => logger.error(s"Failed to route message for $uri", e)
+  }
 
   // ---- Unsupported M3/M4 methods — return empty results ----
-
   override def completion(params: CompletionParams)
       : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
         java.util.List[CompletionItem],

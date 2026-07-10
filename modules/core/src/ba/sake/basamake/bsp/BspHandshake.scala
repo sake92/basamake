@@ -1,9 +1,9 @@
 package ba.sake.basamake.bsp
 
-import ba.sake.basamake.core.*
+import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import ch.epfl.scala.bsp4j.*
-import scala.jdk.CollectionConverters.*
+import ba.sake.basamake.core.*
 
 final case class HandshakeResult(
     process: java.lang.Process,
@@ -16,8 +16,6 @@ object BspHandshake extends StrictLogging {
 
   // Straight-line blocking handshake on the calling virtual thread.
   // Errors propagate up to the supervisor for state transition.
-  // durable.bspProcess is set IMMEDIATELY after spawn, before any blocking calls,
-  // so killBspProcesses() can always find and destroy the child process.
   def execute(
       bspFile: BspConnectionSpec,
       queue: java.util.concurrent.BlockingQueue[ConnectionMessage],
@@ -32,7 +30,7 @@ object BspHandshake extends StrictLogging {
 
     val process = pb.start()
     durable.bspProcess = Some(process) // store IMMEDIATELY — killable even if handshake fails
-    logger.info(s"Spawned BSP process (pid ${process.pid()}) with argv: ${bspFile.content.argv.mkString(" ")}")
+    logger.info(s"BSP process spawned for ${bspFile.path} (pid ${process.pid()})")
 
     val buildClient = BasamakeBuildClient(queue)
 

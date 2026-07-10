@@ -1,5 +1,8 @@
 # AGENTS.md — Basamake LSP Server
 
+## Libraries
+- use os-lib for file paths, file watching
+
 ## Build & Test
 
 ```bash
@@ -33,7 +36,7 @@ Requires **JDK 24+** (JEP 491 unpins VTs on `synchronized`). Current env has JDK
 
 ## Code Style
 
-**Prefer curly braces `{}` over colon-syntax `:` for class/object/def bodies** longer than ~15 lines. Short bodies can keep the colon.
+**Prefer curly braces `{}` over colon-syntax `:` for class/object/def bodies** longer than ~10 lines. Short bodies can keep the colon.
 
 ```scala
 // Good — short body, colon is fine

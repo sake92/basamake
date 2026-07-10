@@ -1,5 +1,6 @@
 package ba.sake.basamake
 
+import java.io.PrintStream
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.launch.LSPLauncher
 import ba.sake.basamake.lsp.BasamakeLanguageServer
@@ -16,7 +17,7 @@ object Main extends StrictLogging {
     logger.info(s"Java: ${System.getProperty("java.version")}")
 
     // auto-flush LSP messages
-    val autoFlushOut = new java.io.PrintStream(System.out, true, "UTF-8")
+    val autoFlushOut = new PrintStream(System.out, true, "UTF-8")
     val server = BasamakeLanguageServer()
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
     server.connect(launcher.getRemoteProxy)

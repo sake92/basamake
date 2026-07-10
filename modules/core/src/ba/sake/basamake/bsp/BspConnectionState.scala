@@ -2,7 +2,7 @@ package ba.sake.basamake.bsp
 
 enum BspConnectionState:
   /** No process alive. Supervisor VT blocks on queue.take().
-    * First LSP command (DidOpen/DidSave/DidChange) triggers spawn. */
+    * First LSP command (DidOpen/DidSave/DidChange) triggers BSP process spawn. */
   case Idle
   /** Process is being spawned + BSP handshake in progress (blocking). */
   case Spawning

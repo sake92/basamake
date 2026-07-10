@@ -6,13 +6,16 @@ import org.eclipse.lsp4j.*
  * Pure-function diagnostics accumulator. Maintains per-URI, per-target diagnostic lists
  * with BSP reset semantics, and produces full LSP publish lists.
  */
-object DiagnosticsAccumulator:
+object DiagnosticsAccumulator {
 
-  /** Per-target diagnostic map: targetId → List[Diagnostic] */
+  /** targetId → List[Diagnostic] */
   type PerTarget = Map[String, List[Diagnostic]]
 
   /** Full accumulated state: URI → PerTarget */
   type State = Map[String, PerTarget]
+
+
+  val empty: State = Map.empty
 
   /**
    * Apply a BSP publish-diagnostics params to the accumulator.
@@ -33,9 +36,7 @@ object DiagnosticsAccumulator:
     val allDiags = updated.values.flatten.toList
     (newState, allDiags)
 
-  /** Clear diagnostics for a specific URI (used on clean detach). */
   def clearUri(state: State, uri: String): State =
     state - uri
 
-  /** Initial empty state. */
-  val empty: State = Map.empty
+}

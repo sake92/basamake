@@ -14,14 +14,12 @@ class FileChangeWatcher(
   private var watcher: AutoCloseable = scala.compiletime.uninitialized
 
   def start(): Unit =
+    // os.watch.watch spawns a daemon thread
     watcher = os.watch.watch(
       Seq(workspaceRoot),
       changed => onChanged(changed),
       filter = filter
     )
-    // os.watch.watch spawns internal daemon threads and returns immediately.
-    // The VT that called start() exits here — callbacks fire on os-lib threads.
 
   def stop(): Unit =
     if watcher != null then watcher.close()
-    // Internal os-lib watcher threads are daemon — they die with the JVM.
