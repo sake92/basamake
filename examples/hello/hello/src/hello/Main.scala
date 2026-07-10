@@ -10,4 +10,4 @@ object Main:
     val y = nonexistentFunction(x)
     println(y)
 
-?
+fdsf

@@ -56,14 +56,7 @@ class BuildServerManager extends StrictLogging {
     watcher = FileChangeWatcher(
       workspaceRoot,
       onFileChanged,
-      filter = { changedPath =>
-        val p = changedPath.relativeTo(workspaceRoot)
-        val segments = p.segments.toSeq
-        segments.sliding(2).exists(_ == Seq(".basamake", "logs")) ||
-        segments.head == "target" ||
-        segments.head == ".deder" ||
-        segments.head == ".metals"
-      }
+      filterOnCreated = !watchIgnored(_)
     )
     watcher.start()
     logger.debug(s"File watcher started for workspace $workspaceRoot")
@@ -186,17 +179,35 @@ class BuildServerManager extends StrictLogging {
         
 
   // ---- File watcher → BSP event classification ----
+  // TODO read gitignore..
+  private def watchIgnored(path: os.Path): Boolean =
+    val relative = try Some(path.relativeTo(workspaceRoot))
+      catch { case _: Exception => None }
+    relative match
+      case None => true                                   // non-workspace path
+      case Some(rel) if rel.segments.isEmpty => false     // root — always watch
+      case Some(rel) =>
+        val segments = rel.segments.toSeq
+        // Exclude build artifact / tool directories.
+        segments.sliding(2).exists(_.toSeq == Seq(".basamake", "logs")) ||
+          segments.head == "target" || // sbt, TODO recursive??
+          segments.head == "out" || // mill
+          segments.head == ".deder" ||
+          segments.head == ".metals"
 
   /** Generic callback from FileChangeWatcher — fires on os-lib's internal threads.
     * Debounces then diffs current vs known .bsp JSON files to classify events. */
   private def onFileChanged(changedPaths: Set[os.Path]): Unit = {
-    logger.debug(s"File watcher detected changes: ${changedPaths.mkString(", ")}")
-    val changedBspFiles = changedPaths.filter(p => p.segments.toSeq.contains(".bsp"))
-    if changedBspFiles.nonEmpty then
-      logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
-      // TODO make invalidation more granular
-      router.invalidateBootstrapCache()
-      handleBspChanges(changedPaths)
+    val watchedChangedPaths = changedPaths.filterNot(watchIgnored)
+    if watchedChangedPaths.nonEmpty then {
+      logger.debug(s"File watcher detected changes: ${watchedChangedPaths.mkString(", ")}")
+      val changedBspFiles = watchedChangedPaths.filter(_.segments.toSeq.contains(".bsp"))
+      if changedBspFiles.nonEmpty then
+        logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
+        // TODO make invalidation more granular
+        router.invalidateBootstrapCache()
+        handleBspChanges(watchedChangedPaths)
+    }
   }
     
 

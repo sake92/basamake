@@ -4,7 +4,7 @@
 deder bsp install
 
 cd scalaide
-scala setup-ide
+scala setup-ide .
 
 cd sbt
 sbt bspConfig

@@ -8,7 +8,7 @@ import com.typesafe.scalalogging.StrictLogging
 class FileChangeWatcher(
     workspaceRoot: os.Path,
     onChanged: Set[os.Path] => Unit,
-    filter: os.Path => Boolean = _ => true
+    filterOnCreated: os.Path => Boolean = _ => true
 ) extends StrictLogging:
 
   private var watcher: AutoCloseable = scala.compiletime.uninitialized
@@ -19,7 +19,7 @@ class FileChangeWatcher(
     watcher = os.watch.watch(
       Seq(workspaceRoot),
       changed => onChanged(changed),
-      filter = filter
+      filter = filterOnCreated // applies only to created files, not existing/modified or deleted files
     )
 
   def stop(): Unit =
