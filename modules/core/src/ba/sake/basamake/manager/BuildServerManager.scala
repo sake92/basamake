@@ -9,13 +9,13 @@ import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.services.LanguageClient
+import ch.epfl.scala.bsp4j.SourcesResult
+import ch.epfl.scala.bsp4j.SourceItemKind
 import ba.sake.basamake.core.*
 import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.routing.BspRouter
 import ba.sake.basamake.watcher.FileChangeWatcher
-import ch.epfl.scala.bsp4j.SourcesResult
-import ch.epfl.scala.bsp4j.SourceItemKind
 
 private case class ConnectionContext(
     record: DurableRecord,
@@ -53,8 +53,10 @@ class BuildServerManager extends StrictLogging {
       overriddenSpec.foreach(attachConnection)
     }
 
-    watcher = FileChangeWatcher(workspaceRoot, onFileChanged,
-    filter = { changedPath =>
+    watcher = FileChangeWatcher(
+      workspaceRoot,
+      onFileChanged,
+      filter = { changedPath =>
         val p = changedPath.relativeTo(workspaceRoot)
         val segments = p.segments.toSeq
         segments.sliding(2).exists(_ == Seq(".basamake", "logs")) ||
@@ -187,22 +189,23 @@ class BuildServerManager extends StrictLogging {
 
   /** Generic callback from FileChangeWatcher — fires on os-lib's internal threads.
     * Debounces then diffs current vs known .bsp JSON files to classify events. */
-  private def onFileChanged(changedPaths: Set[os.Path]): Unit =
+  private def onFileChanged(changedPaths: Set[os.Path]): Unit = {
+    logger.debug(s"File watcher detected changes: ${changedPaths.mkString(", ")}")
     val changedBspFiles = changedPaths.filter(p => p.segments.toSeq.contains(".bsp"))
     if changedBspFiles.nonEmpty then
       logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
-      // Flush bootstrap cache — routes will re-walk on next query
+      // TODO make invalidation more granular
       router.invalidateBootstrapCache()
-      // Classify create/delete/modify and react (attach/detach/reload)
-      classifyBspEvents(changedPaths)
+      handleBspChanges(changedPaths)
+  }
     
 
   /** Compare current filesystem to knownBspFiles snapshot.
     * Runs on debounce timer thread — must touch only manager-owned state. */
-  private def classifyBspEvents(changed: Set[os.Path]): Unit = {
-    val current = BspDiscovery.discover(workspaceRoot).map(_.path).toSet
-    val newFiles     = current -- knownBspFiles
-    val deletedFiles = knownBspFiles -- current
+  private def handleBspChanges(changed: Set[os.Path]): Unit = {
+    val current       = BspDiscovery.discover(workspaceRoot).map(_.path).toSet
+    val newFiles      = current -- knownBspFiles
+    val deletedFiles  = knownBspFiles -- current
     val modifiedFiles = knownBspFiles.intersect(current).intersect(changed)
 
     synchronized {

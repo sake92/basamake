@@ -14,6 +14,7 @@ class FileChangeWatcher(
   private var watcher: AutoCloseable = scala.compiletime.uninitialized
 
   def start(): Unit =
+    logger.info(s"Starting file watcher on $workspaceRoot")
     // os.watch.watch spawns a daemon thread
     watcher = os.watch.watch(
       Seq(workspaceRoot),

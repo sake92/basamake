@@ -56,7 +56,7 @@ object BspConnectionSupervisor extends StrictLogging {
         lspClient.showMessage(
           new MessageParams(
             MessageType.Error,
-            s"BSP connection failed after ${durable.attemptCounter} attempt(s)"
+            s"BSP connection to ${durable.bspFile.path} failed after ${durable.attemptCounter} attempt(s)"
           )
         )
         logger.error(s"Connection ${durable.bspFile.path} reached Failed state")
@@ -108,13 +108,13 @@ object BspConnectionSupervisor extends StrictLogging {
         while durable.currentState == BspConnectionState.Connected do
           val msg = queue.poll(HealthTtlSec, java.util.concurrent.TimeUnit.SECONDS)
           if msg == null then
-            if !probeHealth(buildServer) then
+            if !probeHealth(durable, buildServer) then
               logger.warn("Health probe failed on idle timeout — backing off")
               transitionToBackoff(durable)
           else {
             val now = java.lang.System.currentTimeMillis()
             val stale = (now - lastSuccessfulResponse) > HealthTtlSec * 1000
-            if stale && !probeHealth(buildServer) then
+            if stale && !probeHealth(durable, buildServer) then
               logger.warn("Health probe failed — re-queuing message and backing off")
               transitionToBackoff(durable)
               if durable.currentState != BspConnectionState.Detached then
@@ -291,9 +291,9 @@ object BspConnectionSupervisor extends StrictLogging {
         durable.currentState = BspConnectionState.Spawning
   }
 
-  private def probeHealth(buildServer: ch.epfl.scala.bsp4j.BuildServer): Boolean = {
+  private def probeHealth(durable: DurableRecord, buildServer: ch.epfl.scala.bsp4j.BuildServer): Boolean = {
     try
-      logger.debug("Sending health probe (workspaceBuildTargets)...")
+      logger.debug(s"Sending health probe for ${durable.bspFile.path} (workspaceBuildTargets)...")
       buildServer.workspaceBuildTargets()
         .get(HealthProbeTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("Health probe succeeded")
