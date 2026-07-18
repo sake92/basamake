@@ -1,6 +1,7 @@
 package ba.sake.basamake.lsp
 
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
@@ -11,12 +12,15 @@ import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.manager.BuildServerManager
 import ba.sake.basamake.util.LoggingUtils
 
-class BasamakeLanguageServer extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging:
+class BasamakeLanguageServer(
+    private val manager: BuildServerManager = BuildServerManager()
+) extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging:
 
-  private val manager = BuildServerManager()
   private var client: LanguageClient = uninitialized
   @volatile private var isInitialized = false
   private var workspaceRoot: os.Path = uninitialized
+  private val shutdownDone = AtomicBoolean(false)
+  private val killDone = AtomicBoolean(false)
 
   // ---- LanguageClientAware ----
   override def connect(client: LanguageClient): Unit =
@@ -50,22 +54,28 @@ class BasamakeLanguageServer extends LanguageServer, TextDocumentService, Langua
 
   override def shutdown(): CompletableFuture[Object] = {
     logger.info("starting shutdown...")
-    manager.shutdown()
+    ensureShutdown()
     CompletableFuture.completedFuture(null)
   }
 
   override def exit(): Unit = {
     logger.info("exiting...")
-    manager.shutdown()
-    manager.killBspProcesses()
+    ensureShutdown()
+    ensureKill()
     sys.exit(0)
   }
 
   /** Called after transport closes (stdin EOF) to clean up child BSP processes. */
   def cleanup(): Unit = {
-    manager.shutdown()
-    manager.killBspProcesses()
+    ensureShutdown()
+    ensureKill()
   }
+
+  private def ensureShutdown(): Unit =
+    if shutdownDone.compareAndSet(false, true) then manager.shutdown()
+
+  private def ensureKill(): Unit =
+    if killDone.compareAndSet(false, true) then manager.killBspProcesses()
 
   override def getTextDocumentService: TextDocumentService = this
 

@@ -144,6 +144,8 @@ class BuildServerManager extends StrictLogging {
         // Mark as Detached and send poison pill
         ctx.record.currentState = BspConnectionState.Detached
         ctx.queue.offer(ConnectionMessage.Shutdown)
+        ctx.record.bspProcess.foreach(BuildServerManager.terminateProcess)
+        ctx.record.bspProcess = None
         ctx.record.lastKnownDiagnostics = Map.empty
 
         // Remove from routing and connections
@@ -309,12 +311,10 @@ class BuildServerManager extends StrictLogging {
     killAllBspProcesses()
 
   private def killAllBspProcesses(): Unit =
-    connections.values.foreach: ctx =>
-      ctx.record.bspProcess.foreach: p =>
-        if p.isAlive then
-          logger.info(s"Force-killing BSP process ${p.pid()}")
-          p.destroyForcibly()
-        ctx.record.bspProcess = None
+    val processes = connections.values.flatMap(_.record.bspProcess).toList
+    val killed = BuildServerManager.terminateProcesses(processes)
+    if killed > 0 then logger.info(s"Force-killed $killed BSP process(es)")
+    connections.values.foreach(_.record.bspProcess = None)
 }
 
 object BuildServerManager:
@@ -327,3 +327,12 @@ object BuildServerManager:
     val deletedFiles = known -- current
     val modifiedFiles = known.intersect(current).intersect(changed)
     (newFiles, deletedFiles, modifiedFiles)
+
+  private[manager] def terminateProcess(process: java.lang.Process): Boolean =
+    if process != null && process.isAlive then
+      process.destroyForcibly()
+      true
+    else false
+
+  private[manager] def terminateProcesses(processes: Iterable[java.lang.Process]): Int =
+    processes.count(terminateProcess)
