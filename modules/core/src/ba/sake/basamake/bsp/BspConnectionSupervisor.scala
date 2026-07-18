@@ -184,7 +184,7 @@ object BspConnectionSupervisor extends StrictLogging {
       targetToSourceRoots: Map[String, List[String]],
       allTargetIds: List[String]
   ): Unit = {
-    val targetIds = selectCompileTargetIds(uri, targetToSourceRoots, allTargetIds)
+    val targetIds = selectCompileTargetIds(uri, buildServer, targetToSourceRoots, allTargetIds)
 
     if targetIds.isEmpty then return
     logger.info(s"Compile triggered for $uri")
@@ -226,14 +226,41 @@ object BspConnectionSupervisor extends StrictLogging {
 
   private[bsp] def selectCompileTargetIds(
       uri: String,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
       targetToSourceRoots: Map[String, List[String]],
       allTargetIds: List[String]
   ): List[String] =
-    targetIdsForUri(uri, targetToSourceRoots) match
-      case Nil if allTargetIds.nonEmpty =>
-        logger.warn(s"No matching BSP targets for $uri, falling back to all connection targets")
-        allTargetIds
-      case matches => matches
+    // 1. Best: exact file→target mapping via BSP inverseSources
+    val inverseTargets = tryInverseSources(uri, buildServer)
+    if inverseTargets.nonEmpty then return inverseTargets
+
+    // 2. Good: directory-level source-root matching (no BSP call, from handshake cache)
+    val rootMatches = targetIdsForUri(uri, targetToSourceRoots)
+    if rootMatches.nonEmpty then rootMatches
+    // 3. Last resort: compile everything
+    else if allTargetIds.nonEmpty then
+      logger.warn(s"No matching BSP targets for $uri (inverseSources+sourceRoots both failed), falling back to all connection targets")
+      allTargetIds
+    else Nil
+
+  /** Ask the BSP server which targets contain `uri`.
+    * Returns Nil if the call fails or inverseSources is unsupported — caller falls back. */
+  private def tryInverseSources(
+      uri: String,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer
+  ): List[String] =
+    if buildServer == null then return Nil // test path, or build server not yet connected
+    try
+      val params = new ch.epfl.scala.bsp4j.InverseSourcesParams(
+        new ch.epfl.scala.bsp4j.TextDocumentIdentifier(uri)
+      )
+      val result = buildServer.buildTargetInverseSources(params)
+        .get(5, java.util.concurrent.TimeUnit.SECONDS)
+      result.getTargets.asScala.map(_.getUri).toList
+    catch
+      case e: Exception =>
+        logger.debug(s"inverseSources failed for $uri (${e.getMessage}), falling back")
+        Nil
 
   private def normalizeFileUri(u: String): String =
     try java.nio.file.Path.of(java.net.URI.create(u)).toUri.toString

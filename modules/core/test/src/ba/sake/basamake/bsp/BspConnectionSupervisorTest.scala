@@ -40,6 +40,7 @@ class BspConnectionSupervisorTest extends FunSuite:
     val uri = "file:///ws/sbt/src/main/scala/Main.scala"
     val selected = BspConnectionSupervisor.selectCompileTargetIds(
       uri = uri,
+      buildServer = null,
       targetToSourceRoots = Map.empty,
       allTargetIds = List("target://sbt-main", "target://sbt-test")
     )
