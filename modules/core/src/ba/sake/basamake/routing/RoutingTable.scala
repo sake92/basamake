@@ -21,9 +21,19 @@ final class RoutingTable private (private var entries: Map[BspConnectionId, List
   /** Finds the owning connection for a URI via longest-prefix match.
     * @return Some(connId) if a connection owns this URI, None if no connection owns this URI. */
   def reverseLookup(uri: String): Option[BspConnectionId] = synchronized {
-    entries.flatMap { (connId, dirs) =>
+    reverseLookupCandidates(uri).headOption
+  }
+
+  /** Finds all owning connections that tie for the longest matching prefix. */
+  def reverseLookupCandidates(uri: String): List[BspConnectionId] = synchronized {
+    val matches = entries.toList.flatMap { (connId, dirs) =>
       dirs.collect { case dir if uri.startsWith(dir) => (dir.length, connId) }
-    }.maxByOption(_._1).map(_._2)
+    }
+    matches.maxByOption(_._1) match
+      case Some((bestLen, _)) =>
+        matches.collect { case (`bestLen`, connId) => connId }.distinct
+      case None =>
+        Nil
   }
 
   def lookup(connId: BspConnectionId): Set[String] = synchronized {

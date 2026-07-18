@@ -105,3 +105,23 @@ class BspRouterTest extends FunSuite:
 
       assertEquals(router.route(fileUri), Some(connB))
   }
+
+  test("ground-truth overlap tie-break prefers nearest BSP root ancestor") {
+    withTempDir: root =>
+      val rootBspDir = Files.createDirectory(root.resolve(".bsp"))
+      val subProjectDir = Files.createDirectories(root.resolve("sbt"))
+      val subBspDir = Files.createDirectory(subProjectDir.resolve(".bsp"))
+
+      val rootConn = BspConnectionId("root-conn")
+      val subConn = BspConnectionId("sub-conn")
+      val router = BspRouter()
+      router.registerBspRoot(rootBspDir.toRealPath(), Set(rootConn))
+      router.registerBspRoot(subBspDir.toRealPath(), Set(subConn))
+
+      val sharedSource = List(root.toUri.toString)
+      router.registerGroundTruth(rootConn, sharedSource)
+      router.registerGroundTruth(subConn, sharedSource)
+
+      val fileUri = subProjectDir.resolve("src/main/scala/Main.scala").toUri.toString
+      assertEquals(router.route(fileUri), Some(subConn))
+  }

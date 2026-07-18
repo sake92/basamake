@@ -18,7 +18,8 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
-      onRoutingReady: (List[BuildTarget], SourcesResult) => Unit
+      onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult) => Unit,
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit = (_, _) => ()
   ): Unit = {
     logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle — no process)")
 
@@ -35,9 +36,9 @@ object BspConnectionSupervisor extends StrictLogging {
               durable.bspFile = newSpec
             case _ =>
               logger.info(s"Idle -> Spawning (triggered by ${msg.getClass.getSimpleName})")
-              transitionToRunning(durable, queue, lspClient, onRoutingReady, Some(msg))
+              transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, Some(msg))
         case BspConnectionState.Reloading =>
-          transitionToRunning(durable, queue, lspClient, onRoutingReady, None)
+          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, None)
         case BspConnectionState.BackoffWait =>
           backoffSleep(durable, queue)
         case BspConnectionState.Spawning | BspConnectionState.Handshaking =>
@@ -79,7 +80,8 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
-      onRoutingReady: (List[BuildTarget], SourcesResult) => Unit,
+      onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult) => Unit,
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit,
       triggerMsg: Option[ConnectionMessage]
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
@@ -97,12 +99,12 @@ object BspConnectionSupervisor extends StrictLogging {
       durable.attemptCounter = 0
       logger.info(s"Connected with ${durable.bspFile.path} (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
 
-      try onRoutingReady(targets, result.sources)
+      try onRoutingReady(buildServer, targets, result.sources)
       catch case e: Exception => logger.error(s"Failed to announce routing info", e)
 
       triggerMsg.foreach { msg =>
         logger.debug(s"Dispatching trigger message: ${msg.getClass.getSimpleName}")
-        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds)
+        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess)
       }
 
       try {
@@ -123,7 +125,7 @@ object BspConnectionSupervisor extends StrictLogging {
                 queue.offer(msg) // re-queue the message for next attempt
             else
               try
-                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds)
+                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess)
                 lastSuccessfulResponse = now
               catch
                 case e: Exception =>
@@ -149,7 +151,8 @@ object BspConnectionSupervisor extends StrictLogging {
       lspClient: LanguageClient,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
       targetToSourceRoots: Map[String, List[String]],
-      allTargetIds: List[String]
+      allTargetIds: List[String],
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit
   ): Unit = 
     msg match {
       case ConnectionMessage.ProcessExited =>
@@ -162,16 +165,28 @@ object BspConnectionSupervisor extends StrictLogging {
       case ConnectionMessage.BspPublishDiagnostics(params) =>
         handleDiagnostics(params, durable, lspClient)
       case ConnectionMessage.DidOpen(params) =>
-        triggerCompile(params.getTextDocument.getUri, buildServer, targetToSourceRoots, allTargetIds)
+        triggerCompile(
+          params.getTextDocument.getUri,
+          buildServer,
+          targetToSourceRoots,
+          allTargetIds,
+          onCompileSuccess
+        )
       case ConnectionMessage.DidChange(_) =>
         ()
       case ConnectionMessage.DidSave(params) =>
         logger.info(s"didSave: ${params.getTextDocument.getUri}")
-        triggerCompile(params.getTextDocument.getUri, buildServer, targetToSourceRoots, allTargetIds)
+        triggerCompile(
+          params.getTextDocument.getUri,
+          buildServer,
+          targetToSourceRoots,
+          allTargetIds,
+          onCompileSuccess
+        )
       case ConnectionMessage.DidClose(_) =>
         ()
       case ConnectionMessage.RecheckUri(uri) =>
-        triggerCompile(uri, buildServer, targetToSourceRoots, allTargetIds)
+        triggerCompile(uri, buildServer, targetToSourceRoots, allTargetIds, onCompileSuccess)
       case ConnectionMessage.Shutdown =>
         logger.info("Received shutdown poison pill")
         durable.currentState = BspConnectionState.Detached
@@ -182,7 +197,8 @@ object BspConnectionSupervisor extends StrictLogging {
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
       targetToSourceRoots: Map[String, List[String]],
-      allTargetIds: List[String]
+      allTargetIds: List[String],
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit
   ): Unit = {
     val targetIds = selectCompileTargetIds(uri, buildServer, targetToSourceRoots, allTargetIds)
 
@@ -192,8 +208,12 @@ object BspConnectionSupervisor extends StrictLogging {
       val params = new ch.epfl.scala.bsp4j.CompileParams(
         targetIds.map(id => new ch.epfl.scala.bsp4j.BuildTargetIdentifier(id)).asJava
       )
-      buildServer.buildTargetCompile(params).get()
-      logger.info(s"Compile completed for $uri")
+      val result = buildServer.buildTargetCompile(params).get()
+      logger.info(s"Compile completed for $uri with status ${result.getStatusCode}")
+      if result.getStatusCode == ch.epfl.scala.bsp4j.StatusCode.OK then
+        try onCompileSuccess(buildServer, targetIds)
+        catch case e: Exception =>
+          logger.warn(s"SemanticDB refresh failed after compile for $uri: ${e.getMessage}")
     catch
       case e: Exception =>
         logger.error(s"Compile failed for $uri", e)

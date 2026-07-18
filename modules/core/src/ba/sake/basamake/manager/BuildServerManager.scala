@@ -7,7 +7,8 @@ import scala.collection.mutable
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
-import org.eclipse.lsp4j.PublishDiagnosticsParams
+import org.eclipse.lsp4j.{DocumentSymbol, Location, Position, PublishDiagnosticsParams, SymbolInformation}
+import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
 import ch.epfl.scala.bsp4j.SourcesResult
 import ch.epfl.scala.bsp4j.SourceItemKind
@@ -15,11 +16,14 @@ import ba.sake.basamake.core.*
 import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.routing.BspRouter
+import ba.sake.basamake.navigation.SemanticdbNavigationIndex
 import ba.sake.basamake.watcher.FileChangeWatcher
 
 private case class ConnectionContext(
     record: DurableRecord,
-    queue: BlockingQueue[ConnectionMessage]
+    queue: BlockingQueue[ConnectionMessage],
+    navIndex: SemanticdbNavigationIndex,
+    var sourceRootsByTarget: Map[String, List[String]] = Map.empty
 )
 
 /** Manages BSP connections in a workspace, including lifecycle, message routing, and shutdown. */
@@ -99,21 +103,28 @@ class BuildServerManager extends StrictLogging {
       currentState = BspConnectionState.Idle
     )
     val queue = new LinkedBlockingQueue[ConnectionMessage]()
-    connections(id) = ConnectionContext(record, queue)
+    val ctx = ConnectionContext(record, queue, SemanticdbNavigationIndex())
+    connections(id) = ctx
 
     val bspDir = bspSpec.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
 
-    val routingCallback = (targets: List[ch.epfl.scala.bsp4j.BuildTarget],
+    val routingCallback = (buildServer: ch.epfl.scala.bsp4j.BuildServer,
+                           targets: List[ch.epfl.scala.bsp4j.BuildTarget],
                            sources: ch.epfl.scala.bsp4j.SourcesResult) => {
       val dirs = extractSourceDirs(sources)
+      ctx.sourceRootsByTarget = extractTargetSourceRoots(sources)
       router.registerGroundTruth(id, dirs)
       logger.info(s"Routing updated for $id: ${dirs.size} source dirs")
       dirs.foreach(d => logger.debug(s"  $d"))
+      refreshNavigationIndex(id, buildServer, targets.map(_.getId.getUri))
     }
 
+    val compileCallback = (buildServer: ch.epfl.scala.bsp4j.BuildServer, targetIds: List[String]) =>
+      refreshNavigationIndex(id, buildServer, targetIds)
+
     val vt = Thread.ofVirtual().start(() =>
-      BspConnectionSupervisor.supervise(record, queue, client, routingCallback)
+      BspConnectionSupervisor.supervise(record, queue, client, routingCallback, compileCallback)
     )
     logger.info(s"Spawned supervisor thread for $id (${bspSpec.path})")
   } catch {
@@ -127,6 +138,17 @@ class BuildServerManager extends StrictLogging {
         case si if si.getKind == SourceItemKind.DIRECTORY && !si.getGenerated =>
           si.getUri
       }
+
+  private def extractTargetSourceRoots(sources: SourcesResult): Map[String, List[String]] =
+    sources.getItems.asScala.toList.flatMap { item =>
+      Option(item.getTarget).map(_.getUri -> extractSourceDirsForItem(item))
+    }.toMap
+
+  private def extractSourceDirsForItem(item: ch.epfl.scala.bsp4j.SourcesItem): List[String] =
+    Option(item.getSources).toList.flatMap(_.asScala).collect {
+      case si if si.getKind == SourceItemKind.DIRECTORY && !si.getGenerated =>
+        si.getUri
+    }
 
   /** Cleanly detach a connection: publish empty diagnostics, remove routing, kill process. */
   private def detachConnection(connId: BspConnectionId): Unit =
@@ -152,6 +174,7 @@ class BuildServerManager extends StrictLogging {
         router.unregisterGroundTruth(connId)
         val bspDir = ctx.record.bspFile.path.toNIO.getParent
         router.unregisterBspRoot(bspDir, connId)
+        ctx.navIndex.clear()
         connections -= connId
         logger.info(s"Connection $connId detached")
 
@@ -183,6 +206,24 @@ class BuildServerManager extends StrictLogging {
       case None =>
         logger.debug(s"No BSP found for $uri")
         None
+
+  def definition(uri: String, position: Position): List[Location] = synchronized {
+    val result = connectionForUri(uri).toList.flatMap(_.navIndex.definition(uri, position))
+    logger.debug(s"definition uri=$uri line=${position.getLine} ch=${position.getCharacter} hits=${result.size}")
+    result
+  }
+
+  def references(uri: String, position: Position): List[Location] = synchronized {
+    val result = connectionForUri(uri).toList.flatMap(_.navIndex.references(uri, position))
+    logger.debug(s"references uri=$uri line=${position.getLine} ch=${position.getCharacter} hits=${result.size}")
+    result
+  }
+
+  def documentSymbols(uri: String): List[Either[SymbolInformation, DocumentSymbol]] = synchronized {
+    val result = connectionForUri(uri).toList.flatMap(_.navIndex.documentSymbols(uri))
+    logger.debug(s"documentSymbols uri=$uri hits=${result.size}")
+    result
+  }
 
   def trackDidOpen(uri: String): Unit = synchronized {
     openUris += uri
@@ -315,6 +356,24 @@ class BuildServerManager extends StrictLogging {
     val killed = BuildServerManager.terminateProcesses(processes)
     if killed > 0 then logger.info(s"Force-killed $killed BSP process(es)")
     connections.values.foreach(_.record.bspProcess = None)
+
+  private def connectionForUri(uri: String): Option[ConnectionContext] =
+    router.route(uri).flatMap(connections.get)
+
+  private def refreshNavigationIndex(
+      connId: BspConnectionId,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      targetIds: List[String]
+  ): Unit =
+    connections.get(connId) match
+      case Some(ctx) if targetIds.nonEmpty && ctx.sourceRootsByTarget.nonEmpty =>
+        try
+          ctx.navIndex.refresh(workspaceRoot, buildServer, targetIds, ctx.sourceRootsByTarget)
+          logger.debug(s"SemanticDB refresh conn=$connId targets=${targetIds.size} sourceRoots=${ctx.sourceRootsByTarget.size}")
+        catch case e: Exception =>
+          logger.warn(s"SemanticDB refresh failed for $connId: ${e.getMessage}")
+      case Some(_) => ()
+      case None    => ()
 }
 
 object BuildServerManager:

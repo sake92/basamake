@@ -11,7 +11,7 @@ object BspDiscovery extends StrictLogging:
     val jsonFiles = findBspJsonFiles(workspaceRoot)
     if jsonFiles.isEmpty then
       logger.warn(s"No .bsp directories found under $workspaceRoot")
-    jsonFiles.toList.flatMap(parseBspSpec)
+    jsonFiles.toList.sortBy(_.toString).flatMap(parseBspSpec)
 
   /** Parse a single .bsp JSON file. Public for the file watcher. */
   def parseSingleSpec(jsonPath: os.Path): Option[BspConnectionSpec] =

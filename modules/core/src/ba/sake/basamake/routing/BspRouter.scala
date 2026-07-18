@@ -66,15 +66,19 @@ class BspRouter extends StrictLogging {
     * Layer 1 (primary): RoutingTable longest-prefix match.
     * Layer 2 (fallback): Bootstrap heuristic — walk up to nearest .bsp/ ancestor.
     * Returns None if no BSP found. */
-  def route(uri: String): Option[BspConnectionId] =
-    routingTable.reverseLookup(uri) match
-      case some @ Some(_) => some
-      case None           => routeBootstrap(uri)
+  def route(uri: String): Option[BspConnectionId] = {
+    val filePath = uriToPath(uri)
+    val candidates = routingTable.reverseLookupCandidates(uri)
+    candidates match
+      case Nil          => routeBootstrap(uri, Some(filePath))
+      case connId :: Nil => Some(connId)
+      case many         => tieBreakByNearestBspRoot(filePath, many).orElse(many.sortBy(_.value).headOption)
+  }
 
   /** Walk up from the file's parent directory to find the nearest registered .bsp root.
     * Results are cached per directory — subsequent lookups in the same tree skip the walk. */
-  private def routeBootstrap(uri: String): Option[BspConnectionId] = {
-    val filePath = uriToPath(uri)
+  private def routeBootstrap(uri: String, knownPath: Option[Path] = None): Option[BspConnectionId] = {
+    val filePath = knownPath.getOrElse(uriToPath(uri))
     var dir = filePath.getParent
     if dir == null then return None
 
@@ -102,8 +106,24 @@ class BspRouter extends StrictLogging {
     // Cache result for all visited directories
     for v <- visited do bootstrapCache(v) = found
 
-    // Return first connection ID if any found
-    found.flatMap(_.headOption)
+    // Return deterministic connection ID if any found
+    found.flatMap(_.toList.sortBy(_.value).headOption)
+  }
+
+  private def tieBreakByNearestBspRoot(filePath: Path, candidates: List[BspConnectionId]): Option[BspConnectionId] = {
+    val candidateSet = candidates.toSet
+    var dir = filePath.getParent
+    while dir != null do
+      val bspSubdir = dir.resolve(".bsp")
+      try
+        val canonical = bspSubdir.toRealPath()
+        bspRoots.get(canonical).map(_.intersect(candidateSet)) match
+          case Some(overlap) if overlap.nonEmpty =>
+            return overlap.toList.sortBy(_.value).headOption
+          case _ => ()
+      catch case _: java.nio.file.NoSuchFileException => ()
+      dir = if dir.getParent != null && dir.getParent != dir then dir.getParent else null
+    None
   }
 
   /** Convert a file:// URI to a java.nio.file.Path. */

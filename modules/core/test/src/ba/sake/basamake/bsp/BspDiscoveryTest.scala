@@ -26,6 +26,24 @@ class BspDiscoveryTest extends FunSuite:
       deleteRecursively(tmp)
   }
 
+  test("discover returns deterministic path order") {
+    val tmp = os.temp.dir(prefix = "basamake-test")
+    try
+      val zBsp = tmp / "z/.bsp"
+      os.makeDir.all(zBsp)
+      os.write(zBsp / "z.json", """{"name":"z","argv":["z","bsp"]}""")
+
+      val aBsp = tmp / "a/.bsp"
+      os.makeDir.all(aBsp)
+      os.write(aBsp / "a.json", """{"name":"a","argv":["a","bsp"]}""")
+
+      val results = BspDiscovery.discover(tmp)
+      val paths = results.map(_.path.toString)
+      assertEquals(paths, paths.sorted)
+    finally
+      deleteRecursively(tmp)
+  }
+
   test("parseSingleSpec returns None for non-json files") {
     val tmp = os.temp.dir(prefix = "basamake-test")
     try

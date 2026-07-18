@@ -41,6 +41,9 @@ class BasamakeLanguageServer(
 
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
+    capabilities.setDefinitionProvider(true)
+    capabilities.setReferencesProvider(true)
+    capabilities.setDocumentSymbolProvider(true)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
@@ -144,12 +147,14 @@ class BasamakeLanguageServer(
       ]] =
     CompletableFuture.completedFuture(
       org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(
-        java.util.Collections.emptyList[Location]()
+        manager.definition(params.getTextDocument.getUri, params.getPosition).asJava
       )
     )
 
   override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
-    CompletableFuture.completedFuture(java.util.Collections.emptyList[Location]())
+    CompletableFuture.completedFuture(
+      manager.references(params.getTextDocument.getUri, params.getPosition).asJava
+    )
 
   override def hover(params: HoverParams): CompletableFuture[Hover] =
     CompletableFuture.completedFuture(null)
@@ -158,7 +163,9 @@ class BasamakeLanguageServer(
       : CompletableFuture[
         java.util.List[org.eclipse.lsp4j.jsonrpc.messages.Either[SymbolInformation, DocumentSymbol]]
       ] =
-    CompletableFuture.completedFuture(java.util.Collections.emptyList())
+    CompletableFuture.completedFuture(
+      manager.documentSymbols(params.getTextDocument.getUri).asJava
+    )
 
   override def signatureHelp(params: SignatureHelpParams): CompletableFuture[SignatureHelp] =
     CompletableFuture.completedFuture(null)
