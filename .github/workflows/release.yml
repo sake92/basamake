@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '24'
+
+      - uses: coursier/cache-action@v7
+
+      - name: Set Homebrew env
+        shell: bash
+        run: echo "HOMEBREW_NO_SANDBOX_LINUX=1" >> $GITHUB_ENV
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Install deder
+        run: brew install sake92/tap/deder
+
+      - name: Run tests
+        run: deder exec -t test -m core-test
+
+      - name: Build assembly JAR
+        run: deder exec -t assembly -m core
+
+      - name: Prepare artifact
+        run: |
+          cp .deder/out/core/assembly/out.jar basamake.jar
+          ls -lh basamake.jar
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: basamake.jar
+          generate_release_notes: true
