@@ -19,7 +19,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   private val sourceUri = (workspaceRoot / "bla.scala").toNIO.toUri.toString
   private val targetId = "target://bla"
 
-  private def buildServerWith(options: List[String]): BuildServer =
+  private def buildServerWith(options: List[String], dependencySourceUris: List[String] = Nil): BuildServer =
     val handler = new InvocationHandler {
       override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef =
         method.getName match
@@ -49,6 +49,17 @@ class SemanticdbNavigationIndexTest extends FunSuite {
                 ).asJava
               )
             )
+          case "buildTargetDependencySources" =>
+            CompletableFuture.completedFuture(
+              new DependencySourcesResult(
+                List(
+                  new DependencySourcesItem(
+                    new BuildTargetIdentifier(targetId),
+                    dependencySourceUris.asJava
+                  )
+                ).asJava
+              )
+            )
           case "toString" => "semanticdb-test-build-server"
           case _          => throw new UnsupportedOperationException(method.getName)
     }
@@ -61,13 +72,14 @@ class SemanticdbNavigationIndexTest extends FunSuite {
       )
       .asInstanceOf[BuildServer]
 
-  private def refreshWith(options: List[String]): SemanticdbNavigationIndex =
+  private def refreshWith(options: List[String], dependencySourceUris: List[String] = Nil): SemanticdbNavigationIndex =
     val index = new SemanticdbNavigationIndex()
     index.refresh(
       workspaceRoot,
-      buildServerWith(options),
+      buildServerWith(options, dependencySourceUris),
       List(targetId),
-      Map(targetId -> List(workspaceRoot.toNIO.toUri.toString))
+      Map(targetId -> List(workspaceRoot.toNIO.toUri.toString)),
+      Map(targetId -> dependencySourceUris)
     )
     index
 
@@ -103,6 +115,164 @@ class SemanticdbNavigationIndexTest extends FunSuite {
     val defLocs = index.definition(sourceUri, new Position(2, 10))
     assert(defLocs.nonEmpty)
     assertEquals(defLocs.head.getUri, sourceUri)
+  }
+
+  test("dependency source jar indexes definitions") {
+    val tmp = os.temp.dir(prefix = "nav-depsrc")
+    try
+      val depRoot = workspaceRoot / ".basamake" / "dependency-sources"
+      if os.exists(depRoot) then os.remove.all(depRoot)
+      val jarPath = tmp / "upickle-sources.jar"
+      val entryContent =
+        "object upickle { def name: String = \"upickle\" }"
+      val jarFile = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(jarPath.toIO))
+      try
+        val entry = new java.util.zip.ZipEntry("upickle.scala")
+        jarFile.putNextEntry(entry)
+        jarFile.write(entryContent.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        jarFile.closeEntry()
+      finally jarFile.close()
+
+      val jarUri = s"jar:${jarPath.toNIO.toUri.toString}!/upickle.scala"
+      val index = refreshWith(List("-deprecation"), List(jarUri))
+      val extracted = os.walk(depRoot).find(_.last == "upickle.scala").get
+      val extractedUri = extracted.toNIO.toUri.toString
+      val defs = index.definition(extractedUri, new Position(0, 7))
+
+      assertEquals(defs.map(_.getUri), List(extractedUri))
+      assert(extracted.toString.matches(".*dependency-sources/[0-9a-f]{8}/upickle\\.scala$"))
+      assert(defs.forall(_.getUri.startsWith("file:")))
+    finally
+      os.remove.all(tmp)
+  }
+
+  test("dependency source jar extraction uses gav plus hash when maven path is present") {
+    val tmp = os.temp.dir(prefix = "nav-depsrc-gav")
+    try
+      val depRoot = workspaceRoot / ".basamake" / "dependency-sources"
+      if os.exists(depRoot) then os.remove.all(depRoot)
+      val jarPath = tmp / "maven2" / "com" / "lihaoyi" / "upickle_3" / "4.0.0" / "upickle_3-4.0.0-sources.jar"
+      os.makeDir.all(jarPath / os.up)
+      val jarFile = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(jarPath.toIO))
+      try
+        val entry = new java.util.zip.ZipEntry("upickle/Api.scala")
+        jarFile.putNextEntry(entry)
+        jarFile.write("object Api { def rw = 1 }".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        jarFile.closeEntry()
+      finally jarFile.close()
+
+      val jarUri = s"jar:${jarPath.toNIO.toUri.toString}!/upickle/Api.scala"
+      val index = refreshWith(List("-deprecation"), List(jarUri))
+      val extracted = os.walk(depRoot).find(_.last == "Api.scala").get
+      val extractedUri = extracted.toNIO.toUri.toString
+      val defs = index.definition(extractedUri, new Position(0, 8))
+
+      assert(defs.nonEmpty)
+      assertEquals(defs.head.getUri, extractedUri)
+      assert(extracted.toString.matches(".*dependency-sources/com\\.lihaoyi-upickle_3-4\\.0\\.0-[0-9a-f]{8}/upickle/Api\\.scala$"))
+    finally
+      os.remove.all(tmp)
+  }
+
+  test("dependency source jar resolves go-to-def from workspace symbol") {
+    val tmp = os.temp.dir(prefix = "nav-depsrc-link")
+    try
+      val mainPath = tmp / "Main.scala"
+      val depPath = tmp / "upickle.scala"
+      os.write(mainPath, "object Main { val x = upickle }")
+      os.write(depPath, "object upickle { def name: String = \"upickle\" }")
+      val workspaceUri = mainPath.toNIO.toUri.toString
+      val depUri = depPath.toNIO.toUri.toString
+      val defRange = new Range(new Position(0, 7), new Position(0, 14))
+      val callRange = new Range(new Position(0, 22), new Position(0, 29))
+
+      val index = new SemanticdbNavigationIndex()
+      index.setTargetSlicesForTest(
+        targetId,
+        Map(
+          workspaceUri ->
+            SemanticdbFileSlice(
+              sourceUri = workspaceUri,
+              occurrences = List(SemanticdbOccurrence("upickle", callRange, isDefinition = false)),
+              symbolDefinitions = Map("upickle" -> List(new Location(workspaceUri, callRange))),
+              symbolReferences = Map("upickle" -> List(new Location(workspaceUri, callRange))),
+              documentSymbols = Nil
+            )
+        )
+      )
+      index.setTargetDependencySlicesForTest(
+        targetId,
+        List(
+          SemanticdbFileSlice(
+            sourceUri = depUri,
+            occurrences = List(SemanticdbOccurrence("upickle", defRange, isDefinition = true)),
+            symbolDefinitions = Map("upickle" -> List(new Location(depUri, defRange))),
+            symbolReferences = Map.empty,
+            documentSymbols = Nil
+          )
+        )
+      )
+
+      val defs = index.definition(workspaceUri, new Position(0, 24))
+      assertEquals(defs.map(_.getUri), List(workspaceUri))
+    finally
+      os.remove.all(tmp)
+  }
+
+  test("dependency source order picks first hit") {
+    val tmp = os.temp.dir(prefix = "nav-depsrc-order")
+    try
+      val mainPath = tmp / "Main.scala"
+      os.write(mainPath, "object Main { val x = upickle }")
+      val workspaceUri = mainPath.toNIO.toUri.toString
+      val dep1Path = tmp / "lib1.scala"
+      val dep2Path = tmp / "lib2.scala"
+      os.write(dep1Path, "object upickle { def one = 1 }")
+      os.write(dep2Path, "object upickle { def two = 2 }")
+      val dep1 = dep1Path.toNIO.toUri.toString
+      val dep2 = dep2Path.toNIO.toUri.toString
+      val callRange = new Range(new Position(0, 22), new Position(0, 29))
+      val defRange1 = new Range(new Position(0, 7), new Position(0, 14))
+      val defRange2 = new Range(new Position(0, 7), new Position(0, 14))
+
+      val index = new SemanticdbNavigationIndex()
+      index.setTargetSlicesForTest(
+        targetId,
+        Map(
+          workspaceUri ->
+            SemanticdbFileSlice(
+              sourceUri = workspaceUri,
+              occurrences = List(SemanticdbOccurrence("upickle", callRange, isDefinition = false)),
+              symbolDefinitions = Map.empty,
+              symbolReferences = Map("upickle" -> List(new Location(workspaceUri, callRange))),
+              documentSymbols = Nil
+            )
+        )
+      )
+      index.setTargetDependencySlicesForTest(
+        targetId,
+        List(
+          SemanticdbFileSlice(
+            sourceUri = dep1,
+            occurrences = List(SemanticdbOccurrence("upickle", defRange1, isDefinition = true)),
+            symbolDefinitions = Map("upickle" -> List(new Location(dep1, defRange1))),
+            symbolReferences = Map.empty,
+            documentSymbols = Nil
+          ),
+          SemanticdbFileSlice(
+            sourceUri = dep2,
+            occurrences = List(SemanticdbOccurrence("upickle", defRange2, isDefinition = true)),
+            symbolDefinitions = Map("upickle" -> List(new Location(dep2, defRange2))),
+            symbolReferences = Map.empty,
+            documentSymbols = Nil
+          )
+        )
+      )
+      val defs = index.definition(workspaceUri, new Position(0, 24))
+      assertEquals(defs.map(_.getUri), List(dep1))
+      assertEquals(defs.map(_.getUri), List(dep1))
+    finally
+      os.remove.all(tmp)
   }
 
   test("resolveCandidates handles sbt-style relative source uris") {

@@ -9,7 +9,8 @@ final case class HandshakeResult(
     process: java.lang.Process,
     buildServer: BuildServer,
     targets: WorkspaceBuildTargetsResult,
-    sources: SourcesResult
+    sources: SourcesResult,
+    dependencySources: DependencySourcesResult
 )
 
 object BspHandshake extends StrictLogging {
@@ -72,6 +73,12 @@ object BspHandshake extends StrictLogging {
     val sourcesResult = buildServer.buildTargetSources(sourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
     logger.debug("buildTargetSources OK")
 
-    HandshakeResult(process, buildServer, targetsResult, sourcesResult)
+    logger.debug("Requesting buildTargetDependencySources...")
+    val dependencySourcesParams = new DependencySourcesParams(targetIds.asJava)
+    val dependencySourcesResult =
+      buildServer.buildTargetDependencySources(dependencySourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+    logger.debug("buildTargetDependencySources OK")
+
+    HandshakeResult(process, buildServer, targetsResult, sourcesResult, dependencySourcesResult)
   }
 }

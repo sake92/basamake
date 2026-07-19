@@ -2,7 +2,7 @@ package ba.sake.basamake.bsp
 
 import java.util.concurrent.BlockingQueue
 import scala.jdk.CollectionConverters.*
-import ch.epfl.scala.bsp4j.{BuildTarget, SourceItemKind, SourcesResult}
+import ch.epfl.scala.bsp4j.{BuildTarget, DependencySourcesResult, SourceItemKind, SourcesResult}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
@@ -18,7 +18,7 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
-      onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult) => Unit,
+      onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit = (_, _) => ()
   ): Unit = {
     logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle — no process)")
@@ -80,7 +80,7 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
-      onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult) => Unit,
+      onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit,
       triggerMsg: Option[ConnectionMessage]
   ): Unit = {
@@ -99,7 +99,7 @@ object BspConnectionSupervisor extends StrictLogging {
       durable.attemptCounter = 0
       logger.info(s"Connected with ${durable.bspFile.path} (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
 
-      try onRoutingReady(buildServer, targets, result.sources)
+      try onRoutingReady(buildServer, targets, result.sources, result.dependencySources)
       catch case e: Exception => logger.error(s"Failed to announce routing info", e)
 
       triggerMsg.foreach { msg =>

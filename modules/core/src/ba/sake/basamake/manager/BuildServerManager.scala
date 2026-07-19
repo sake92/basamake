@@ -23,7 +23,8 @@ private case class ConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage],
     navIndex: SemanticdbNavigationIndex,
-    var sourceRootsByTarget: Map[String, List[String]] = Map.empty
+    var sourceRootsByTarget: Map[String, List[String]] = Map.empty,
+    var dependencySourceUrisByTarget: Map[String, List[String]] = Map.empty
 )
 
 /** Manages BSP connections in a workspace, including lifecycle, message routing, and shutdown. */
@@ -111,9 +112,11 @@ class BuildServerManager extends StrictLogging {
 
     val routingCallback = (buildServer: ch.epfl.scala.bsp4j.BuildServer,
                            targets: List[ch.epfl.scala.bsp4j.BuildTarget],
-                           sources: ch.epfl.scala.bsp4j.SourcesResult) => {
+                           sources: ch.epfl.scala.bsp4j.SourcesResult,
+                           dependencySources: ch.epfl.scala.bsp4j.DependencySourcesResult) => {
       val dirs = extractSourceDirs(sources)
       ctx.sourceRootsByTarget = extractTargetSourceRoots(sources)
+      ctx.dependencySourceUrisByTarget = extractTargetDependencySourceUris(dependencySources)
       router.registerGroundTruth(id, dirs)
       logger.info(s"Routing updated for $id: ${dirs.size} source dirs")
       dirs.foreach(d => logger.debug(s"  $d"))
@@ -142,6 +145,14 @@ class BuildServerManager extends StrictLogging {
   private def extractTargetSourceRoots(sources: SourcesResult): Map[String, List[String]] =
     sources.getItems.asScala.toList.flatMap { item =>
       Option(item.getTarget).map(_.getUri -> extractSourceDirsForItem(item))
+    }.toMap
+
+  private def extractTargetDependencySourceUris(dependencySources: ch.epfl.scala.bsp4j.DependencySourcesResult): Map[String, List[String]] =
+    dependencySources.getItems.asScala.toList.flatMap { item =>
+      Option(item.getTarget).map { target =>
+        target.getUri ->
+          Option(item.getSources).toList.flatMap(_.asScala).map(_.toString)
+      }
     }.toMap
 
   private def extractSourceDirsForItem(item: ch.epfl.scala.bsp4j.SourcesItem): List[String] =
@@ -255,7 +266,6 @@ class BuildServerManager extends StrictLogging {
   private def onFileChanged(changedPaths: Set[os.Path]): Unit = {
     val watchedChangedPaths = changedPaths.filterNot(watchIgnored)
     if watchedChangedPaths.nonEmpty then {
-      logger.debug(s"File watcher detected changes: ${watchedChangedPaths.mkString(", ")}")
       val changedBspFiles = watchedChangedPaths.filter(_.segments.toSeq.contains(".bsp"))
       if changedBspFiles.nonEmpty then
         logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
@@ -366,10 +376,18 @@ class BuildServerManager extends StrictLogging {
       targetIds: List[String]
   ): Unit =
     connections.get(connId) match
-      case Some(ctx) if targetIds.nonEmpty && ctx.sourceRootsByTarget.nonEmpty =>
+      case Some(ctx) if targetIds.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) =>
         try
-          ctx.navIndex.refresh(workspaceRoot, buildServer, targetIds, ctx.sourceRootsByTarget)
-          logger.debug(s"SemanticDB refresh conn=$connId targets=${targetIds.size} sourceRoots=${ctx.sourceRootsByTarget.size}")
+          ctx.navIndex.refresh(
+            workspaceRoot,
+            buildServer,
+            targetIds,
+            ctx.sourceRootsByTarget,
+            ctx.dependencySourceUrisByTarget
+          )
+          logger.debug(
+            s"SemanticDB refresh conn=$connId targets=${targetIds.size} sourceRoots=${ctx.sourceRootsByTarget.size} dependencySources=${ctx.dependencySourceUrisByTarget.size}"
+          )
         catch case e: Exception =>
           logger.warn(s"SemanticDB refresh failed for $connId: ${e.getMessage}")
       case Some(_) => ()
