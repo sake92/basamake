@@ -27,6 +27,9 @@ local const coreTest: ScalaTestModule = new {
   deps {
     "org.scalameta::munit::1.0.4"
   }
+  junitXmlReport {
+    enabled = true
+  }
 }
 
 modules {

@@ -9,6 +9,3 @@ object Main:
     val x: Int = "this is a string"
     val y = nonexistentFunction(x)
     println(y)
-
-fdsf
-f
