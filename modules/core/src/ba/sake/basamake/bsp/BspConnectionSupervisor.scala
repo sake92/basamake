@@ -7,6 +7,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
 import ba.sake.basamake.core.*
+import ba.sake.basamake.navigation.NavigationUriUtils
 
 object BspConnectionSupervisor extends StrictLogging {
   private val MaxCrashRetries = 1  // one retry per crash sequence
@@ -283,8 +284,7 @@ object BspConnectionSupervisor extends StrictLogging {
         Nil
 
   private def normalizeFileUri(u: String): String =
-    try java.nio.file.Path.of(java.net.URI.create(u)).toUri.toString
-    catch case _: Exception => u
+    NavigationUriUtils.normalizeUri(u)
 
   private def matchesSourceRoot(uri: String, sourceRoot: String): Boolean =
     val normalizedUri = normalizeFileUri(uri)

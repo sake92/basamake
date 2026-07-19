@@ -10,12 +10,6 @@ import org.eclipse.lsp4j.{Location, Position, Range}
 class SemanticdbNavigationIndexTest extends FunSuite {
 
   private val workspaceRoot = os.pwd / "examples" / "hello" / "scalacli"
-  private val semanticdbFile =
-    SemanticdbNavigationIndex
-      .semanticdbFilesUnder(workspaceRoot)
-      .find(_.last == "bla.scala.semanticdb")
-      .get
-  private val semanticdbRoot = semanticdbFile / os.up / os.up / os.up / os.up
   private val sourceUri = (workspaceRoot / "bla.scala").toNIO.toUri.toString
   private val targetId = "target://bla"
 
@@ -30,7 +24,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
                   new OutputPathsItem(
                     new BuildTargetIdentifier(targetId),
                     List(
-                      new OutputPathItem(semanticdbRoot.toNIO.toUri.toString, OutputPathItemKind.DIRECTORY)
+                      new OutputPathItem(workspaceRoot.toNIO.toUri.toString, OutputPathItemKind.DIRECTORY)
                     ).asJava
                   )
                 ).asJava
@@ -44,7 +38,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
                     new BuildTargetIdentifier(targetId),
                     options.asJava,
                     List.empty[String].asJava,
-                    semanticdbRoot.toString
+                    workspaceRoot.toString
                   )
                 ).asJava
               )
@@ -72,7 +66,10 @@ class SemanticdbNavigationIndexTest extends FunSuite {
       )
       .asInstanceOf[BuildServer]
 
-  private def refreshWith(options: List[String], dependencySourceUris: List[String] = Nil): SemanticdbNavigationIndex =
+  private def refreshWith(
+      options: List[String],
+      dependencySourceUris: List[String] = List(sourceUri)
+  ): SemanticdbNavigationIndex =
     val index = new SemanticdbNavigationIndex()
     index.refresh(
       workspaceRoot,
@@ -84,7 +81,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
     index
 
   test("semanticdb index handles Scala 3 flags") {
-    val index = refreshWith(List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, "-semanticdb-target", semanticdbRoot.toString))
+    val index = refreshWith(List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, "-semanticdb-target", workspaceRoot.toString))
 
     val defLocs = index.definition(sourceUri, new Position(2, 10))
     val refLocs = index.references(sourceUri, new Position(2, 10))
@@ -99,7 +96,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   }
 
   test("semanticdb index handles Scala 2 semanticdb flags") {
-    val index = refreshWith(List("-Yrangepos", "-P:semanticdb:sourceroot:" + workspaceRoot.toString, "-P:semanticdb:targetroot:" + semanticdbRoot.toString))
+    val index = refreshWith(List("-Yrangepos", "-P:semanticdb:sourceroot:" + workspaceRoot.toString, "-P:semanticdb:targetroot:" + workspaceRoot.toString))
 
     val defLocs = index.definition(sourceUri, new Position(2, 10))
     val refLocs = index.references(sourceUri, new Position(2, 10))

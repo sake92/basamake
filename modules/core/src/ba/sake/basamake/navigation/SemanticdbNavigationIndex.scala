@@ -1,7 +1,6 @@
 package ba.sake.basamake.navigation
 
 import java.util.zip.ZipFile
-import java.security.MessageDigest
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -21,17 +20,7 @@ final case class SemanticdbFileSlice(
     documentSymbols: List[Either[SymbolInformation, org.eclipse.lsp4j.DocumentSymbol]]
 ) {
   def symbolAt(position: Position): Option[String] =
-    occurrences.find(occ => contains(occ.range, position)).map(_.symbol)
-
-  private def contains(range: Range, pos: Position): Boolean = {
-    val startsBefore =
-      pos.getLine > range.getStart.getLine ||
-        (pos.getLine == range.getStart.getLine && pos.getCharacter >= range.getStart.getCharacter)
-    val endsAfter =
-      pos.getLine < range.getEnd.getLine ||
-        (pos.getLine == range.getEnd.getLine && pos.getCharacter <= range.getEnd.getCharacter)
-    startsBefore && endsAfter
-  }
+    occurrences.find(occ => NavigationRangeUtils.contains(occ.range, position)).map(_.symbol)
 }
 
 final class SemanticdbNavigationIndex extends StrictLogging {
@@ -93,7 +82,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
         scalaOptionsByTarget.get(targetId)
       )
 
-      val sourceRoots = sourceRootsByTarget.getOrElse(targetId, Nil).flatMap(uriToPathOption)
+      val sourceRoots = sourceRootsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
       val dependencySourceUris = dependencySourceUrisByTarget.getOrElse(targetId, Nil)
       val dependencySlices =
         if dependencySourceUris.nonEmpty then
@@ -120,24 +109,26 @@ final class SemanticdbNavigationIndex extends StrictLogging {
   }
 
   def definition(uri: String, position: Position): List[Location] = synchronized {
-    val normalized = normalizeUri(uri)
+    val normalized = NavigationUriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
-    firstDefinition(symbols).toList
+    NavigationSymbolLookup
+      .firstDefinition(symbols, orderedWorkspaceSlices, orderedDependencySlices)
+      .toList
   }
 
   def references(uri: String, position: Position): List[Location] = synchronized {
-    val normalized = normalizeUri(uri)
+    val normalized = NavigationUriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
     symbols.flatMap { symbol =>
-      val candidateKeys = candidateSymbolKeys(symbol)
+      val candidateKeys = NavigationSymbolLookup.candidateSymbolKeys(symbol)
       val defs = allDefinitions.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allDefinitions.getOrElse(k, Nil))
       val refs = allReferences.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allReferences.getOrElse(k, Nil))
-      postProcessLocations((defs ++ refs).distinct)
+      NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
     }.distinct
   }
 
   def documentSymbols(uri: String): List[Either[SymbolInformation, org.eclipse.lsp4j.DocumentSymbol]] = synchronized {
-    slicesForUri(normalizeUri(uri)).flatMap(_.documentSymbols)
+    slicesForUri(NavigationUriUtils.normalizeUri(uri)).flatMap(_.documentSymbols)
   }
 
   private def slicesForUri(uri: String): List[SemanticdbFileSlice] =
@@ -233,8 +224,8 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       outputRoots: List[String],
       scalacOptions: Option[(List[String], Option[String])]
   ): Set[os.Path] = {
-    val rootsFromOutputs = outputRoots.flatMap(uriToPathOption)
-    val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(uriToPathOption)
+    val rootsFromOutputs = outputRoots.flatMap(NavigationUriUtils.uriToPathOption)
+    val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(NavigationUriUtils.uriToPathOption)
     val roots = (rootsFromOutputs ++ rootsFromClassDir).toSet
     val flagsPresent = scalacOptions.exists { case (options, _) => hasSemanticdbFlags(options) }
     if roots.nonEmpty && !flagsPresent then
@@ -295,7 +286,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
   private def readArchiveEntries(workspaceRoot: os.Path, path: os.Path, archiveUri: String): List[(String, String)] =
     Using.resource(new ZipFile(path.toNIO.toFile)) { zip =>
       val baseArchiveUri =
-        canonicalFileUri(
+        NavigationUriUtils.canonicalFileUri(
           if archiveUri.startsWith("jar:") then archiveUri.stripPrefix("jar:").takeWhile(_ != '!')
           else archiveUri
         )
@@ -313,7 +304,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       entryName: String,
       inputStream: java.io.InputStream
   ): os.Path = {
-    val cacheRoot = workspaceRoot / ".basamake" / "dependency-sources" / dependencyCacheKey(archiveUri)
+    val cacheRoot = workspaceRoot / ".basamake" / "dependency-sources" / DependencySourceParsing.dependencyCacheKey(archiveUri)
     val relPath = os.RelPath(entryName)
     val target = cacheRoot / relPath
     os.makeDir.all(target / os.up)
@@ -327,7 +318,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       sourceUri: String,
       content: String
   ): List[SemanticdbFileSlice] = {
-    val definitions = extractDefinitions(content)
+    val definitions = DependencySourceParsing.extractDefinitions(content)
     if definitions.isEmpty then Nil
     else {
       val occurrences = definitions.flatMap { defn =>
@@ -354,41 +345,6 @@ final class SemanticdbNavigationIndex extends StrictLogging {
     }
   }
 
-  private final case class SourceDefinition(
-      name: String,
-      kind: SymbolKind,
-      range: Range
-  )
-
-  private val DefinitionPattern =
-    """\b(object|class|trait|enum|def|val|var)\s+([A-Za-z_][A-Za-z0-9_]*)""".r
-
-  private def extractDefinitions(content: String): List[SourceDefinition] = {
-    val lines = content.linesIterator.toVector
-    lines.zipWithIndex.flatMap { case (line, lineIndex) =>
-      DefinitionPattern.findAllMatchIn(line).toList.flatMap { m =>
-        val keyword = m.group(1)
-        val name = m.group(2)
-        val kind = keyword match {
-          case "object"           => SymbolKind.Object
-          case "class"            => SymbolKind.Class
-          case "trait"            => SymbolKind.Interface
-          case "enum"             => SymbolKind.Enum
-          case "def"              => SymbolKind.Method
-          case "val"              => SymbolKind.Property
-          case "var"              => SymbolKind.Variable
-          case _                  => SymbolKind.Object
-        }
-        val start = m.start(2)
-        val range = new Range(
-          new Position(lineIndex, start),
-          new Position(lineIndex, start + name.length)
-        )
-        Some(SourceDefinition(name, kind, range))
-      }
-    }.toList
-  }
-
   private def isSourceFile(name: String): Boolean =
     name.endsWith(".scala") || name.endsWith(".java")
 
@@ -404,51 +360,11 @@ final class SemanticdbNavigationIndex extends StrictLogging {
     catch case _: Exception =>
       try
         val stripped = uri.stripPrefix("jar:")
-        val archive = canonicalFileUri(stripped.takeWhile(_ != '!'))
+        val archive = NavigationUriUtils.canonicalFileUri(stripped.takeWhile(_ != '!'))
         Some(os.Path(java.net.URI.create(archive)))
       catch case _: Exception =>
         try Some(os.Path(uri))
         catch case _: Exception => None
-
-  private def candidateSymbolKeys(symbol: String): List[String] = {
-    val clean = symbol
-      .replace("()", "")
-      .stripSuffix(".")
-      .stripSuffix("#")
-    val afterPackage =
-      clean.lastIndexOf('/') match
-        case idx if idx >= 0 => clean.substring(idx + 1)
-        case _               => clean
-    val segments = afterPackage.split('.').toList.filter(_.nonEmpty)
-    segments match
-      case Nil => Nil
-      case many => many.inits.toList.reverse.map(_.mkString(".")).filter(_.nonEmpty)
-  }
-
-  private def firstDefinition(symbols: List[String]): Option[Location] = {
-    val workspaceSlices = orderedWorkspaceSlices
-    val dependencySlices = orderedDependencySlices
-    symbols.iterator
-      .flatMap { symbol =>
-        firstDefinitionInSlices(symbol, workspaceSlices)
-          .orElse(firstDefinitionInSlices(symbol, dependencySlices))
-      }
-      .toList
-      .headOption
-  }
-
-  private def firstDefinitionInSlices(
-      symbol: String,
-      slices: List[SemanticdbFileSlice]
-  ): Option[Location] = {
-    val keys = symbol +: candidateSymbolKeys(symbol)
-    slices.iterator
-      .flatMap { slice =>
-        keys.iterator.flatMap(key => slice.symbolDefinitions.getOrElse(key, Nil).iterator)
-      }
-      .toList
-      .headOption
-  }
 
   private def orderedWorkspaceSlices: List[SemanticdbFileSlice] =
     targetStates.values.toList.flatMap { state =>
@@ -463,116 +379,6 @@ final class SemanticdbNavigationIndex extends StrictLogging {
         state.dependencySlicesByTarget.get(targetId).toList.flatten
       }
     }
-
-  private def normalizeUri(uri: String): String =
-    try java.nio.file.Path.of(java.net.URI.create(uri)).toUri.toString
-    catch case _: Exception => uri
-
-  private def postProcessLocations(locations: List[Location]): List[Location] = {
-    val normalizedExisting = locations
-      .flatMap(normalizeLocation)
-      .filter(locationExists)
-    normalizedExisting
-      .groupBy(loc => s"${loc.getUri}:${loc.getRange.getStart.getLine}:${loc.getRange.getStart.getCharacter}:${loc.getRange.getEnd.getLine}:${loc.getRange.getEnd.getCharacter}")
-      .values
-      .map(_.head)
-      .toList
-  }
-
-  private def normalizeLocation(loc: Location): Option[Location] =
-    Option(loc).flatMap { l =>
-      Option(l.getUri).map { uri =>
-        val normalized = normalizeUri(uri)
-        if normalized == uri then l
-        else new Location(normalized, l.getRange)
-      }
-    }
-
-  private def locationExists(loc: Location): Boolean =
-    uriToPathOption(loc.getUri) match
-      case Some(path) => os.exists(path)
-      case None       => archivePathOption(loc.getUri).exists(os.exists(_))
-
-  private def uriToPathOption(uri: String): Option[os.Path] =
-    try Some(os.Path(java.net.URI.create(uri)))
-    catch case _: Exception =>
-      try Some(os.Path(uri))
-      catch case _: Exception => None
-
-  private def archivePathOption(uri: String): Option[os.Path] =
-    if uri.startsWith("jar:") then
-      try
-        val archiveUri = canonicalFileUri(uri.stripPrefix("jar:").takeWhile(_ != '!'))
-        Some(os.Path(java.net.URI.create(archiveUri)))
-      catch case _: Exception => None
-    else None
-
-  private final case class MavenCoordinates(groupId: String, artifactId: String, version: String)
-
-  private def dependencyCacheKey(archiveUri: String): String = {
-    val hash8 = stableHash(archiveUri)
-    mavenCoordinates(archiveUri)
-      .map { coords =>
-        val gav =
-          s"${sanitizePathSegment(coords.groupId)}-${sanitizePathSegment(coords.artifactId)}-${sanitizePathSegment(coords.version)}"
-        s"$gav-$hash8"
-      }
-      .getOrElse(hash8)
-  }
-
-  private def mavenCoordinates(archiveUri: String): Option[MavenCoordinates] = {
-    val normalizedArchiveUri =
-      if archiveUri.startsWith("jar:") then archiveUri.stripPrefix("jar:").takeWhile(_ != '!')
-      else archiveUri
-    val path = try java.net.URI.create(canonicalFileUri(normalizedArchiveUri)).getPath
-    catch case _: Exception => normalizedArchiveUri
-    val segments = path.split('/').toList.filter(_.nonEmpty)
-    val maven2Index = segments.lastIndexOf("maven2")
-    if maven2Index < 0 then None
-    else {
-      val tail = segments.drop(maven2Index + 1)
-      if tail.length < 4 then None
-      else {
-        val groupParts = tail.dropRight(3)
-        val artifactId = tail(tail.length - 3)
-        val version = tail(tail.length - 2)
-        if groupParts.isEmpty || artifactId.isEmpty || version.isEmpty then None
-        else Some(MavenCoordinates(groupParts.mkString("."), artifactId, version))
-      }
-    }
-  }
-
-  private def sanitizePathSegment(value: String): String =
-    value.map {
-      case c if c.isLetterOrDigit || c == '.' || c == '-' || c == '_' => c
-      case _                                                           => '_'
-    }
-
-  private def stableHash(value: String): String =
-    val digest = MessageDigest.getInstance("SHA-256")
-    digest
-      .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-      .take(4)
-      .map(b => f"${b & 0xff}%02x")
-      .mkString
-
-  private def canonicalFileUri(uri: String): String = {
-    val decoded =
-      try java.net.URLDecoder.decode(uri, java.nio.charset.StandardCharsets.UTF_8)
-      catch case _: Exception => uri
-    try java.nio.file.Path.of(java.net.URI.create(decoded)).toUri.toString
-    catch case _: Exception => decoded
-  }
-
-  private def contains(range: Range, pos: Position): Boolean = {
-    val startsBefore =
-      pos.getLine > range.getStart.getLine ||
-        (pos.getLine == range.getStart.getLine && pos.getCharacter >= range.getStart.getCharacter)
-    val endsAfter =
-      pos.getLine < range.getEnd.getLine ||
-        (pos.getLine == range.getEnd.getLine && pos.getCharacter <= range.getEnd.getCharacter)
-    startsBefore && endsAfter
-  }
 
 }
 
@@ -604,7 +410,7 @@ object SemanticdbNavigationIndex extends StrictLogging {
       val bytes = os.read.bytes(semanticdbFile)
       val documents = TextDocuments.parseFrom(bytes)
       documents.documents.headOption.map { doc =>
-        val sourceUri = normalizeUri(resolveSourceUri(workspaceRoot, semanticdbFile, doc.uri, sourceRoots))
+        val sourceUri = NavigationUriUtils.normalizeUri(resolveSourceUri(workspaceRoot, semanticdbFile, doc.uri, sourceRoots))
         val symbolInfoById = doc.symbols.toList.map(si => si.symbol -> si).toMap
 
         val occurrences = doc.occurrences.toList.flatMap { occ =>
@@ -654,7 +460,7 @@ object SemanticdbNavigationIndex extends StrictLogging {
       docUri: String,
       sourceRoots: List[os.Path]
   ): String =
-    if docUri.startsWith("file:") then normalizeUri(docUri)
+    if docUri.startsWith("file:") then NavigationUriUtils.normalizeUri(docUri)
     else {
       val relativeSource = relativeSourcePath(semanticdbFile).getOrElse(os.RelPath(docUri))
       val candidates = resolveCandidates(workspaceRoot, relativeSource, sourceRoots)
@@ -696,10 +502,6 @@ object SemanticdbNavigationIndex extends StrictLogging {
       val fileName = relSegments.lastOption.map(_.stripSuffix(".semanticdb")).getOrElse("")
       Some(os.RelPath(relSegments.dropRight(1).appended(fileName).mkString("/")))
   }
-
-  private def normalizeUri(uri: String): String =
-    try java.nio.file.Path.of(java.net.URI.create(uri)).toUri.toString
-    catch case _: Exception => uri
 
   private def toLspRange(range: SemanticRange): Range =
     new Range(
