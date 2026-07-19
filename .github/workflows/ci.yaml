@@ -12,6 +12,7 @@ concurrency:
 # for junit reports
 permissions:
   checks: write
+  contents: read
 
 jobs:
   tests:
