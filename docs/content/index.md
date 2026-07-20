@@ -290,11 +290,11 @@ flowchart TD
 
 | File | Question Answered |
 |------|-------------------|
-| [file-saved](flows/file-saved.html) | What happens on didSave? |
+| [workspace-init](flows/workspace-init.html) | What happens on workspace initialization? |
 | [bsp-file-added](flows/bsp-file-added.html) | What happens when a .bsp JSON is added? |
 | [bsp-file-removed](flows/bsp-file-removed.html) | What happens when a .bsp JSON is deleted? |
 | [bsp-file-modified](flows/bsp-file-modified.html) | What happens when a .bsp JSON is modified? |
 | [editor-opens-file](flows/editor-opens-file.html) | What happens on didOpen? (lazy BSP spawn) |
+| [file-saved](flows/file-saved.html) | What happens on didSave? |
 | [go-to-definition](flows/go-to-definition.html) | What happens on go-to-definition? |
-| [workspace-init](flows/workspace-init.html) | What happens on workspace initialization? |
 

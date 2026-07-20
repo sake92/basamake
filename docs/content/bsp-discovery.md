@@ -11,11 +11,10 @@ Scans workspace recursively (max depth 10) for `.bsp/` directories. Every `*.jso
 
 ```diagram:mermaid
 flowchart TD
-    A["discover(workspaceRoot)"] --> B["os.walk(root, maxDepth=10)"]
-    B --> C{Found .bsp/ dir?}
+    B["os.walk(workspaceRoot, maxDepth=10)"]
+    B --> C{Found .bsp/ dirs?}
     C -->|Yes| D[os.list each .bsp/]
-    D --> E[Filter *.json files]
-    E --> F[Parse each JSON with tupson]
+    D --> F[Parse each JSON file]
     F --> G{Has argv?}
     G -->|Yes| H["BspConnectionSpec: name, argv, path, debounceMs"]
     G -->|No| I[Warn + skip]

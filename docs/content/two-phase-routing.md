@@ -62,12 +62,12 @@ Inside `BspConnectionSupervisor`, `selectCompileTargetIds` determines which buil
 
 ```diagram:mermaid
 flowchart TD
-    URI["uri"] --> T1["1. buildTargetInverseSources(uri)<br/>(5s timeout)"]
+    URI["uri"] --> T1["buildTargetInverseSources<br/>(5s timeout)"]
     T1 --> T1R{Success?}
     T1R -->|"Yes, non-empty"| DONE["Return those targets"]
-    T1R -->|"No / empty"| T2["2. targetIdsForUri(uri, sourceRoots)<br/>(directory prefix match)"]
+    T1R -->|"No / empty"| T2["targetIdsForUri<br/>(source root match)"]
     T2 --> T2R{Match found?}
     T2R -->|"Yes"| DONE
-    T2R -->|"No"| T3["3. Fallback: all connection targets<br/>(warns)"]
+    T2R -->|"No"| T3["Fallback: all connection targets<br/>(warns)"]
     T3 --> DONE
 ```
