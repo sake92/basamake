@@ -250,7 +250,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
 
   private def hasSemanticdbFlags(options: List[String]): Boolean =
     options.exists(_ == "-Xsemanticdb") ||
-      options.exists(_ == "-semanticdb-target") ||
+      options.exists(s => s == "-semanticdb-target" || s.startsWith("-semanticdb-target:")) ||
       options.exists(_.startsWith("-P:semanticdb:")) ||
       options.exists(_ == "-Xplugin:semanticdb")
 
@@ -413,11 +413,12 @@ object SemanticdbNavigationIndex extends StrictLogging {
   }
 
   def semanticdbTargetPaths(options: List[String]): List[os.Path] = {
-    // Scala 3: -semanticdb-target <path>  (flag and value are separate tokens)
-    val scala3 = options.sliding(2).collect {
-      case "-semanticdb-target" :: path :: Nil => os.Path(path)
-    }.toList
-    // Scala 2: -P:semanticdb:targetroot:<path>
+    // Scala 3: -semanticdb-target:<path> (colon-separated)
+    val scala3 = options.collect {
+      case s if s.startsWith("-semanticdb-target:") =>
+        os.Path(s.stripPrefix("-semanticdb-target:"))
+    }
+    // Scala 2: -P:semanticdb:targetroot:<path> (colon-separated)
     val scala2 = options.collect {
       case s if s.startsWith("-P:semanticdb:targetroot:") =>
         os.Path(s.stripPrefix("-P:semanticdb:targetroot:"))

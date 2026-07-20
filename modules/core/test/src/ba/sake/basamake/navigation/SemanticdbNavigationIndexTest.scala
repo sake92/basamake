@@ -83,7 +83,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
 
   test("semanticdbTargetPaths parses Scala 3 -semanticdb-target") {
     val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
-      List("-Xsemanticdb", "-semanticdb-target", "/tmp/custom/output")
+      List("-Xsemanticdb", "-semanticdb-target:/tmp/custom/output")
     )
     assertEquals(paths, List(os.Path("/tmp/custom/output")))
   }
@@ -104,13 +104,13 @@ class SemanticdbNavigationIndexTest extends FunSuite {
 
   test("semanticdbTargetPaths handles multiple target flags") {
     val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
-      List("-Xsemanticdb", "-semanticdb-target", "/tmp/out1", "-P:semanticdb:targetroot:/tmp/out2")
+      List("-Xsemanticdb", "-semanticdb-target:/tmp/out1", "-P:semanticdb:targetroot:/tmp/out2")
     )
     assertEquals(paths, List(os.Path("/tmp/out1"), os.Path("/tmp/out2")))
   }
 
   test("semanticdb index handles Scala 3 flags") {
-    val index = refreshWith(List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, "-semanticdb-target", workspaceRoot.toString))
+    val index = refreshWith(List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, s"-semanticdb-target:${workspaceRoot.toString}"))
 
     val defLocs = index.definition(sourceUri, new Position(2, 10))
     val refLocs = index.references(sourceUri, new Position(2, 10))
