@@ -19,7 +19,10 @@ object Main extends StrictLogging {
     // auto-flush LSP messages
     val autoFlushOut = new PrintStream(System.out, true, "UTF-8")
     val server = BasamakeLanguageServer()
-    val shutdownHook = Thread(() => server.cleanup(), "basamake-shutdown-hook")
+    val shutdownHook = Thread(() => {
+      logger.info("Shutdown hook called, cleaning up LSP server...")
+      server.cleanup()
+    }, "basamake-shutdown-hook")
     Runtime.getRuntime.addShutdownHook(shutdownHook)
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
     server.connect(launcher.getRemoteProxy)
@@ -33,10 +36,7 @@ object Main extends StrictLogging {
     // When VS Code closes, stdin reaches EOF, the future completes.
     try future.get()
     finally
-      // Clean up BSP connections — kills child BSP processes so they don't linger
       server.cleanup()
-      try Runtime.getRuntime.removeShutdownHook(shutdownHook)
-      catch case _: IllegalStateException => () // JVM is already shutting down
       logger.info("LSP server stopped")
 
   // TODO use mainargs

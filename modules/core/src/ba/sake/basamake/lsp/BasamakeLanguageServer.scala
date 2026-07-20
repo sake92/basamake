@@ -70,6 +70,7 @@ class BasamakeLanguageServer(
 
   /** Called after transport closes (stdin EOF) to clean up child BSP processes. */
   def cleanup(): Unit = {
+    logger.info("Cleaning up BSP connections...")
     ensureShutdown()
     ensureKill()
   }

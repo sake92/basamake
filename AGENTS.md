@@ -32,7 +32,7 @@ The code now performs ownership-bounded cleanup during shutdown fallback (`Build
 
 ## JDK
 
-Requires **JDK 24+** (JEP 491 unpins VTs on `synchronized`). Current env has JDK 21 — works for dev but must be 24 for production. Scala 3.7.4.
+Requires **JDK 21+**. Scala 3.7.4.
 
 ## Code Style
 
