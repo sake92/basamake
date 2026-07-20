@@ -1,0 +1,70 @@
+---
+title: "Flow: Go-to-Definition"
+description: How go-to-definition resolves symbol locations using SemanticDB index
+---
+
+# What Happens on Go-to-Definition
+
+Trigger: user requests definition (F12) or hover reference in the editor.
+
+```diagram:mermaid
+sequenceDiagram
+    participant ED as Editor
+    participant LSP as BasamakeLanguageServer
+    participant MGR as BuildServerManager
+    participant RTR as BspRouter
+    participant NAV as SemanticdbNavigationIndex
+
+    ED->>LSP: definition(uri, position)
+    LSP->>MGR: definition(uri, position)
+    
+    MGR->>RTR: route(uri)
+    RTR-->>MGR: connId (or None)
+    
+    alt No BSP connection for URI
+        MGR-->>LSP: empty list
+        LSP-->>ED: empty list
+    else Connection found
+        MGR->>NAV: definition(uri, position)
+        
+        Note over NAV: 1. slicesForUri(uri) → find source file slices
+        Note over NAV: 2. match symbol at position via range containment
+        Note over NAV: 3. candidateSymbolKeys(symbol) → suffix variants
+        Note over NAV: 4. firstDefinition: workspace slices first, deps second
+        Note over NAV: 5. post-process locations (normalize, dedup, check exist)
+        
+        NAV-->>MGR: List[Location]
+        MGR-->>LSP: List[Location]
+        LSP-->>ED: List[Location] or LocationLink
+    end
+```
+
+## Lookup Algorithm Detail
+
+```diagram:mermaid
+flowchart TD
+    POS["position (line, char)"] --> OCCUR["slicesForUri(uri)\nfind owned SemanticdbFileSlice"]
+    OCCUR --> SYM["symbolAt(position)\nrange containment check"]
+    SYM --> KEYS["candidateSymbolKeys(symbol)\nsuffix expansion"]
+    KEYS --> WDEF["Search workspace slices\nfor first definition"]
+    WDEF -->|found| DONE["return Location"]
+    WDEF -->|not found| DDEF["Search dependency slices\nfor first definition"]
+    DDEF -->|found| DONE
+    DDEF -->|not found| EMPTY["return None"]
+```
+
+`candidateSymbolKeys` handles symbol mismatches between source and dependency:
+
+```
+Input: "com/example/Foo.bar()."
+Strip: "com/example/Foo.bar"
+After last '/': "Foo.bar"
+Segments: ["Foo", "bar"]
+Suffixes: ["Foo.bar", "bar"]
+```
+
+## Key Points
+
+- **Workspace-first** — definitions in your own source code take priority over dependency symbols.
+- **Synchronized** — `SemanticdbNavigationIndex.definition()` is `synchronized`, so navigation queries don't race with index refreshes from compile.
+- **Post-processing** — locations are normalized (URI canonicalization), deduplicated, and filtered for existence on disk (source files or archive entries).

@@ -19,3 +19,7 @@ target/
 # ai
 docs/superpowers/
 .agents/
+
+# docs
+_site/
+.flatmark-cache
