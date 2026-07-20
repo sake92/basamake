@@ -23,7 +23,7 @@ object BspConnectionSupervisor extends StrictLogging {
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit = (_, _) => ()
   ): Unit = {
-    logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle — no process)")
+    logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle)")
 
     while durable.currentState != BspConnectionState.Failed
         && durable.currentState != BspConnectionState.Detached

@@ -48,7 +48,8 @@ class BspRouter extends StrictLogging {
   /** Register ground-truth source directories from a BSP handshake. */
   def registerGroundTruth(connId: BspConnectionId, sourceDirs: List[String]): Unit = {
     routingTable.update(connId, sourceDirs)
-    logger.info(s"Ground truth registered for $connId: ${sourceDirs.size} dirs")
+    logger.debug(s"Ground truth registered for $connId: ${sourceDirs.size} dirs")
+    sourceDirs.foreach(d => logger.debug(s"  $d"))
   }
 
   /** Remove a connection from ground-truth routing (on detach). */

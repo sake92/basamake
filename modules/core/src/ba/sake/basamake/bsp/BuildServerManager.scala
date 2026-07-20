@@ -10,8 +10,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{DocumentSymbol, Location, Position, PublishDiagnosticsParams, SymbolInformation}
 import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
-import ch.epfl.scala.bsp4j.SourcesResult
-import ch.epfl.scala.bsp4j.SourceItemKind
+import ch.epfl.scala.bsp4j
 import ba.sake.basamake.core.*
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.navigation.SemanticdbNavigationIndex
@@ -103,24 +102,22 @@ class BuildServerManager extends StrictLogging {
     val bspDir = bspSpec.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
 
-    val routingCallback = (buildServer: ch.epfl.scala.bsp4j.BuildServer,
-                           targets: List[ch.epfl.scala.bsp4j.BuildTarget],
-                           sources: ch.epfl.scala.bsp4j.SourcesResult,
-                           dependencySources: ch.epfl.scala.bsp4j.DependencySourcesResult) => {
-      val dirs = extractSourceDirs(sources)
+    val routingReadyCallback = (buildServer: bsp4j.BuildServer,
+                           targets: List[bsp4j.BuildTarget],
+                           sources: bsp4j.SourcesResult,
+                           dependencySources: bsp4j.DependencySourcesResult) => {
       ctx.sourceRootsByTarget = extractTargetSourceRoots(sources)
       ctx.dependencySourceUrisByTarget = extractTargetDependencySourceUris(dependencySources)
+      val dirs = extractSourceDirs(sources)
       router.registerGroundTruth(id, dirs)
-      logger.debug(s"Routing updated for $id: ${dirs.size} source dirs")
-      dirs.foreach(d => logger.debug(s"  $d"))
       refreshNavigationIndex(id, buildServer, targets.map(_.getId.getUri))
     }
 
-    val compileCallback = (buildServer: ch.epfl.scala.bsp4j.BuildServer, targetIds: List[String]) =>
+    val compileCallback = (buildServer: bsp4j.BuildServer, targetIds: List[String]) =>
       refreshNavigationIndex(id, buildServer, targetIds)
 
     val vt = Thread.ofVirtual().start(() =>
-      BspConnectionSupervisor.supervise(record, msgQueue, client, routingCallback, compileCallback)
+      BspConnectionSupervisor.supervise(record, msgQueue, client, routingReadyCallback, compileCallback)
     )
     logger.debug(s"Spawned supervisor thread for $id (${bspSpec.path})")
   } catch {
@@ -128,19 +125,25 @@ class BuildServerManager extends StrictLogging {
       logger.error(s"Failed to attach BSP connection for ${bspSpec.path}: ${e.getMessage}", e)
   }
 
-  private def extractSourceDirs(sources: SourcesResult): List[String] =
+  private def extractSourceDirs(sources: bsp4j.SourcesResult): List[String] =
     sources.getItems.asScala.toList.flatMap: item =>
       Option(item.getSources).toList.flatMap(_.asScala).collect {
-        case si if si.getKind == SourceItemKind.DIRECTORY && !si.getGenerated =>
+        case si if si.getKind == bsp4j.SourceItemKind.DIRECTORY && !si.getGenerated =>
           si.getUri
       }
 
-  private def extractTargetSourceRoots(sources: SourcesResult): Map[String, List[String]] =
+  private def extractTargetSourceRoots(sources: bsp4j.SourcesResult): Map[String, List[String]] = {
+    def extractSourceDirsForItem(item: bsp4j.SourcesItem): List[String] =
+      Option(item.getSources).toList.flatMap(_.asScala).collect {
+        case si if si.getKind == bsp4j.SourceItemKind.DIRECTORY && !si.getGenerated =>
+          si.getUri
+      }
     sources.getItems.asScala.toList.flatMap { item =>
       Option(item.getTarget).map(_.getUri -> extractSourceDirsForItem(item))
     }.toMap
+  }
 
-  private def extractTargetDependencySourceUris(dependencySources: ch.epfl.scala.bsp4j.DependencySourcesResult): Map[String, List[String]] =
+  private def extractTargetDependencySourceUris(dependencySources: bsp4j.DependencySourcesResult): Map[String, List[String]] =
     dependencySources.getItems.asScala.toList.flatMap { item =>
       Option(item.getTarget).map { target =>
         target.getUri ->
@@ -148,24 +151,17 @@ class BuildServerManager extends StrictLogging {
       }
     }.toMap
 
-  private def extractSourceDirsForItem(item: ch.epfl.scala.bsp4j.SourcesItem): List[String] =
-    Option(item.getSources).toList.flatMap(_.asScala).collect {
-      case si if si.getKind == SourceItemKind.DIRECTORY && !si.getGenerated =>
-        si.getUri
-    }
-
   /** Cleanly detach a connection: publish empty diagnostics, remove routing, kill process. */
   private def detachConnection(connId: BspConnectionId): Unit =
-    connections.get(connId) match
+    connections.get(connId) match {
       case Some(ctx) =>
-        logger.info(s"Detaching connection $connId")
-
+        logger.debug(s"Detaching connection $connId")
         // Publish empty diagnostics for all files owned by this connection
         for uri <- ctx.record.lastKnownDiagnostics.keys do
           client.publishDiagnostics(
             new PublishDiagnosticsParams(uri, java.util.Collections.emptyList())
           )
-        logger.info(s"Cleared diagnostics for ${ctx.record.lastKnownDiagnostics.size} files")
+        logger.debug(s"Cleared diagnostics for ${ctx.record.lastKnownDiagnostics.size} files")
 
         // Mark as Detached and send poison pill
         ctx.record.currentState = BspConnectionState.Detached
@@ -178,27 +174,28 @@ class BuildServerManager extends StrictLogging {
         router.unregisterBspRoot(bspDir, connId)
         ctx.navIndex.clear()
         connections -= connId
-        logger.info(s"Connection $connId detached")
-
+        logger.debug(s"Connection $connId detached")
       case None =>
         logger.warn(s"Cannot detach unknown connection $connId")
+    }
 
   /** Request a reload for a connection with a new spec. Re-applies overrides. */
   private def reloadConnection(connId: BspConnectionId, newSpec: BspConnectionSpec): Unit =
-    applyOverrides(newSpec) match
+    applyOverrides(newSpec) match {
       case Some(merged) =>
         connections.get(connId) match
           case Some(ctx) =>
-            logger.info(s"Requesting reload for $connId")
+            logger.debug(s"Requesting reload for $connId")
             ctx.queue.offer(ConnectionMessage.ReloadRequested(merged))
           case None =>
             attachConnection(merged)
       case None =>
         detachConnection(connId)
+    }
 
   /** Route a document URI to the owning connection's queue via longest-prefix matching. */
   def route(uri: String): Option[BlockingQueue[ConnectionMessage]] =
-    router.route(uri) match
+    router.route(uri) match {
       case Some(connId) =>
         connections.get(connId).map(_.queue) match
           case some @ Some(_) => some
@@ -208,6 +205,7 @@ class BuildServerManager extends StrictLogging {
       case None =>
         logger.debug(s"No BSP found for $uri")
         None
+    }
 
   def definition(uri: String, position: Position): List[Location] = synchronized {
     val result = connectionForUri(uri).toList.flatMap(_.navIndex.definition(uri, position))
@@ -360,7 +358,7 @@ class BuildServerManager extends StrictLogging {
 
   private def refreshNavigationIndex(
       connId: BspConnectionId,
-      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      buildServer: bsp4j.BuildServer,
       targetIds: List[String]
   ): Unit =
     connections.get(connId) match
@@ -399,6 +397,8 @@ private case class ConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage],
     navIndex: SemanticdbNavigationIndex,
+    /** targetUri -> list of source directories */
     var sourceRootsByTarget: Map[String, List[String]] = Map.empty,
+    /** targetUri -> list of source JARs */
     var dependencySourceUrisByTarget: Map[String, List[String]] = Map.empty
 )
