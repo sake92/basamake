@@ -7,8 +7,7 @@ class BasamakeLanguageServerTest extends FunSuite:
 
   test("manager.shutdown is idempotent") {
     val manager = BuildServerManager()
-    // First call should succeed
     manager.shutdown()
-    // Second call should be no-op (not throw, not NPE)
+    // second call should not throw
     manager.shutdown()
   }

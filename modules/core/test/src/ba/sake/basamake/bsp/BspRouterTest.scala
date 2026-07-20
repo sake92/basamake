@@ -4,12 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import munit.FunSuite
 
-class BspRouterTest extends FunSuite:
-
-  private def withTempDir[A](body: Path => A): A =
-    val tmp = Files.createTempDirectory("bsprt-test-")
-    try body(tmp)
-    finally Files.walk(tmp).sorted(java.util.Comparator.reverseOrder()).forEach(Files.deleteIfExists(_))
+class BspRouterTest extends FunSuite {
 
   test("bootstrap cache — miss triggers walk, hit uses cached result") {
     withTempDir: root =>
@@ -124,3 +119,9 @@ class BspRouterTest extends FunSuite:
       val fileUri = subProjectDir.resolve("src/main/scala/Main.scala").toUri.toString
       assertEquals(router.route(fileUri), Some(subConn))
   }
+
+  private def withTempDir[A](body: Path => A): A =
+    val tmp = Files.createTempDirectory("bsprt-test-")
+    try body(tmp)
+    finally Files.walk(tmp).sorted(java.util.Comparator.reverseOrder()).forEach(Files.deleteIfExists(_))
+}
