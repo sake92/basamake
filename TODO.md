@@ -3,6 +3,7 @@
 - test mill
 - dont bother with compile etc if editor not in focus? e.g. when ai coding agent touches many files?
 - check thread safety
+- parse javac -targetroot:${semanticdbDir}
 
 New features:
 - support hover info
