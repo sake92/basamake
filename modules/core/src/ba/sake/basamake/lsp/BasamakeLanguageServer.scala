@@ -14,7 +14,7 @@ import ba.sake.basamake.util.LoggingUtils
 
 class BasamakeLanguageServer(
     private val manager: BuildServerManager = BuildServerManager()
-) extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging:
+) extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging {
 
   private var client: LanguageClient = uninitialized
   @volatile private var isInitialized = false
@@ -70,7 +70,7 @@ class BasamakeLanguageServer(
 
   /** Called after transport closes (stdin EOF) to clean up child BSP processes. */
   def cleanup(): Unit = {
-    logger.info("Cleaning up BSP connections...")
+    logger.debug("Cleaning up BSP connections...")
     ensureShutdown()
     ensureKill()
   }
@@ -173,3 +173,4 @@ class BasamakeLanguageServer(
 
   override def rename(params: RenameParams): CompletableFuture[WorkspaceEdit] =
     CompletableFuture.completedFuture(null)
+}

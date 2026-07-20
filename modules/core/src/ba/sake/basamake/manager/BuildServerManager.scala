@@ -363,7 +363,8 @@ class BuildServerManager extends StrictLogging {
     Thread.sleep(200)
     killAllBspProcesses()
 
-  private def killAllBspProcesses(): Unit =
+  // TODO simplify: just kill all processes on shutdown, no need to track bspProcess in DurableRecord
+  private def killAllBspProcesses(): Unit = {
     val directProcesses = (shutdownProcessSnapshot ++ connections.values.flatMap(_.record.bspProcess)).distinctBy(_.pid())
     val directKilled = BuildServerManager.terminateProcesses(directProcesses)
     val descendantKilled = BuildServerManager.terminateProcessHandles(BuildServerManager.currentProcessDescendants())
@@ -373,6 +374,7 @@ class BuildServerManager extends StrictLogging {
       logger.info(s"Force-killed $totalKilled process node(s) (ownedRoots=$directKilled, jvmDescendants=$descendantKilled)")
     shutdownProcessSnapshot = Nil
     connections.values.foreach(_.record.bspProcess = None)
+  }
 
   private def connectionForUri(uri: String): Option[ConnectionContext] =
     router.route(uri).flatMap(connections.get)
