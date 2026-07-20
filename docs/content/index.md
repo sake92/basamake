@@ -7,6 +7,12 @@ description: Basamake LSP server architecture, layer diagram, concurrency model,
 
 **Basamake** is a minimal Scala language server. It connects the LSP editor protocol to one or more BSP build servers running inside a workspace.
 
+## Installation (VS Code)
+
+Use the [Basamake VS Code extension](https://github.com/sake92/basamake-vscode) to get started.
+
+If you also have **Metals** installed, VS Code will prompt which LSP to use for `.scala`/`.sbt` files — select Basamake.
+
 ## Guiding Philosophy
 
 - **Multi-BSP by default** — a workspace may contain multiple build tools (sbt, Mill, scala-cli, etc.), each in a subdirectory with its own `.bsp/` config. Basamake discovers all of them and routes editor requests to the right one automatically.
