@@ -6,29 +6,18 @@ import org.eclipse.lsp4j.{Position, Range, SymbolKind}
 final case class SourceDefinition(
     name: String,
     kind: SymbolKind,
+    symbol: String,
     range: Range
 )
 
 object DependencySourceParsing {
-  private val DefinitionPattern =
-    """\b(object|class|trait|enum|def|val|var)\s+([A-Za-z_][A-Za-z0-9_]*)""".r
 
   private final case class MavenCoordinates(groupId: String, artifactId: String, version: String)
 
-  def extractDefinitions(content: String): List[SourceDefinition] = {
-    val lines = content.linesIterator.toVector
-    lines.zipWithIndex.flatMap { case (line, lineIndex) =>
-      DefinitionPattern.findAllMatchIn(line).toList.flatMap { m =>
-        val name = m.group(2)
-        val start = m.start(2)
-        val range = new Range(
-          new Position(lineIndex, start),
-          new Position(lineIndex, start + name.length)
-        )
-        Some(SourceDefinition(name, keywordToKind(m.group(1)), range))
-      }
-    }.toList
-  }
+  def extractDefinitions(fileName: String, content: String): List[SourceDefinition] =
+    if fileName.endsWith(".scala") then ScalaSourceParser.extractDefinitions(content)
+    else if fileName.endsWith(".java") then JavaSourceParser.extractDefinitions(content)
+    else Nil
 
   def dependencyCacheKey(archiveUri: String): String = {
     val hash8 = stableHash(archiveUri)
@@ -40,18 +29,6 @@ object DependencySourceParsing {
       }
       .getOrElse(hash8)
   }
-
-  private def keywordToKind(keyword: String): SymbolKind =
-    keyword match {
-      case "object" => SymbolKind.Object
-      case "class"  => SymbolKind.Class
-      case "trait"  => SymbolKind.Interface
-      case "enum"   => SymbolKind.Enum
-      case "def"    => SymbolKind.Method
-      case "val"    => SymbolKind.Property
-      case "var"    => SymbolKind.Variable
-      case _        => SymbolKind.Object
-    }
 
   private def mavenCoordinates(archiveUri: String): Option[MavenCoordinates] = {
     val normalizedArchiveUri =
