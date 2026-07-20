@@ -86,6 +86,7 @@ class BasamakeLanguageServer(
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
+    logger.debug(s"didChange: $uri")
     offerToConnection(uri, ConnectionMessage.DidChange(params))
   }
 
@@ -104,6 +105,7 @@ class BasamakeLanguageServer(
 
   private def offerToConnection(uri: String, msg: ConnectionMessage): Unit ={
     if !isInitialized then
+      // TODO return error to client? (e.g. publish diagnostics)
       logger.warn(s"Not initialized, dropping message for $uri")
       return
     try manager.route(uri) match {
@@ -117,7 +119,7 @@ class BasamakeLanguageServer(
     catch case e: Exception => logger.error(s"Failed to route message for $uri", e)
   }
 
-  // ---- Unsupported M3/M4 methods — return empty results ----
+  // TODO support completion
   override def completion(params: CompletionParams)
       : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
         java.util.List[CompletionItem],
@@ -128,6 +130,10 @@ class BasamakeLanguageServer(
         java.util.Collections.emptyList[CompletionItem]()
       )
     )
+
+  // TODO support hover  
+  override def hover(params: HoverParams): CompletableFuture[Hover] =
+    CompletableFuture.completedFuture(null)
 
   override def definition(params: DefinitionParams)
       : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
@@ -145,8 +151,6 @@ class BasamakeLanguageServer(
       manager.references(params.getTextDocument.getUri, params.getPosition).asJava
     )
 
-  override def hover(params: HoverParams): CompletableFuture[Hover] =
-    CompletableFuture.completedFuture(null)
 
   override def documentSymbol(params: DocumentSymbolParams)
       : CompletableFuture[

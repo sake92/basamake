@@ -1,4 +1,4 @@
-package ba.sake.basamake.core
+package ba.sake.basamake.util
 
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal

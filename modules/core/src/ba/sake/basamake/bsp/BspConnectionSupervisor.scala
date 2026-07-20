@@ -7,6 +7,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
 import ba.sake.basamake.core.*
+import ba.sake.basamake.util.ProcessUtils
 import ba.sake.basamake.navigation.NavigationUriUtils
 
 object BspConnectionSupervisor extends StrictLogging {

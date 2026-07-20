@@ -1,6 +1,6 @@
 package ba.sake.basamake.manager
 
-import ba.sake.basamake.core.ProcessUtils
+import ba.sake.basamake.util.ProcessUtils
 import munit.FunSuite
 
 class BuildServerManagerTest extends FunSuite:

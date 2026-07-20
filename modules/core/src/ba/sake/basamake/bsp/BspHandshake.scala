@@ -4,6 +4,7 @@ import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import ch.epfl.scala.bsp4j.*
 import ba.sake.basamake.core.*
+import ba.sake.basamake.util.ProcessUtils
 
 final case class HandshakeResult(
     process: java.lang.Process,
