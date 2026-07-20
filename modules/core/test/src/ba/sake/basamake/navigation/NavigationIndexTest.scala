@@ -7,7 +7,7 @@ import ch.epfl.scala.bsp4j.*
 import munit.FunSuite
 import org.eclipse.lsp4j.{Location, Position, Range}
 
-class SemanticdbNavigationIndexTest extends FunSuite {
+class NavigationIndexTest extends FunSuite {
 
   // TODO use temp dir, copy from resources..
   private val workspaceRoot = os.pwd / "examples/hello/scalacli"
@@ -70,8 +70,8 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   private def refreshWith(
       options: List[String],
       dependencySourceUris: List[String] = List(sourceUri)
-  ): SemanticdbNavigationIndex =
-    val index = new SemanticdbNavigationIndex()
+  ): NavigationIndex =
+    val index = new NavigationIndex()
     index.refresh(
       workspaceRoot,
       buildServerWith(options, dependencySourceUris),
@@ -82,28 +82,28 @@ class SemanticdbNavigationIndexTest extends FunSuite {
     index
 
   test("semanticdbTargetPaths parses Scala 3 -semanticdb-target") {
-    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target:/tmp/custom/output")
     )
     assertEquals(paths, List(os.Path("/tmp/custom/output")))
   }
 
   test("semanticdbTargetPaths parses Scala 2 -P:semanticdb:targetroot:") {
-    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
       List("-P:semanticdb:targetroot:/tmp/custom-s2")
     )
     assertEquals(paths, List(os.Path("/tmp/custom-s2")))
   }
 
   test("semanticdbTargetPaths returns empty when no target flags present") {
-    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
       List("-Xsemanticdb", "-deprecation")
     )
     assertEquals(paths, Nil)
   }
 
   test("semanticdbTargetPaths handles multiple target flags") {
-    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target:/tmp/out1", "-P:semanticdb:targetroot:/tmp/out2")
     )
     assertEquals(paths, List(os.Path("/tmp/out1"), os.Path("/tmp/out2")))
@@ -212,7 +212,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
       val defRange = new Range(new Position(0, 7), new Position(0, 14))
       val callRange = new Range(new Position(0, 22), new Position(0, 29))
 
-      val index = new SemanticdbNavigationIndex()
+      val index = new NavigationIndex()
       index.setTargetSlicesForTest(
         targetId,
         Map(
@@ -261,7 +261,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
       val defRange1 = new Range(new Position(0, 7), new Position(0, 14))
       val defRange2 = new Range(new Position(0, 7), new Position(0, 14))
 
-      val index = new SemanticdbNavigationIndex()
+      val index = new NavigationIndex()
       index.setTargetSlicesForTest(
         targetId,
         Map(
@@ -305,7 +305,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
     val workspace = os.pwd / "examples" / "hello"
     val sourceRoot = workspace / "sbt" / "src" / "main" / "scala"
     val rel = os.RelPath("src/main/scala/Main.scala")
-    val candidates = SemanticdbNavigationIndex.resolveCandidates(workspace, rel, List(sourceRoot))
+    val candidates = SemanticdbIndexing.resolveCandidates(workspace, rel, List(sourceRoot))
 
     assert(candidates.contains(sourceRoot / os.RelPath("Main.scala")))
   }
@@ -313,7 +313,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   test("definition and references resolve across files in same connection") {
     val tmp = os.temp.dir(prefix = "nav-crossfile")
     try
-      val index = new SemanticdbNavigationIndex()
+      val index = new NavigationIndex()
       val symbol = "_empty_/utils.getMsg()."
 
       val mainPath = tmp / "sbt" / "src" / "main" / "scala" / "Main.scala"
@@ -358,7 +358,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   test("definition drops duplicate ghost path entries") {
     val tmp = os.temp.dir(prefix = "nav-existing")
     try
-      val index = new SemanticdbNavigationIndex()
+      val index = new NavigationIndex()
       val symbol = "_empty_/utils.getMsg()."
 
       val mainUri = "file:///ws/examples/hello/sbt/src/main/scala/Main.scala"
@@ -398,7 +398,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   test("dependency source go-to-def resolves nested member via ownerName") {
     val tmp = os.temp.dir(prefix = "nav-ownername")
     try
-      val index = new SemanticdbNavigationIndex()
+      val index = new NavigationIndex()
       val workspaceUri = "file:///ws/Main.scala"
       val depUri = "file:///ws/dep/Foo.scala"
 
@@ -445,7 +445,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   test("dependency source go-to-def disambiguates same-named methods in different classes") {
     val tmp = os.temp.dir(prefix = "nav-disambig")
     try
-      val index = new SemanticdbNavigationIndex()
+      val index = new NavigationIndex()
       val workspaceUri = "file:///ws/Main.scala"
       val fooUri = "file:///ws/dep/Foo.scala"
       val bazUri = "file:///ws/dep/Baz.scala"

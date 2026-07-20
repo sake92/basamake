@@ -17,7 +17,7 @@ import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import ba.sake.tupson.{given, *}
 import ba.sake.basamake.core.*
 import ba.sake.basamake.config.BasamakeConfig
-import ba.sake.basamake.navigation.SemanticdbNavigationIndex
+import ba.sake.basamake.navigation.NavigationIndex
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
 
@@ -103,7 +103,7 @@ class BuildServerManager extends StrictLogging {
       currentState = BspConnectionState.Idle
     )
     val msgQueue = new LinkedBlockingQueue[ConnectionMessage]()
-    val ctx = ConnectionContext(record, msgQueue, SemanticdbNavigationIndex())
+    val ctx = ConnectionContext(record, msgQueue, NavigationIndex())
     connections(id) = ctx
 
     val bspDir = bspSpec.path.toNIO.getParent
@@ -452,7 +452,7 @@ private case class NavRefreshState(
 private case class ConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage],
-    navIndex: SemanticdbNavigationIndex,
+    navIndex: NavigationIndex,
     /** target → list of source directories */
     var sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
     /** target → list of source JARs */
