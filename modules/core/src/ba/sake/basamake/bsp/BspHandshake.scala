@@ -16,15 +16,15 @@ final case class HandshakeResult(
 
 object BspHandshake extends StrictLogging {
 
-  // Straight-line blocking handshake on the calling virtual thread.
-  // Errors propagate up to the supervisor for state transition.
+  /** Spawn a BSP process, create a JSON-RPC proxy implementing both BuildServer and ScalaBuildServer,
+    * run the full handshake (initialize → sources → dependency sources), and return the result.
+    * The proxy always supports both interfaces — use sites match on `buildServer` to access Scala-specific methods.
+    * On failure the process is killed before the exception propagates. */
   def execute(
       bspFile: BspConnectionSpec,
       queue: java.util.concurrent.BlockingQueue[ConnectionMessage],
       timeoutSec: Long = 60
   ): HandshakeResult = {
-    logger.info(s"Starting BSP handshake for ${bspFile.path} in ${bspFile.workingDir}. Args: ${bspFile.content.argv.mkString(" ")}")
-
     val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
     pb.directory(bspFile.workingDir.toIO)
     pb.redirectError(java.lang.ProcessBuilder.Redirect.PIPE)
@@ -36,13 +36,13 @@ object BspHandshake extends StrictLogging {
       val buildClient = BasamakeBuildClient(queue)
 
       val launcher =
-        new org.eclipse.lsp4j.jsonrpc.Launcher.Builder[BuildServer]()
-          .setRemoteInterface(classOf[BuildServer])
+        new org.eclipse.lsp4j.jsonrpc.Launcher.Builder[BasamakeBspServer]()
+          .setRemoteInterface(classOf[BasamakeBspServer])
           .setLocalService(buildClient)
           .setInput(process.getInputStream)
           .setOutput(process.getOutputStream)
           .create()
-      val buildServer = launcher.getRemoteProxy
+      val buildServer: BuildServer = launcher.getRemoteProxy
       launcher.startListening()
       logger.info(s"BSP launcher started for ${bspFile.path}.")
 

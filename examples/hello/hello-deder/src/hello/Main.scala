@@ -5,7 +5,7 @@ object Main:
     println("Hello, Basamake!")
     broken()
 
-  def broken(): Unit =
+  def broken(): Ufnit =
     // Deliberate compile error: type mismatch + undefined identifier
     val x: Int = "this is a string"
     val y = nonexistentFunction(x)

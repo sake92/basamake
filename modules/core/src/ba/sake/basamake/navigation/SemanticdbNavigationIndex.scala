@@ -241,10 +241,10 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       val rootsFromOutputs = outputRoots.flatMap(NavigationUriUtils.uriToPathOption)
       val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(NavigationUriUtils.uriToPathOption)
       val roots = (rootsFromOutputs ++ rootsFromClassDir).toSet
-      val flagsPresent = scalacOptions.exists { case (options, _) => hasSemanticdbFlags(options) }
-      if roots.nonEmpty && !flagsPresent then
-        val optsStr = scalacOptions.map(_._1).getOrElse(Nil).mkString(", ")
-        logger.warn(s"SemanticDB flags absent in scalac options [$optsStr]; indexing from discovered output/class directories")
+      scalacOptions.foreach { case (options, _) =>
+        if roots.nonEmpty && !hasSemanticdbFlags(options) then
+          logger.warn(s"SemanticDB flags absent in scalac options [${options.mkString(", ")}]; indexing from discovered output/class directories")
+      }
       roots
     }
   }
