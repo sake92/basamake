@@ -20,7 +20,6 @@ object BspHandshake extends StrictLogging {
   def execute(
       bspFile: BspConnectionSpec,
       queue: java.util.concurrent.BlockingQueue[ConnectionMessage],
-      durable: DurableRecord,
       timeoutSec: Long = 60
   ): HandshakeResult = {
     logger.info(s"Starting BSP handshake for ${bspFile.path} in ${bspFile.workingDir}. Args: ${bspFile.content.argv.mkString(" ")}")
@@ -30,55 +29,61 @@ object BspHandshake extends StrictLogging {
     pb.redirectError(java.lang.ProcessBuilder.Redirect.PIPE)
 
     val process = pb.start()
-    durable.bspProcess = Some(process) // store IMMEDIATELY — killable even if handshake fails
     logger.info(s"BSP process spawned for ${bspFile.path} (pid ${process.pid()})")
 
-    val buildClient = BasamakeBuildClient(queue)
+    try {
+      val buildClient = BasamakeBuildClient(queue)
 
-    val launcher =
-      new org.eclipse.lsp4j.jsonrpc.Launcher.Builder[BuildServer]()
-        .setRemoteInterface(classOf[BuildServer])
-        .setLocalService(buildClient)
-        .setInput(process.getInputStream)
-        .setOutput(process.getOutputStream)
-        .create()
-    val buildServer = launcher.getRemoteProxy
-    launcher.startListening()
-    logger.info(s"BSP launcher started for ${bspFile.path}.")
+      val launcher =
+        new org.eclipse.lsp4j.jsonrpc.Launcher.Builder[BuildServer]()
+          .setRemoteInterface(classOf[BuildServer])
+          .setLocalService(buildClient)
+          .setInput(process.getInputStream)
+          .setOutput(process.getOutputStream)
+          .create()
+      val buildServer = launcher.getRemoteProxy
+      launcher.startListening()
+      logger.info(s"BSP launcher started for ${bspFile.path}.")
 
-    // Handshake sequence
-    val caps = new BuildClientCapabilities(List("scala", "java").asJava)
-    val initParams = new InitializeBuildParams(
-      "basamake",
-      "0.1.0",
-      "2.1.0",
-      bspFile.workingDir.toNIO.toUri.toString,
-      caps
-    )
+      // Handshake sequence
+      val caps = new BuildClientCapabilities(List("scala", "java").asJava)
+      val initParams = new InitializeBuildParams(
+        "basamake",
+        "0.1.0",
+        "2.1.0",
+        bspFile.workingDir.toNIO.toUri.toString,
+        caps
+      )
 
-    logger.debug("Sending buildInitialize...")
-    buildServer.buildInitialize(initParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-    logger.debug("buildInitialize OK")
+      logger.debug("Sending buildInitialize...")
+      buildServer.buildInitialize(initParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      logger.debug("buildInitialize OK")
 
-    buildServer.onBuildInitialized()
-    logger.debug("onBuildInitialized sent")
+      buildServer.onBuildInitialized()
+      logger.debug("onBuildInitialized sent")
 
-    logger.debug("Requesting workspaceBuildTargets...")
-    val targetsResult = buildServer.workspaceBuildTargets().get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-    val targetIds = targetsResult.getTargets.asScala.map(_.getId).toList
-    logger.debug(s"Found ${targetIds.size} build targets: ${targetIds.map(_.getUri).mkString(", ")}")
+      logger.debug("Requesting workspaceBuildTargets...")
+      val targetsResult = buildServer.workspaceBuildTargets().get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      val targetIds = targetsResult.getTargets.asScala.map(_.getId).toList
+      logger.debug(s"Found ${targetIds.size} build targets: ${targetIds.map(_.getUri).mkString(", ")}")
 
-    logger.debug("Requesting buildTargetSources...")
-    val sourcesParams = new SourcesParams(targetIds.asJava)
-    val sourcesResult = buildServer.buildTargetSources(sourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-    logger.debug("buildTargetSources OK")
+      logger.debug("Requesting buildTargetSources...")
+      val sourcesParams = new SourcesParams(targetIds.asJava)
+      val sourcesResult = buildServer.buildTargetSources(sourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      logger.debug("buildTargetSources OK")
 
-    logger.debug("Requesting buildTargetDependencySources...")
-    val dependencySourcesParams = new DependencySourcesParams(targetIds.asJava)
-    val dependencySourcesResult =
-      buildServer.buildTargetDependencySources(dependencySourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-    logger.debug("buildTargetDependencySources OK")
+      logger.debug("Requesting buildTargetDependencySources...")
+      val dependencySourcesParams = new DependencySourcesParams(targetIds.asJava)
+      val dependencySourcesResult =
+        buildServer.buildTargetDependencySources(dependencySourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      logger.debug("buildTargetDependencySources OK")
 
-    HandshakeResult(process, buildServer, targetsResult, sourcesResult, dependencySourcesResult)
+      HandshakeResult(process, buildServer, targetsResult, sourcesResult, dependencySourcesResult)
+    } catch {
+      case e: Exception =>
+        val signaled = ProcessUtils.terminateProcessTree(process)
+        logger.warn(s"Handshake failed, killed process ${process.pid()} (signaled $signaled nodes)", e)
+        throw e
+    }
   }
 }

@@ -87,7 +87,7 @@ object BspConnectionSupervisor extends StrictLogging {
     logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
 
     try {
-      val result      = BspHandshake.execute(durable.bspFile, queue, durable, HandshakeTimeoutSec)
+      val result      = BspHandshake.execute(durable.bspFile, queue, HandshakeTimeoutSec)
       val process     = result.process
       val buildServer = result.buildServer
       val targets     = result.targets.getTargets.asScala.toList
@@ -135,7 +135,6 @@ object BspConnectionSupervisor extends StrictLogging {
           }
       } finally {
         destroyProcess(process)
-        durable.bspProcess = None
       }
     } catch {
       case e: Exception =>
@@ -145,16 +144,7 @@ object BspConnectionSupervisor extends StrictLogging {
   }
 
   private def handleHandshakeFailure(durable: DurableRecord): Unit = {
-    durable.bspProcess.foreach { process =>
-      val signaled = ProcessUtils.terminateProcessTree(process)
-      logger.warn(s"Handshake failure cleanup for PID ${process.pid()} (signaled $signaled process node(s))")
-    }
-    durable.bspProcess = None
     durable.currentState = BspConnectionState.Failed
-  }
-
-  private[bsp] def handleHandshakeFailureForTest(durable: DurableRecord): Unit = {
-    handleHandshakeFailure(durable)
   }
 
   private def dispatch(

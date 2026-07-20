@@ -37,7 +37,8 @@ object ProcessUtils {
         signaled += 1
     }
 
-    if root.isAlive then
+    // Don't try to kill the current JVM process
+    if root.isAlive && root.pid() != java.lang.ProcessHandle.current().pid() then
       root.destroy()
       if root.isAlive then root.destroyForcibly()
       signaled += 1

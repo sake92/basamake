@@ -1,5 +1,6 @@
 package ba.sake.basamake.manager
 
+import ba.sake.basamake.core.ProcessUtils
 import munit.FunSuite
 
 class BuildServerManagerTest extends FunSuite:
@@ -75,39 +76,16 @@ class BuildServerManagerTest extends FunSuite:
       known = current
   }
 
-  test("terminateProcess kills alive process") {
+  test("ProcessUtils.terminateProcessTree kills alive process") {
     val p = FakeProcess(initiallyAlive = true)
-    val killed = BuildServerManager.terminateProcess(p)
-    assert(killed)
+    val killed = ProcessUtils.terminateProcessTree(p)
+    assert(killed > 0)
     assertEquals(p.destroyForciblyCalls, 1)
   }
 
-  test("terminateProcess is no-op for dead process") {
+  test("ProcessUtils.terminateProcessTree is no-op for dead process") {
     val p = FakeProcess(initiallyAlive = false)
-    val killed = BuildServerManager.terminateProcess(p)
-    assert(!killed)
+    val killed = ProcessUtils.terminateProcessTree(p)
+    assertEquals(killed, 0)
     assertEquals(p.destroyForciblyCalls, 0)
-  }
-
-  test("terminateProcesses kills only alive processes and returns killed count") {
-    val p1 = FakeProcess(initiallyAlive = true)
-    val p2 = FakeProcess(initiallyAlive = false)
-    val p3 = FakeProcess(initiallyAlive = true)
-
-    val killed = BuildServerManager.terminateProcesses(List(p1, p2, p3))
-    assertEquals(killed, 2)
-    assertEquals(p1.destroyForciblyCalls, 1)
-    assertEquals(p2.destroyForciblyCalls, 0)
-    assertEquals(p3.destroyForciblyCalls, 1)
-  }
-
-  test("currentProcessDescendants includes spawned child process") {
-    val p = new java.lang.ProcessBuilder("bash", "-lc", "sleep 60").start()
-    try {
-      val descendants = BuildServerManager.currentProcessDescendants()
-      assert(descendants.exists(_.pid() == p.pid()))
-    } finally {
-      p.destroyForcibly()
-      p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
-    }
   }

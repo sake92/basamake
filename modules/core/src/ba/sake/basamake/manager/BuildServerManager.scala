@@ -44,7 +44,7 @@ class BuildServerManager extends StrictLogging {
   private val debounceLock = Object()
   private var pendingBspChanges: Set[os.Path] = Set.empty
   private var pendingDebounceTask: Option[TimerTask] = None
-  private var shutdownProcessSnapshot: List[java.lang.Process] = Nil
+  @volatile private var shuttingDown = false
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -178,8 +178,6 @@ class BuildServerManager extends StrictLogging {
         // Mark as Detached and send poison pill
         ctx.record.currentState = BspConnectionState.Detached
         ctx.queue.offer(ConnectionMessage.Shutdown)
-        ctx.record.bspProcess.foreach(BuildServerManager.terminateProcess)
-        ctx.record.bspProcess = None
         ctx.record.lastKnownDiagnostics = Map.empty
 
         // Remove from routing and connections
@@ -340,8 +338,11 @@ class BuildServerManager extends StrictLogging {
 
   // ---- Lifecycle ----
 
-  /** Graceful shutdown: stop watcher, detach all connections. */
+  /** Graceful shutdown: stop watcher, detach connections, kill descendant processes. */
   def shutdown(): Unit =
+    if shuttingDown then return
+    shuttingDown = true
+
     // Stop watcher first so no new connections spawned during shutdown
     if watcher != null then watcher.stop()
     debounceLock.synchronized {
@@ -351,30 +352,14 @@ class BuildServerManager extends StrictLogging {
     }
     debounceTimer.cancel()
 
-    shutdownProcessSnapshot = connections.values.flatMap(_.record.bspProcess).toList
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)
     logger.info("All connections detached")
 
-  /** Force-kill any BSP processes that survived graceful shutdown. */
-  def killBspProcesses(): Unit =
-    Thread.sleep(500)
-    killAllBspProcesses()
-    Thread.sleep(200)
-    killAllBspProcesses()
-
-  // TODO simplify: just kill all processes on shutdown, no need to track bspProcess in DurableRecord
-  private def killAllBspProcesses(): Unit = {
-    val directProcesses = (shutdownProcessSnapshot ++ connections.values.flatMap(_.record.bspProcess)).distinctBy(_.pid())
-    val directKilled = BuildServerManager.terminateProcesses(directProcesses)
-    val descendantKilled = BuildServerManager.terminateProcessHandles(BuildServerManager.currentProcessDescendants())
-
-    val totalKilled = directKilled + descendantKilled
-    if totalKilled > 0 then
-      logger.info(s"Force-killed $totalKilled process node(s) (ownedRoots=$directKilled, jvmDescendants=$descendantKilled)")
-    shutdownProcessSnapshot = Nil
-    connections.values.foreach(_.record.bspProcess = None)
-  }
+    // Kill any remaining descendant processes
+    val killed = ProcessUtils.terminateProcessHandleTree(java.lang.ProcessHandle.current())
+    if killed > 0 then
+      logger.info(s"Killed $killed descendant process node(s) during shutdown")
 
   private def connectionForUri(uri: String): Option[ConnectionContext] =
     router.route(uri).flatMap(connections.get)
@@ -414,20 +399,4 @@ object BuildServerManager:
     val modifiedFiles = known.intersect(current).intersect(changed)
     (newFiles, deletedFiles, modifiedFiles)
 
-  private[manager] def terminateProcess(process: java.lang.Process): Boolean =
-    if process != null && process.isAlive then
-      ProcessUtils.terminateProcessTree(process) > 0
-    else false
 
-  private[manager] def terminateProcesses(processes: Iterable[java.lang.Process]): Int =
-    processes.count(terminateProcess)
-
-  private[manager] def terminateProcessHandles(handles: Iterable[java.lang.ProcessHandle]): Int =
-    handles.map(ProcessUtils.terminateProcessHandleTree).sum
-
-  private[manager] def currentProcessDescendants(): List[java.lang.ProcessHandle] =
-    java.lang.ProcessHandle.current()
-      .descendants()
-      .iterator()
-      .asScala
-      .toList
