@@ -345,7 +345,7 @@ class BuildServerManager extends StrictLogging {
 
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)
-    logger.info("All connections detached")
+    logger.debug("All connections detached")
 
     // Kill any remaining descendant processes
     val killed = ProcessUtils.terminateProcessHandleTree(java.lang.ProcessHandle.current())
@@ -361,7 +361,7 @@ class BuildServerManager extends StrictLogging {
       buildServer: bsp4j.BuildServer,
       targetIds: List[String]
   ): Unit =
-    connections.get(connId) match
+    connections.get(connId) match {
       case Some(ctx) if targetIds.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) =>
         try
           ctx.navIndex.refresh(
@@ -378,6 +378,7 @@ class BuildServerManager extends StrictLogging {
           logger.warn(s"SemanticDB refresh failed for $connId: ${e.getMessage}")
       case Some(_) => ()
       case None    => ()
+    }
 }
 
 object BuildServerManager {

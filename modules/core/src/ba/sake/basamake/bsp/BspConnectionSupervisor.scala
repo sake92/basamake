@@ -204,9 +204,8 @@ object BspConnectionSupervisor extends StrictLogging {
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit
   ): Unit = {
     val targetIds = selectCompileTargetIds(uri, buildServer, targetToSourceRoots, allTargetIds)
-
     if targetIds.isEmpty then return
-    logger.info(s"Compile triggered for $uri")
+    logger.info(s"Compile triggered for $uri for targets: ${targetIds.mkString(", ")}")
     try
       val params = new ch.epfl.scala.bsp4j.CompileParams(
         targetIds.map(id => new ch.epfl.scala.bsp4j.BuildTargetIdentifier(id)).asJava
@@ -222,7 +221,28 @@ object BspConnectionSupervisor extends StrictLogging {
         logger.error(s"Compile failed for $uri", e)
   }
 
+  private[bsp] def selectCompileTargetIds(
+      uri: String,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      targetToSourceRoots: Map[String, List[String]],
+      allTargetIds: List[String]
+  ): List[String] = {
+    // 1. Best: exact file→target mapping via BSP inverseSources, if BSP server knows (implements it)
+    val inverseTargets = tryInverseSources(uri, buildServer)
+    if inverseTargets.nonEmpty then return inverseTargets
+    // 2. Good: directory-level source-root matching (no BSP call, from handshake cache)
+    val rootMatches = targetIdsForUri(uri, targetToSourceRoots)
+    if rootMatches.nonEmpty then rootMatches
+    // 3. Last resort: compile everything
+    else if allTargetIds.nonEmpty then
+      logger.warn(s"No matching BSP targets for $uri (inverseSources+sourceRoots both failed), falling back to all connection targets")
+      allTargetIds
+    else Nil
+  }
+
   private def targetToSourceRoots(sources: SourcesResult): Map[String, List[String]] =
+    def ensureTrailingSlash(uri: String): String =
+      if uri.endsWith("/") then uri else s"$uri/"
     sources.getItems.asScala.toList.map { item =>
       val targetId = item.getTarget.getUri
       val roots = Option(item.getSources)
@@ -236,42 +256,28 @@ object BspConnectionSupervisor extends StrictLogging {
       targetId -> roots
     }.toMap
 
-  private def ensureTrailingSlash(uri: String): String =
-    if uri.endsWith("/") then uri else s"$uri/"
-
   private[bsp] def targetIdsForUri(
       uri: String,
       targetToSourceRoots: Map[String, List[String]]
-  ): List[String] =
-    targetToSourceRoots.toList.collect {
-      case (targetId, roots) if roots.exists(matchesSourceRoot(uri, _)) => targetId
+  ): List[String] = {
+    def inSourceRoot(uri: String, sourceRoot: String): Boolean = {
+      val normalizedUri = NavigationUriUtils.normalizeUri(uri)
+      val normalizedSourceRoot = NavigationUriUtils.normalizeUri(sourceRoot)
+      if normalizedSourceRoot.endsWith("/") then normalizedUri.startsWith(normalizedSourceRoot)
+      else normalizedUri == normalizedSourceRoot || normalizedUri.startsWith(s"$normalizedSourceRoot/")
     }
-
-  private[bsp] def selectCompileTargetIds(
-      uri: String,
-      buildServer: ch.epfl.scala.bsp4j.BuildServer,
-      targetToSourceRoots: Map[String, List[String]],
-      allTargetIds: List[String]
-  ): List[String] =
-    // 1. Best: exact file→target mapping via BSP inverseSources
-    val inverseTargets = tryInverseSources(uri, buildServer)
-    if inverseTargets.nonEmpty then return inverseTargets
-
-    // 2. Good: directory-level source-root matching (no BSP call, from handshake cache)
-    val rootMatches = targetIdsForUri(uri, targetToSourceRoots)
-    if rootMatches.nonEmpty then rootMatches
-    // 3. Last resort: compile everything
-    else if allTargetIds.nonEmpty then
-      logger.warn(s"No matching BSP targets for $uri (inverseSources+sourceRoots both failed), falling back to all connection targets")
-      allTargetIds
-    else Nil
+    targetToSourceRoots.toList.collect {
+      case (targetId, roots) if roots.exists(inSourceRoot(uri, _)) => targetId
+    }
+  }
+  
 
   /** Ask the BSP server which targets contain `uri`.
     * Returns Nil if the call fails or inverseSources is unsupported — caller falls back. */
   private def tryInverseSources(
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer
-  ): List[String] =
+  ): List[String] = {
     if buildServer == null then return Nil // test path, or build server not yet connected
     try
       val params = new ch.epfl.scala.bsp4j.InverseSourcesParams(
@@ -284,15 +290,8 @@ object BspConnectionSupervisor extends StrictLogging {
       case e: Exception =>
         logger.debug(s"inverseSources failed for $uri (${e.getMessage}), falling back")
         Nil
+  }
 
-  private def normalizeFileUri(u: String): String =
-    NavigationUriUtils.normalizeUri(u)
-
-  private def matchesSourceRoot(uri: String, sourceRoot: String): Boolean =
-    val normalizedUri = normalizeFileUri(uri)
-    val normalizedSourceRoot = normalizeFileUri(sourceRoot)
-    if normalizedSourceRoot.endsWith("/") then normalizedUri.startsWith(normalizedSourceRoot)
-    else normalizedUri == normalizedSourceRoot || normalizedUri.startsWith(s"$normalizedSourceRoot/")
 
   // ---- Diagnostics ----
   private def handleDiagnostics(
