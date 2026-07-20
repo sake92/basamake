@@ -12,7 +12,7 @@ description: SemanticDB-based go-to-definition, references, and document symbols
 ```diagram:mermaid
 flowchart TD
     subgraph TRIGGER["Refresh Trigger"]
-        ROUTING["onRoutingReady<br/>(after handshake)"]
+        ROUTING["onRoutingReady<br/>(after BSP handshake)"]
         COMPILE["onCompileSuccess<br/>(after compile)"]
     end
 

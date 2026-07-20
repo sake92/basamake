@@ -32,6 +32,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
   )
 
   private val targetStates = mutable.Map.empty[String, TargetState]
+  private val targetSemanticdbFlags = mutable.Map.empty[String, Boolean]
 
   def clear(): Unit = synchronized {
     targetStates.clear()
@@ -77,10 +78,13 @@ final class SemanticdbNavigationIndex extends StrictLogging {
     val scalaOptionsByTarget = fetchScalacOptions(buildServer, buildTargetIds)
 
     targetIds.foreach { targetId =>
+      val opts = scalaOptionsByTarget.get(targetId)
       val semanticdbRoots = candidateSemanticdbRoots(
         outputRootsByTarget.getOrElse(targetId, Nil),
-        scalaOptionsByTarget.get(targetId)
+        opts
       )
+      val flagsDetected = opts.exists { case (options, _) => hasSemanticdbFlags(options) }
+      targetSemanticdbFlags(targetId) = flagsDetected
 
       val sourceRoots = sourceRootsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
       val dependencySourceUris = dependencySourceUrisByTarget.getOrElse(targetId, Nil)
@@ -129,6 +133,10 @@ final class SemanticdbNavigationIndex extends StrictLogging {
 
   def documentSymbols(uri: String): List[Either[SymbolInformation, org.eclipse.lsp4j.DocumentSymbol]] = synchronized {
     slicesForUri(NavigationUriUtils.normalizeUri(uri)).flatMap(_.documentSymbols)
+  }
+
+  def getTargetSemanticdbFlags: Map[String, Boolean] = synchronized {
+    targetSemanticdbFlags.toMap
   }
 
   private def slicesForUri(uri: String): List[SemanticdbFileSlice] =
@@ -193,6 +201,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
         Map.empty
     }
 
+  /** targetUri -> (scalacOptions, classDirectory) */
   private def fetchScalacOptions(
       buildServer: BuildServer,
       targetIds: java.util.List[BuildTargetIdentifier]
@@ -224,13 +233,19 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       outputRoots: List[String],
       scalacOptions: Option[(List[String], Option[String])]
   ): Set[os.Path] = {
-    val rootsFromOutputs = outputRoots.flatMap(NavigationUriUtils.uriToPathOption)
-    val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(NavigationUriUtils.uriToPathOption)
-    val roots = (rootsFromOutputs ++ rootsFromClassDir).toSet
-    val flagsPresent = scalacOptions.exists { case (options, _) => hasSemanticdbFlags(options) }
-    if roots.nonEmpty && !flagsPresent then
-      logger.debug("SemanticDB flags absent in scalac options; indexing from discovered output/class directories")
-    roots
+    val rootsFromSemanticdbTarget = scalacOptions.toList.flatMap { case (options, _) =>
+      SemanticdbNavigationIndex.semanticdbTargetPaths(options)
+    }.toSet
+    if rootsFromSemanticdbTarget.nonEmpty then rootsFromSemanticdbTarget
+    else {
+      val rootsFromOutputs = outputRoots.flatMap(NavigationUriUtils.uriToPathOption)
+      val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(NavigationUriUtils.uriToPathOption)
+      val roots = (rootsFromOutputs ++ rootsFromClassDir).toSet
+      val flagsPresent = scalacOptions.exists { case (options, _) => hasSemanticdbFlags(options) }
+      if roots.nonEmpty && !flagsPresent then
+        logger.warn("SemanticDB flags absent in scalac options; indexing from discovered output/class directories")
+      roots
+    }
   }
 
   private def hasSemanticdbFlags(options: List[String]): Boolean =
@@ -392,6 +407,19 @@ object SemanticdbNavigationIndex extends StrictLogging {
     semanticdbFiles.flatMap { file =>
       parseSemanticdbFile(workspaceRoot, file, sourceRoots).map(slice => slice.sourceUri -> slice)
     }.toMap
+  }
+
+  def semanticdbTargetPaths(options: List[String]): List[os.Path] = {
+    // Scala 3: -semanticdb-target <path>  (flag and value are separate tokens)
+    val scala3 = options.sliding(2).collect {
+      case "-semanticdb-target" :: path :: Nil => os.Path(path)
+    }.toList
+    // Scala 2: -P:semanticdb:targetroot:<path>
+    val scala2 = options.collect {
+      case s if s.startsWith("-P:semanticdb:targetroot:") =>
+        os.Path(s.stripPrefix("-P:semanticdb:targetroot:"))
+    }
+    scala3 ++ scala2
   }
 
   def semanticdbFilesUnder(root: os.Path): List[os.Path] =

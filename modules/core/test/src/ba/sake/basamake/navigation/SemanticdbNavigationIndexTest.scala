@@ -9,7 +9,8 @@ import org.eclipse.lsp4j.{Location, Position, Range}
 
 class SemanticdbNavigationIndexTest extends FunSuite {
 
-  private val workspaceRoot = os.pwd / "examples" / "hello" / "scalacli"
+  // TODO use temp dir, copy from resources..
+  private val workspaceRoot = os.pwd / "examples/hello/scalacli"
   private val sourceUri = (workspaceRoot / "bla.scala").toNIO.toUri.toString
   private val targetId = "target://bla"
 
@@ -79,6 +80,34 @@ class SemanticdbNavigationIndexTest extends FunSuite {
       Map(targetId -> dependencySourceUris)
     )
     index
+
+  test("semanticdbTargetPaths parses Scala 3 -semanticdb-target") {
+    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+      List("-Xsemanticdb", "-semanticdb-target", "/tmp/custom/output")
+    )
+    assertEquals(paths, List(os.Path("/tmp/custom/output")))
+  }
+
+  test("semanticdbTargetPaths parses Scala 2 -P:semanticdb:targetroot:") {
+    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+      List("-P:semanticdb:targetroot:/tmp/custom-s2")
+    )
+    assertEquals(paths, List(os.Path("/tmp/custom-s2")))
+  }
+
+  test("semanticdbTargetPaths returns empty when no target flags present") {
+    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+      List("-Xsemanticdb", "-deprecation")
+    )
+    assertEquals(paths, Nil)
+  }
+
+  test("semanticdbTargetPaths handles multiple target flags") {
+    val paths = SemanticdbNavigationIndex.semanticdbTargetPaths(
+      List("-Xsemanticdb", "-semanticdb-target", "/tmp/out1", "-P:semanticdb:targetroot:/tmp/out2")
+    )
+    assertEquals(paths, List(os.Path("/tmp/out1"), os.Path("/tmp/out2")))
+  }
 
   test("semanticdb index handles Scala 3 flags") {
     val index = refreshWith(List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, "-semanticdb-target", workspaceRoot.toString))

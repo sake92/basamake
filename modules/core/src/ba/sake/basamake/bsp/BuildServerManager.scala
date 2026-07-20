@@ -11,6 +11,7 @@ import org.eclipse.lsp4j.{DocumentSymbol, Location, Position, PublishDiagnostics
 import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
 import ch.epfl.scala.bsp4j
+import ba.sake.tupson.{given, *}
 import ba.sake.basamake.core.*
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.navigation.SemanticdbNavigationIndex
@@ -62,6 +63,8 @@ class BuildServerManager extends StrictLogging {
     )
     watcher.start()
     logger.debug(s"File watcher started for workspace $workspaceRoot")
+
+    startStatusWriter()
   }
 
   /** Apply per .bsp file overrides. Returns None if the connection is disabled. */
@@ -327,6 +330,41 @@ class BuildServerManager extends StrictLogging {
   }
 
   // ---- Lifecycle ----
+
+  private def startStatusWriter(): Unit = {
+    val thread = Thread.ofVirtual().start(() => {
+      while !shuttingDown do
+        try
+          writeStatus()
+          Thread.sleep(1000)
+        catch case _: InterruptedException => ()
+    })
+    thread.setName("basamake-status-writer")
+  }
+
+  private def writeStatus(): Unit = try {
+    val connSnapshots = this.synchronized { connections.toList }
+    val status = BasamakeStatus(
+      bspConnections = connSnapshots.map { case (id, ctx) =>
+        val relPath = try ctx.record.bspFile.path.relativeTo(workspaceRoot).toString
+          catch case _: Exception => ctx.record.bspFile.path.toString
+        BspConnectionStatus(
+          configPath = relPath,
+          state = ctx.record.currentState.toString,
+          targets = ctx.sourceRootsByTarget.keys.toList.sorted.map { targetId =>
+            BspTargetStatus(
+              id = targetId,
+              semanticdbEnabled = ctx.navIndex.getTargetSemanticdbFlags.get(targetId)
+            )
+          }
+        )
+      }
+    )
+    val statusDir = workspaceRoot / ".basamake"
+    os.makeDir.all(statusDir)
+    os.write.over(statusDir / "status.json", status.toJson)
+  } catch case e: Exception =>
+    logger.warn(s"Failed to write status.json: ${e.getMessage}")
 
   /** Graceful shutdown: stop watcher, detach connections, kill descendant processes. */
   def shutdown(): Unit = {

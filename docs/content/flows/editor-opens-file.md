@@ -62,5 +62,5 @@ sequenceDiagram
 
 - **Lazy spawn on first open** — If the connection's supervisor is in `Idle`, the `DidOpen` message triggers the full BSP handshake. No process starts until a file in that BSP's territory is opened.
 - **trackDidOpen** — `BuildServerManager` tracks open URIs so it can replay them after topology changes.
-- **After handshake** — `onRoutingReady` registers ground-truth source directories and triggers initial navigation index build.
+- **After BSP handshake** — `onRoutingReady` registers ground-truth source directories and triggers initial navigation index build.
 - **Compile triggered** — Whether newly spawned or already connected, the opened file triggers a compile.
