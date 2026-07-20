@@ -11,7 +11,7 @@ description: Basamake LSP server architecture, layer diagram, concurrency model,
 
 - **Multi-BSP by default** — a workspace may contain multiple build tools (sbt, Mill, scala-cli, etc.), each in a subdirectory with its own `.bsp/` config. Basamake discovers all of them and routes editor requests to the right one automatically.
 - **Lazy connections** — BSP processes are not started at editor startup. They spawn only when the first LSP message (didOpen/didSave) targets a URI in their territory.
-- **concurrency is done with virtual threads** — `BlockingQueue`, `@volatile` and `synchronized`.
+- **Simple concurrency with virtual threads** — `BlockingQueue`, `@volatile` and `synchronized`.
 - **SemanticDB for navigation** — go-to-definition and references use SemanticDB protobuf files produced by the compiler, plus a regex-based fallback for dependency sources.
 
 ---
