@@ -19,7 +19,7 @@ object Main extends StrictLogging {
     // auto-flush LSP messages
     val autoFlushOut = PrintStream(System.out, true, "UTF-8")
     val server = BasamakeLanguageServer()
-    val shutdownHook = Thread(() => server.cleanup(), "basamake-shutdown-hook")
+    val shutdownHook = new Thread(() => server.cleanup(), "basamake-shutdown-hook")
     Runtime.getRuntime.addShutdownHook(shutdownHook)
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
     server.connect(launcher.getRemoteProxy)

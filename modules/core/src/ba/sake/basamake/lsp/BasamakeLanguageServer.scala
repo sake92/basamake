@@ -45,28 +45,27 @@ class BasamakeLanguageServer(
   }
 
   override def initialized(params: InitializedParams): Unit = {
-    logger.info("Initialized. Spawning BSP connections...")
+    logger.debug("Initialized. Spawning BSP connections...")
     isInitialized = true
     val config = BasamakeConfig.load(workspaceRoot)
-    logger.info(s"Config loaded with ${config.bspOverrides.size} override(s)")
+    logger.debug(s"Config loaded with ${config.bspOverrides.size} override(s)")
     manager.initialize(workspaceRoot, client, config)
   }
 
   override def shutdown(): CompletableFuture[Object] = {
-    logger.info("starting shutdown...")
-    manager.shutdown()
+    logger.debug("shutdown...")
+    cleanup()
     CompletableFuture.completedFuture(null)
   }
 
   override def exit(): Unit = {
-    logger.info("exiting...")
-    manager.shutdown()
+    logger.debug("exit...")
+    cleanup()
     sys.exit(0)
   }
 
-  /** Called after transport closes (stdin EOF) to clean up child BSP processes. */
+  /** Also called after transport closes (stdin EOF) to clean up child BSP processes. */
   def cleanup(): Unit = {
-    logger.debug("Cleaning up BSP connections...")
     manager.shutdown()
   }
 

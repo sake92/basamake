@@ -339,9 +339,10 @@ class BuildServerManager extends StrictLogging {
   // ---- Lifecycle ----
 
   /** Graceful shutdown: stop watcher, detach connections, kill descendant processes. */
-  def shutdown(): Unit =
+  def shutdown(): Unit = {
     if shuttingDown then return
     shuttingDown = true
+    logger.info("shutdown started...")
 
     // Stop watcher first so no new connections spawned during shutdown
     if watcher != null then watcher.stop()
@@ -360,6 +361,7 @@ class BuildServerManager extends StrictLogging {
     val killed = ProcessUtils.terminateProcessHandleTree(java.lang.ProcessHandle.current())
     if killed > 0 then
       logger.info(s"Killed $killed descendant process node(s) during shutdown")
+  }
 
   private def connectionForUri(uri: String): Option[ConnectionContext] =
     router.route(uri).flatMap(connections.get)
