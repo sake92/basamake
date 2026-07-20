@@ -1,6 +1,7 @@
 package ba.sake.basamake.bsp
 
 import java.util.concurrent.BlockingQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.{BuildTarget, BuildTargetIdentifier, DependencySourcesResult, SourceItemKind, SourcesResult}
 import com.typesafe.scalalogging.StrictLogging
@@ -23,7 +24,7 @@ object BspConnectionSupervisor extends StrictLogging {
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit = (_, _) => ()
   ): Unit = {
-    logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle)")
+    logger.info(s"Supervisor started for ${durable.bspFile.get().path} (state: Idle)")
 
     while durable.currentState != BspConnectionState.Failed
         && durable.currentState != BspConnectionState.Detached
@@ -35,7 +36,7 @@ object BspConnectionSupervisor extends StrictLogging {
             case ConnectionMessage.Shutdown =>
               durable.currentState = BspConnectionState.Detached
             case ConnectionMessage.ReloadRequested(newSpec) =>
-              durable.bspFile = newSpec
+              durable.bspFile.set(newSpec)
             case _ =>
               logger.info(s"Idle -> Spawning (triggered by ${msg.getClass.getSimpleName})")
               transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, Some(msg))
@@ -59,12 +60,12 @@ object BspConnectionSupervisor extends StrictLogging {
         lspClient.showMessage(
           new MessageParams(
             MessageType.Error,
-            s"BSP connection to ${durable.bspFile.path} failed after ${durable.attemptCounter} attempt(s)"
+            s"BSP connection to ${durable.bspFile.get().path} failed after ${durable.attemptCounter.get()} attempt(s)"
           )
         )
-        logger.error(s"Connection ${durable.bspFile.path} reached Failed state")
+        logger.error(s"Connection ${durable.bspFile.get().path} reached Failed state")
       case _ =>
-        logger.info(s"Connection ${durable.bspFile.path} detached")
+        logger.info(s"Connection ${durable.bspFile.get().path} detached")
     }
   }
 
@@ -85,10 +86,10 @@ object BspConnectionSupervisor extends StrictLogging {
       triggerMsg: Option[ConnectionMessage]
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
-    logger.info(s"Spawning (attempt ${durable.attemptCounter + 1})")
+    logger.info(s"Spawning (attempt ${durable.attemptCounter.get() + 1})")
 
     try {
-      val result      = BspHandshake.execute(durable.bspFile, queue, HandshakeTimeoutSec)
+      val result      = BspHandshake.execute(durable.bspFile.get(), queue, HandshakeTimeoutSec)
       val process     = result.process
       val buildServer = result.buildServer
       val targets     = result.targets.getTargets.asScala.toList
@@ -96,11 +97,16 @@ object BspConnectionSupervisor extends StrictLogging {
       val targetSourceRootsById = targetToSourceRoots(result.sources)
 
       durable.currentState = BspConnectionState.Connected
-      durable.attemptCounter = 0
-      logger.info(s"Connected with ${durable.bspFile.path} (targets: ${allTargetIds.map(_.getUri).mkString(", ")})")
+      durable.attemptCounter.set(0)
+      logger.info(s"Connected with ${durable.bspFile.get().path} (targets: ${allTargetIds.map(_.getUri).mkString(", ")})")
+
+      // Immediate crash detection: listen for process exit
+      process.onExit().thenAccept { _ =>
+        queue.offer(ConnectionMessage.ProcessExited)
+      }
 
       // compile-in-flight flag: suppress health probes while waiting for buildTargetCompile response
-      var compileInFlight = false
+      val compileInFlight = new AtomicBoolean(false)
 
       try onRoutingReady(buildServer, targets, result.sources, result.dependencySources)
       catch case e: Exception => logger.error(s"Failed to announce routing info", e)
@@ -116,10 +122,10 @@ object BspConnectionSupervisor extends StrictLogging {
         while durable.currentState == BspConnectionState.Connected do
           val msg = queue.poll(HealthTtlSec, java.util.concurrent.TimeUnit.SECONDS)
           if msg == null then
-            if consecutiveProbeFailures > 0 && !compileInFlight && probeHealth(durable, buildServer) then
+            if consecutiveProbeFailures > 0 && !compileInFlight.get() && probeHealth(durable, buildServer) then
               consecutiveProbeFailures = 0
               lastSuccessfulResponse = java.lang.System.currentTimeMillis()
-            else if !compileInFlight && !probeHealth(durable, buildServer) then
+            else if !compileInFlight.get() && !probeHealth(durable, buildServer) then
               consecutiveProbeFailures += 1
               if consecutiveProbeFailures >= 2 then
                 logger.warn("Health probe failed 2x — backing off")
@@ -129,7 +135,7 @@ object BspConnectionSupervisor extends StrictLogging {
           else {
             val now = java.lang.System.currentTimeMillis()
             val stale = (now - lastSuccessfulResponse) > HealthTtlSec * 1000
-            if stale && !compileInFlight then
+            if stale && !compileInFlight.get() then
               if probeHealth(durable, buildServer) then
                 consecutiveProbeFailures = 0
                 lastSuccessfulResponse = now
@@ -163,7 +169,7 @@ object BspConnectionSupervisor extends StrictLogging {
   }
 
   private def handleHandshakeFailure(durable: DurableRecord): Unit = {
-    logger.info(s"Handshake failed for ${durable.bspFile.path} — entering backoff")
+    logger.info(s"Handshake failed for ${durable.bspFile.get().path} — entering backoff")
     transitionToBackoff(durable)
   }
 
@@ -175,7 +181,7 @@ object BspConnectionSupervisor extends StrictLogging {
       targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
       allTargetIds: List[BuildTargetIdentifier],
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
-      compileInFlight: => Boolean
+      compileInFlight: AtomicBoolean
   ): Unit = 
     msg match {
       case ConnectionMessage.ProcessExited =>
@@ -183,7 +189,7 @@ object BspConnectionSupervisor extends StrictLogging {
         transitionToBackoff(durable)
       case ConnectionMessage.ReloadRequested(newSpec) =>
         logger.info("Reload requested")
-        durable.bspFile = newSpec
+        durable.bspFile.set(newSpec)
         durable.currentState = BspConnectionState.Reloading
       case ConnectionMessage.BspPublishDiagnostics(params) =>
         handleDiagnostics(params, durable, lspClient)
@@ -227,14 +233,16 @@ object BspConnectionSupervisor extends StrictLogging {
       allTargetIds: List[BuildTargetIdentifier],
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
       durable: DurableRecord,
-      compileInFlight: => Boolean
+      compileInFlight: AtomicBoolean
   ): Unit = {
     val targetIds = selectCompileTargetIds(uri, buildServer, targetToSourceRoots, allTargetIds, durable)
     if targetIds.isEmpty then return
     logger.info(s"Compile triggered for $uri for targets: ${targetIds.map(_.getUri).mkString(", ")}")
+    compileInFlight.set(true)
     try
       val params = new ch.epfl.scala.bsp4j.CompileParams(targetIds.asJava)
-      val result = buildServer.buildTargetCompile(params).get()
+      val result = buildServer.buildTargetCompile(params)
+        .get(durable.bspFile.get().compileTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.info(s"Compile completed for $uri with status ${result.getStatusCode}")
       if result.getStatusCode == ch.epfl.scala.bsp4j.StatusCode.OK then
         try onCompileSuccess(buildServer, targetIds)
@@ -243,6 +251,8 @@ object BspConnectionSupervisor extends StrictLogging {
     catch
       case e: Exception =>
         logger.error(s"Compile failed for $uri", e)
+    finally
+      compileInFlight.set(false)
   }
 
   private[bsp] def selectCompileTargetIds(
@@ -250,7 +260,12 @@ object BspConnectionSupervisor extends StrictLogging {
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
       targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
       allTargetIds: List[BuildTargetIdentifier],
-      durable: DurableRecord = DurableRecord(null, 0, Map.empty, BspConnectionState.Idle)
+      durable: DurableRecord = DurableRecord(
+        new java.util.concurrent.atomic.AtomicReference(null),
+        new java.util.concurrent.atomic.AtomicInteger(0),
+        new java.util.concurrent.atomic.AtomicReference(Map.empty),
+        BspConnectionState.Idle
+      )
   ): List[BuildTargetIdentifier] = {
     // 1. Best: exact file→target mapping via BSP inverseSources, if BSP server knows (implements it)
     val inverseTargets = tryInverseSources(uri, buildServer, durable)
@@ -318,7 +333,7 @@ object BspConnectionSupervisor extends StrictLogging {
       case e: Exception =>
         if !durable.inverseSourcesUnsupported then
           durable.inverseSourcesUnsupported = true
-          logger.info(s"inverseSources unsupported by ${durable.bspFile.content.name} (${e.getMessage}) — caching, will skip")
+          logger.info(s"inverseSources unsupported by ${durable.bspFile.get().content.name} (${e.getMessage}) — caching, will skip")
         Nil
   }
 
@@ -338,13 +353,13 @@ object BspConnectionSupervisor extends StrictLogging {
       .toList
 
     val perTarget: Map[BuildTargetIdentifier, List[Diagnostic]] =
-      durable.lastKnownDiagnostics.getOrElse(uri, Map.empty)
+      durable.lastKnownDiagnostics.get().getOrElse(uri, Map.empty)
 
     val updated =
       if params.getReset then perTarget + (targetId -> newDiags)
       else perTarget + (targetId -> (perTarget.getOrElse(targetId, Nil) ++ newDiags))
 
-    durable.lastKnownDiagnostics = durable.lastKnownDiagnostics + (uri -> updated)
+    durable.lastKnownDiagnostics.set(durable.lastKnownDiagnostics.get() + (uri -> updated))
 
     // Republish union across all targets
     val allDiags = updated.values.flatten.toList.asJava
@@ -390,16 +405,16 @@ object BspConnectionSupervisor extends StrictLogging {
         || durable.currentState == BspConnectionState.Failed
     then return
 
-    durable.attemptCounter += 1
-    if durable.attemptCounter > MaxCrashRetries then
+    durable.attemptCounter.incrementAndGet()
+    if durable.attemptCounter.get() > MaxCrashRetries then
       durable.currentState = BspConnectionState.Failed
       logger.error(
-        s"Connection ${durable.bspFile.path} failed after ${durable.attemptCounter} consecutive crash(es)"
+        s"Connection ${durable.bspFile.get().path} failed after ${durable.attemptCounter.get()} consecutive crash(es)"
       )
     else
       durable.currentState = BspConnectionState.BackoffWait
       logger.info(
-        s"Connection ${durable.bspFile.path} crashed → BackoffWait, will retry (${durable.attemptCounter}/${MaxCrashRetries})"
+        s"Connection ${durable.bspFile.get().path} crashed → BackoffWait, will retry (${durable.attemptCounter.get()}/${MaxCrashRetries})"
       )
   }
 
@@ -407,25 +422,26 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage]
   ): Unit = {
-    val delayMs = Math.min(1000L * Math.pow(2, durable.attemptCounter - 1).toLong, 30000L)
-    logger.info(s"Backing off for ${delayMs}ms (attempt ${durable.attemptCounter})")
+    val delayMs = Math.min(1000L * Math.pow(2, durable.attemptCounter.get() - 1).toLong, 30000L)
+    logger.info(s"Backing off for ${delayMs}ms (attempt ${durable.attemptCounter.get()})")
     val msg = queue.poll(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
     if durable.currentState == BspConnectionState.Detached then return
 
     msg match
       case ConnectionMessage.ReloadRequested(newSpec) =>
-        durable.bspFile = newSpec
+        durable.bspFile.set(newSpec)
         durable.currentState = BspConnectionState.Reloading
       case ConnectionMessage.Shutdown =>
         durable.currentState = BspConnectionState.Detached
       case _ =>
         if durable.currentState == BspConnectionState.Detached then return
+        if msg != null then queue.offer(msg) // re-offer before transition
         durable.currentState = BspConnectionState.Spawning
   }
 
   private def probeHealth(durable: DurableRecord, buildServer: ch.epfl.scala.bsp4j.BuildServer): Boolean = {
     try
-      logger.debug(s"Sending health probe for ${durable.bspFile.path} (workspaceBuildTargets)...")
+      logger.debug(s"Sending health probe for ${durable.bspFile.get().path} (workspaceBuildTargets)...")
       buildServer.workspaceBuildTargets()
         .get(HealthProbeTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("Health probe succeeded")

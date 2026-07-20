@@ -1,11 +1,10 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.{BlockingQueue, ConcurrentHashMap, LinkedBlockingQueue}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.locks.LockSupport
-import scala.collection.mutable
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
@@ -25,22 +24,21 @@ import ba.sake.basamake.util.ProcessUtils
 /** Manages BSP connections in a workspace, including lifecycle, message routing, and shutdown. */
 class BuildServerManager extends StrictLogging {
 
-  // TODO check thread safety
-  private val connections = mutable.LinkedHashMap[BspConnectionId, ConnectionContext]()
-  private val navStates = mutable.HashMap.empty[BspConnectionId, NavRefreshState]
+  private val connections = ConcurrentHashMap[BspConnectionId, ConnectionContext]()
+  private val navStates = ConcurrentHashMap[BspConnectionId, NavRefreshState]()
   private var client: LanguageClient = uninitialized
   private var workspaceRoot: os.Path = uninitialized
   private var config: BasamakeConfig = uninitialized
   private val router = BspRouter()
   private var watcher: FileChangeWatcher = uninitialized
   private var knownBspFiles: Set[os.Path] = Set.empty
-  private val openUris = mutable.Set.empty[String]
+  private val openUris = ConcurrentHashMap.newKeySet[String]()
   private val debounceMs = 300L
   private val debounceTimer = new Timer("basamake-bsp-watcher-debounce", true)
   private val debounceLock = Object()
   private var pendingBspChanges: Set[os.Path] = Set.empty
   private var pendingDebounceTask: Option[TimerTask] = None
-  @volatile private var shuttingDown = false
+  private val shuttingDown = new AtomicBoolean(false)
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -80,8 +78,11 @@ class BuildServerManager extends StrictLogging {
     config.bspOverrides.find(_.bspFile == relPath) match {
       case Some(ov) =>
         if ov.enabled then {
-          val merged = originalSpec.copy(debounceMs = ov.debounceMs.getOrElse(originalSpec.debounceMs))
-          logger.debug(s"Override applied for $relPath: debounceMs=${merged.debounceMs}")
+          val merged = originalSpec.copy(
+            debounceMs = ov.debounceMs.getOrElse(originalSpec.debounceMs),
+            compileTimeoutSec = ov.compileTimeoutSec.getOrElse(originalSpec.compileTimeoutSec)
+          )
+          logger.debug(s"Override applied for $relPath: debounceMs=${merged.debounceMs} compileTimeoutSec=${merged.compileTimeoutSec}")
           Some(merged)
         } else {
           logger.info(s"BSP connection $relPath is disabled by override")
@@ -97,14 +98,14 @@ class BuildServerManager extends StrictLogging {
     logger.debug(s"Attaching (lazy) BSP connection for ${bspSpec.path} (${bspSpec.content.name})")
     val id = BspConnectionId(bspSpec.path.toString)
     val record = DurableRecord(
-      bspFile = bspSpec,
-      attemptCounter = 0,
-      lastKnownDiagnostics = Map.empty,
+      bspFile = new AtomicReference(bspSpec),
+      attemptCounter = new AtomicInteger(0),
+      lastKnownDiagnostics = new AtomicReference(Map.empty),
       currentState = BspConnectionState.Idle
     )
     val msgQueue = new LinkedBlockingQueue[ConnectionMessage]()
     val ctx = ConnectionContext(record, msgQueue, NavigationIndex())
-    connections(id) = ctx
+    connections.put(id, ctx)
 
     val bspDir = bspSpec.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
@@ -127,7 +128,7 @@ class BuildServerManager extends StrictLogging {
             logger.warn(s"Nav refresh failed for $id: ${e.getMessage}", e)
           targets = navRefreshPending.getAndSet(null)
     })
-    navStates(id) = NavRefreshState(navRefreshPending, navRefreshThread)
+    navStates.put(id, NavRefreshState(navRefreshPending, navRefreshThread))
 
     val routingReadyCallback = (buildServer: bsp4j.BuildServer,
                            targets: List[bsp4j.BuildTarget],
@@ -184,32 +185,33 @@ class BuildServerManager extends StrictLogging {
 
   /** Cleanly detach a connection: publish empty diagnostics, remove routing, kill process. */
   private def detachConnection(connId: BspConnectionId): Unit =
-    connections.get(connId) match {
+    Option(connections.get(connId)) match {
       case Some(ctx) =>
         logger.debug(s"Detaching connection $connId")
         // Publish empty diagnostics for all files owned by this connection
-        for uri <- ctx.record.lastKnownDiagnostics.keys do
+        val knownDiags = ctx.record.lastKnownDiagnostics.get()
+        for uri <- knownDiags.keys do
           client.publishDiagnostics(
             new PublishDiagnosticsParams(uri, java.util.Collections.emptyList())
           )
-        logger.debug(s"Cleared diagnostics for ${ctx.record.lastKnownDiagnostics.size} files")
+        logger.debug(s"Cleared diagnostics for ${knownDiags.size} files")
 
         // Mark as Detached and send poison pill
         ctx.shuttingDown = true
         ctx.record.currentState = BspConnectionState.Detached
         ctx.queue.offer(ConnectionMessage.Shutdown)
-        ctx.record.lastKnownDiagnostics = Map.empty
+        ctx.record.lastKnownDiagnostics.set(Map.empty)
 
         // Remove from routing and connections
         router.unregisterGroundTruth(connId)
-        val bspDir = ctx.record.bspFile.path.toNIO.getParent
+        val bspDir = ctx.record.bspFile.get().path.toNIO.getParent
         router.unregisterBspRoot(bspDir, connId)
         ctx.navIndex.clear()
-        navStates.remove(connId).foreach { navState =>
+        Option(navStates.remove(connId)).foreach { navState =>
           navState.shuttingDown = true
           LockSupport.unpark(navState.thread)
         }
-        connections -= connId
+        connections.remove(connId)
         logger.debug(s"Connection $connId detached")
       case None =>
         logger.warn(s"Cannot detach unknown connection $connId")
@@ -219,7 +221,7 @@ class BuildServerManager extends StrictLogging {
   private def reloadConnection(connId: BspConnectionId, newSpec: BspConnectionSpec): Unit =
     applyOverrides(newSpec) match {
       case Some(merged) =>
-        connections.get(connId) match
+        Option(connections.get(connId)) match
           case Some(ctx) =>
             logger.debug(s"Requesting reload for $connId")
             ctx.queue.offer(ConnectionMessage.ReloadRequested(merged))
@@ -233,7 +235,7 @@ class BuildServerManager extends StrictLogging {
   def route(uri: String): Option[BlockingQueue[ConnectionMessage]] =
     router.route(uri) match {
       case Some(connId) =>
-        connections.get(connId).map(_.queue) match
+        Option(connections.get(connId)).map(_.queue) match
           case some @ Some(_) => some
           case None =>
             logger.warn(s"Connection $connId not found in connections map")
@@ -243,30 +245,30 @@ class BuildServerManager extends StrictLogging {
         None
     }
 
-  def definition(uri: String, position: Position): List[Location] = synchronized {
+  def definition(uri: String, position: Position): List[Location] = {
     val result = connectionForUri(uri).toList.flatMap(_.navIndex.definition(uri, position))
     logger.debug(s"definition uri=$uri line=${position.getLine} ch=${position.getCharacter} hits=${result.size}")
     result
   }
 
-  def references(uri: String, position: Position): List[Location] = synchronized {
+  def references(uri: String, position: Position): List[Location] = {
     val result = connectionForUri(uri).toList.flatMap(_.navIndex.references(uri, position))
     logger.debug(s"references uri=$uri line=${position.getLine} ch=${position.getCharacter} hits=${result.size}")
     result
   }
 
-  def documentSymbols(uri: String): List[Either[SymbolInformation, DocumentSymbol]] = synchronized {
+  def documentSymbols(uri: String): List[Either[SymbolInformation, DocumentSymbol]] = {
     val result = connectionForUri(uri).toList.flatMap(_.navIndex.documentSymbols(uri))
     logger.debug(s"documentSymbols uri=$uri hits=${result.size}")
     result
   }
 
-  def trackDidOpen(uri: String): Unit = synchronized {
-    openUris += uri
+  def trackDidOpen(uri: String): Unit = {
+    openUris.add(uri)
   }
 
-  def trackDidClose(uri: String): Unit = synchronized {
-    openUris -= uri
+  def trackDidClose(uri: String): Unit = {
+    openUris.remove(uri)
   }
 
   // ---- File watcher → BSP event classification ----
@@ -355,10 +357,10 @@ class BuildServerManager extends StrictLogging {
   /** Re-dispatch compile triggers for currently open and currently errored files after BSP topology changes. */
   private def replayOpenAndErroredUris(): Unit = {
     val candidateUris =
-      openUris.toSet ++ connections.values.flatMap(_.record.lastKnownDiagnostics.keys)
+      openUris.asScala.toSet ++ connections.values().asScala.flatMap(_.record.lastKnownDiagnostics.get().keys)
 
     for uri <- candidateUris do
-      router.route(uri).flatMap(connections.get).foreach: ctx =>
+      router.route(uri).flatMap(id => Option(connections.get(id))).foreach: ctx =>
         ctx.queue.offer(ConnectionMessage.RecheckUri(uri))
   }
 
@@ -366,7 +368,7 @@ class BuildServerManager extends StrictLogging {
 
   private def startStatusWriter(): Unit = {
     val thread = Thread.ofVirtual().start(() => {
-      while !shuttingDown do
+      while !shuttingDown.get() do
         try
           writeStatus()
           Thread.sleep(1000)
@@ -376,11 +378,12 @@ class BuildServerManager extends StrictLogging {
   }
 
   private def writeStatus(): Unit = try {
-    val connSnapshots = this.synchronized { connections.toList }
+    val connSnapshots = connections.entrySet().asScala.map(e => (e.getKey, e.getValue)).toList
     val status = BasamakeStatus(
       bspConnections = connSnapshots.map { case (id, ctx) =>
-        val relPath = try ctx.record.bspFile.path.relativeTo(workspaceRoot).toString
-          catch case _: Exception => ctx.record.bspFile.path.toString
+        val bspFilePath = ctx.record.bspFile.get().path
+        val relPath = try bspFilePath.relativeTo(workspaceRoot).toString
+          catch case _: Exception => bspFilePath.toString
         BspConnectionStatus(
           configPath = relPath,
           state = ctx.record.currentState.toString,
@@ -402,8 +405,7 @@ class BuildServerManager extends StrictLogging {
 
   /** Graceful shutdown: stop watcher, detach connections, kill descendant processes. */
   def shutdown(): Unit = {
-    if shuttingDown then return
-    shuttingDown = true
+    if !shuttingDown.compareAndSet(false, true) then return
     logger.info("shutdown started...")
 
     // Stop watcher first so no new connections spawned during shutdown
@@ -415,7 +417,7 @@ class BuildServerManager extends StrictLogging {
     }
     debounceTimer.cancel()
 
-    connections.keys.toList.foreach: connId =>
+    connections.keySet().asScala.toList.foreach: connId =>
       detachConnection(connId)
     logger.debug("All connections detached")
 
@@ -426,7 +428,7 @@ class BuildServerManager extends StrictLogging {
   }
 
   private def connectionForUri(uri: String): Option[ConnectionContext] =
-    router.route(uri).flatMap(connections.get)
+    router.route(uri).flatMap(id => Option(connections.get(id)))
 
 }
 

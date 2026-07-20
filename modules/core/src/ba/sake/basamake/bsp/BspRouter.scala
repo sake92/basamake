@@ -1,6 +1,8 @@
 package ba.sake.basamake.bsp
 
 import java.nio.file.{Files, Path}
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import scala.collection.mutable
 import com.typesafe.scalalogging.StrictLogging
 
@@ -18,29 +20,34 @@ class BspRouter extends StrictLogging {
 
   // Fallback routing (bootstrap heuristic)
   // Maps directory path → set of connection IDs in the nearest .bsp/ ancestor
-  private val bootstrapCache: mutable.HashMap[Path, Option[Set[BspConnectionId]]] =
-    mutable.HashMap.empty
+  private val bootstrapCache: ConcurrentHashMap[Path, Option[Set[BspConnectionId]]] =
+    ConcurrentHashMap()
 
   // .bsp directory path → connection IDs spawned from it
-  private var bspRoots: Map[Path, Set[BspConnectionId]] = Map.empty
+  private val bspRoots: AtomicReference[Map[Path, Set[BspConnectionId]]] =
+    AtomicReference(Map.empty)
 
   /** Register a .bsp root directory and its connection IDs.
     * Called when attaching a new connection (at LSP init or watcher detects new .bsp/). */
   def registerBspRoot(bspDir: Path, connIds: Set[BspConnectionId]): Unit = {
     val canonical = bspDir.toRealPath()
-    bspRoots = bspRoots + (canonical -> (bspRoots.getOrElse(canonical, Set.empty) ++ connIds))
-    logger.debug(s"Registered BSP root $canonical → ${bspRoots(canonical)}")
+    bspRoots.updateAndGet { current =>
+      current + (canonical -> (current.getOrElse(canonical, Set.empty) ++ connIds))
+    }
+    logger.debug(s"Registered BSP root $canonical → ${bspRoots.get()(canonical)}")
   }
 
   /** Remove a connection from a .bsp root. Deletes the root only when it no longer owns any connection IDs. */
   def unregisterBspRoot(bspDir: Path, connId: BspConnectionId): Unit = {
     val canonical = bspDir.toRealPath()
-    bspRoots.get(canonical) match
-      case Some(connIds) =>
-        val updated = connIds - connId
-        if updated.nonEmpty then bspRoots = bspRoots + (canonical -> updated)
-        else bspRoots = bspRoots - canonical
-      case None => ()
+    bspRoots.updateAndGet { current =>
+      current.get(canonical) match
+        case Some(connIds) =>
+          val updated = connIds - connId
+          if updated.nonEmpty then current + (canonical -> updated)
+          else current - canonical
+        case None => current
+    }
     bootstrapCache.clear()
     logger.debug(s"Unregistered connection $connId from BSP root $canonical")
   }
@@ -82,29 +89,30 @@ class BspRouter extends StrictLogging {
     var dir = filePath.getParent
     if dir == null then return None
 
+    val roots = bspRoots.get()
     val visited = mutable.ListBuffer[Path]()
     var found: Option[Set[BspConnectionId]] = None
 
     while dir != null && found.isEmpty do
       bootstrapCache.get(dir) match
-        case Some(cached) =>
-          found = cached
-        case None =>
+        case null =>
           visited += dir
           // Check if this directory has a .bsp/ subdir that we know about
           val bspSubdir = dir.resolve(".bsp")
           try
             val canonical = bspSubdir.toRealPath()
-            bspRoots.get(canonical) match
+            roots.get(canonical) match
               case Some(connIds) if connIds.nonEmpty =>
                 found = Some(connIds)
               case _ => ()
           catch case _: java.nio.file.NoSuchFileException => ()
+        case cached =>
+          found = cached
       // Walk up to parent (stop at root)
       dir = if dir.getParent != null && dir.getParent != dir then dir.getParent else null
 
     // Cache result for all visited directories
-    for v <- visited do bootstrapCache(v) = found
+    for v <- visited do bootstrapCache.put(v, found)
 
     // Return deterministic connection ID if any found
     found.flatMap(_.toList.sortBy(_.value).headOption)
@@ -112,12 +120,13 @@ class BspRouter extends StrictLogging {
 
   private def tieBreakByNearestBspRoot(filePath: Path, candidates: List[BspConnectionId]): Option[BspConnectionId] = {
     val candidateSet = candidates.toSet
+    val roots = bspRoots.get()
     var dir = filePath.getParent
     while dir != null do
       val bspSubdir = dir.resolve(".bsp")
       try
         val canonical = bspSubdir.toRealPath()
-        bspRoots.get(canonical).map(_.intersect(candidateSet)) match
+        roots.get(canonical).map(_.intersect(candidateSet)) match
           case Some(overlap) if overlap.nonEmpty =>
             return overlap.toList.sortBy(_.value).headOption
           case _ => ()
