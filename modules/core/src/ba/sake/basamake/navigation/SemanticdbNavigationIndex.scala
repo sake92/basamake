@@ -318,13 +318,16 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       sourceUri: String,
       content: String
   ): List[SemanticdbFileSlice] = {
-    val definitions = DependencySourceParsing.extractDefinitions(content)
+    val fileName = sourceUri.split('/').lastOption.getOrElse(sourceUri)
+    val definitions = DependencySourceParsing.extractDefinitions(fileName, content)
     if definitions.isEmpty then Nil
     else {
       val occurrences = definitions.flatMap { defn =>
-        Some(SemanticdbOccurrence(defn.name, defn.range, isDefinition = true))
+        Some(SemanticdbOccurrence(defn.symbol, defn.range, isDefinition = true))
       }
-      val symbolDefinitions = definitions.groupMap(_.name)(defn => new Location(sourceUri, defn.range))
+      val symbolDefinitions =
+        definitions.groupMap(_.symbol)(d => new Location(sourceUri, d.range)) ++
+          definitions.groupMap(_.name)(d => new Location(sourceUri, d.range))
       val documentSymbols =
         definitions.flatMap { defn =>
           val symbolInfo = new SymbolInformation()
