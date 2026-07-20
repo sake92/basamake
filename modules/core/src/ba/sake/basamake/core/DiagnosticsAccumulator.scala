@@ -1,5 +1,6 @@
 package ba.sake.basamake.core
 
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.*
 
 /**
@@ -9,7 +10,7 @@ import org.eclipse.lsp4j.*
 object DiagnosticsAccumulator {
 
   /** targetId → List[Diagnostic] */
-  type PerTarget = Map[String, List[Diagnostic]]
+  type PerTarget = Map[BuildTargetIdentifier, List[Diagnostic]]
 
   /** Full accumulated state: URI → PerTarget */
   type State = Map[String, PerTarget]
@@ -24,7 +25,7 @@ object DiagnosticsAccumulator {
   def apply(
       state: State,
       uri: String,
-      targetId: String,
+      targetId: BuildTargetIdentifier,
       reset: Boolean,
       newDiags: List[Diagnostic]
   ): (State, List[Diagnostic]) =

@@ -12,7 +12,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
   // TODO use temp dir, copy from resources..
   private val workspaceRoot = os.pwd / "examples/hello/scalacli"
   private val sourceUri = (workspaceRoot / "bla.scala").toNIO.toUri.toString
-  private val targetId = "target://bla"
+  private val targetId = new BuildTargetIdentifier("target://bla")
 
   private def buildServerWith(options: List[String], dependencySourceUris: List[String] = Nil): BuildServer =
     val handler = new InvocationHandler {
@@ -23,7 +23,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
               new OutputPathsResult(
                 List(
                   new OutputPathsItem(
-                    new BuildTargetIdentifier(targetId),
+                    targetId,
                     List(
                       new OutputPathItem(workspaceRoot.toNIO.toUri.toString, OutputPathItemKind.DIRECTORY)
                     ).asJava
@@ -36,7 +36,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
               new ScalacOptionsResult(
                 List(
                   new ScalacOptionsItem(
-                    new BuildTargetIdentifier(targetId),
+                    targetId,
                     options.asJava,
                     List.empty[String].asJava,
                     workspaceRoot.toString
@@ -49,7 +49,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
               new DependencySourcesResult(
                 List(
                   new DependencySourcesItem(
-                    new BuildTargetIdentifier(targetId),
+                    targetId,
                     dependencySourceUris.asJava
                   )
                 ).asJava
@@ -343,7 +343,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
         documentSymbols = Nil
       )
 
-      index.setTargetSlicesForTest("target://sbt-main", Map(mainUri -> mainSlice, utilsUri -> utilsSlice))
+      index.setTargetSlicesForTest(new BuildTargetIdentifier("target://sbt-main"), Map(mainUri -> mainSlice, utilsUri -> utilsSlice))
 
       val defs = index.definition(mainUri, new Position(2, 10))
       val refs = index.references(mainUri, new Position(2, 10))
@@ -387,7 +387,7 @@ class SemanticdbNavigationIndexTest extends FunSuite {
         documentSymbols = Nil
       )
 
-      index.setTargetSlicesForTest("target://sbt-main", Map(mainUri -> mainSlice, existingUtilsUri -> defsSlice))
+      index.setTargetSlicesForTest(new BuildTargetIdentifier("target://sbt-main"), Map(mainUri -> mainSlice, existingUtilsUri -> defsSlice))
       val defs = index.definition(mainUri, new Position(2, 10))
 
       assertEquals(defs.map(_.getUri), List(existingUtilsUri))

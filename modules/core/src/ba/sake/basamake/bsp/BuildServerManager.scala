@@ -11,6 +11,7 @@ import org.eclipse.lsp4j.{DocumentSymbol, Location, Position, PublishDiagnostics
 import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
 import ch.epfl.scala.bsp4j
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import ba.sake.tupson.{given, *}
 import ba.sake.basamake.core.*
 import ba.sake.basamake.config.BasamakeConfig
@@ -113,10 +114,10 @@ class BuildServerManager extends StrictLogging {
       ctx.dependencySourceUrisByTarget = extractTargetDependencySourceUris(dependencySources)
       val dirs = extractSourceDirs(sources)
       router.registerGroundTruth(id, dirs)
-      refreshNavigationIndex(id, buildServer, targets.map(_.getId.getUri))
+      refreshNavigationIndex(id, buildServer, targets.map(_.getId))
     }
 
-    val compileCallback = (buildServer: bsp4j.BuildServer, targetIds: List[String]) =>
+    val compileCallback = (buildServer: bsp4j.BuildServer, targetIds: List[BuildTargetIdentifier]) =>
       refreshNavigationIndex(id, buildServer, targetIds)
 
     val vt = Thread.ofVirtual().start(() =>
@@ -135,21 +136,21 @@ class BuildServerManager extends StrictLogging {
           si.getUri
       }
 
-  private def extractTargetSourceRoots(sources: bsp4j.SourcesResult): Map[String, List[String]] = {
+  private def extractTargetSourceRoots(sources: bsp4j.SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
     def extractSourceDirsForItem(item: bsp4j.SourcesItem): List[String] =
       Option(item.getSources).toList.flatMap(_.asScala).collect {
         case si if si.getKind == bsp4j.SourceItemKind.DIRECTORY && !si.getGenerated =>
           si.getUri
       }
     sources.getItems.asScala.toList.flatMap { item =>
-      Option(item.getTarget).map(_.getUri -> extractSourceDirsForItem(item))
+      Option(item.getTarget).map(_ -> extractSourceDirsForItem(item))
     }.toMap
   }
 
-  private def extractTargetDependencySourceUris(dependencySources: bsp4j.DependencySourcesResult): Map[String, List[String]] =
+  private def extractTargetDependencySourceUris(dependencySources: bsp4j.DependencySourcesResult): Map[BuildTargetIdentifier, List[String]] =
     dependencySources.getItems.asScala.toList.flatMap { item =>
       Option(item.getTarget).map { target =>
-        target.getUri ->
+        target ->
           Option(item.getSources).toList.flatMap(_.asScala).map(_.toString)
       }
     }.toMap
@@ -351,9 +352,9 @@ class BuildServerManager extends StrictLogging {
         BspConnectionStatus(
           configPath = relPath,
           state = ctx.record.currentState.toString,
-          targets = ctx.sourceRootsByTarget.keys.toList.sorted.map { targetId =>
+          targets = ctx.sourceRootsByTarget.keys.toList.sortBy(_.getUri).map { targetId =>
             BspTargetStatus(
-              id = targetId,
+              id = targetId.getUri,
               semanticdbEnabled = ctx.navIndex.getTargetSemanticdbFlags.get(targetId)
             )
           }
@@ -397,7 +398,7 @@ class BuildServerManager extends StrictLogging {
   private def refreshNavigationIndex(
       connId: BspConnectionId,
       buildServer: bsp4j.BuildServer,
-      targetIds: List[String]
+      targetIds: List[BuildTargetIdentifier]
   ): Unit =
     connections.get(connId) match {
       case Some(ctx) if targetIds.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) =>
@@ -436,8 +437,8 @@ private case class ConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage],
     navIndex: SemanticdbNavigationIndex,
-    /** targetUri -> list of source directories */
-    var sourceRootsByTarget: Map[String, List[String]] = Map.empty,
-    /** targetUri -> list of source JARs */
-    var dependencySourceUrisByTarget: Map[String, List[String]] = Map.empty
+    /** target → list of source directories */
+    var sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
+    /** target → list of source JARs */
+    var dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
 )

@@ -3,6 +3,7 @@ package hello
 object Main:
   def main(args: Array[String]): Unit =
     println("Hello, Basamake!")
+    broken()
 
   def broken(): Unit =
     // Deliberate compile error: type mismatch + undefined identifier

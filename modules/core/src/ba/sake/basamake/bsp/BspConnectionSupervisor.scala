@@ -2,7 +2,7 @@ package ba.sake.basamake.bsp
 
 import java.util.concurrent.BlockingQueue
 import scala.jdk.CollectionConverters.*
-import ch.epfl.scala.bsp4j.{BuildTarget, DependencySourcesResult, SourceItemKind, SourcesResult}
+import ch.epfl.scala.bsp4j.{BuildTarget, BuildTargetIdentifier, DependencySourcesResult, SourceItemKind, SourcesResult}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
@@ -21,7 +21,7 @@ object BspConnectionSupervisor extends StrictLogging {
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
-      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit = (_, _) => ()
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit = (_, _) => ()
   ): Unit = {
     logger.info(s"Supervisor started for ${durable.bspFile.path} (state: Idle)")
 
@@ -81,7 +81,7 @@ object BspConnectionSupervisor extends StrictLogging {
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
-      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit,
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
       triggerMsg: Option[ConnectionMessage]
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
@@ -92,12 +92,12 @@ object BspConnectionSupervisor extends StrictLogging {
       val process     = result.process
       val buildServer = result.buildServer
       val targets     = result.targets.getTargets.asScala.toList
-      val allTargetIds = targets.map(_.getId.getUri)
+      val allTargetIds = targets.map(_.getId)
       val targetSourceRootsById = targetToSourceRoots(result.sources)
 
       durable.currentState = BspConnectionState.Connected
       durable.attemptCounter = 0
-      logger.info(s"Connected with ${durable.bspFile.path} (targets: ${targets.map(_.getId.getUri).mkString(", ")})")
+      logger.info(s"Connected with ${durable.bspFile.path} (targets: ${allTargetIds.map(_.getUri).mkString(", ")})")
 
       try onRoutingReady(buildServer, targets, result.sources, result.dependencySources)
       catch case e: Exception => logger.error(s"Failed to announce routing info", e)
@@ -153,9 +153,9 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       lspClient: LanguageClient,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
-      targetToSourceRoots: Map[String, List[String]],
-      allTargetIds: List[String],
-      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit
+      targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
+      allTargetIds: List[BuildTargetIdentifier],
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit
   ): Unit = 
     msg match {
       case ConnectionMessage.ProcessExited =>
@@ -199,17 +199,15 @@ object BspConnectionSupervisor extends StrictLogging {
   private def triggerCompile(
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
-      targetToSourceRoots: Map[String, List[String]],
-      allTargetIds: List[String],
-      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[String]) => Unit
+      targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
+      allTargetIds: List[BuildTargetIdentifier],
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit
   ): Unit = {
     val targetIds = selectCompileTargetIds(uri, buildServer, targetToSourceRoots, allTargetIds)
     if targetIds.isEmpty then return
-    logger.info(s"Compile triggered for $uri for targets: ${targetIds.mkString(", ")}")
+    logger.info(s"Compile triggered for $uri for targets: ${targetIds.map(_.getUri).mkString(", ")}")
     try
-      val params = new ch.epfl.scala.bsp4j.CompileParams(
-        targetIds.map(id => new ch.epfl.scala.bsp4j.BuildTargetIdentifier(id)).asJava
-      )
+      val params = new ch.epfl.scala.bsp4j.CompileParams(targetIds.asJava)
       val result = buildServer.buildTargetCompile(params).get()
       logger.info(s"Compile completed for $uri with status ${result.getStatusCode}")
       if result.getStatusCode == ch.epfl.scala.bsp4j.StatusCode.OK then
@@ -224,9 +222,9 @@ object BspConnectionSupervisor extends StrictLogging {
   private[bsp] def selectCompileTargetIds(
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
-      targetToSourceRoots: Map[String, List[String]],
-      allTargetIds: List[String]
-  ): List[String] = {
+      targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
+      allTargetIds: List[BuildTargetIdentifier]
+  ): List[BuildTargetIdentifier] = {
     // 1. Best: exact file→target mapping via BSP inverseSources, if BSP server knows (implements it)
     val inverseTargets = tryInverseSources(uri, buildServer)
     if inverseTargets.nonEmpty then return inverseTargets
@@ -240,11 +238,11 @@ object BspConnectionSupervisor extends StrictLogging {
     else Nil
   }
 
-  private def targetToSourceRoots(sources: SourcesResult): Map[String, List[String]] =
+  private def targetToSourceRoots(sources: SourcesResult): Map[BuildTargetIdentifier, List[String]] =
     def ensureTrailingSlash(uri: String): String =
       if uri.endsWith("/") then uri else s"$uri/"
     sources.getItems.asScala.toList.map { item =>
-      val targetId = item.getTarget.getUri
+      val targetId = item.getTarget
       val roots = Option(item.getSources)
         .map(_.asScala.toList)
         .getOrElse(Nil)
@@ -258,8 +256,8 @@ object BspConnectionSupervisor extends StrictLogging {
 
   private[bsp] def targetIdsForUri(
       uri: String,
-      targetToSourceRoots: Map[String, List[String]]
-  ): List[String] = {
+      targetToSourceRoots: Map[BuildTargetIdentifier, List[String]]
+  ): List[BuildTargetIdentifier] = {
     def inSourceRoot(uri: String, sourceRoot: String): Boolean = {
       val normalizedUri = NavigationUriUtils.normalizeUri(uri)
       val normalizedSourceRoot = NavigationUriUtils.normalizeUri(sourceRoot)
@@ -277,7 +275,7 @@ object BspConnectionSupervisor extends StrictLogging {
   private def tryInverseSources(
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer
-  ): List[String] = {
+  ): List[BuildTargetIdentifier] = {
     if buildServer == null then return Nil // test path, or build server not yet connected
     try
       val params = new ch.epfl.scala.bsp4j.InverseSourcesParams(
@@ -285,7 +283,7 @@ object BspConnectionSupervisor extends StrictLogging {
       )
       val result = buildServer.buildTargetInverseSources(params)
         .get(5, java.util.concurrent.TimeUnit.SECONDS)
-      result.getTargets.asScala.map(_.getUri).toList
+      result.getTargets.asScala.toList
     catch
       case e: Exception =>
         logger.debug(s"inverseSources failed for $uri (${e.getMessage}), falling back")
@@ -299,15 +297,17 @@ object BspConnectionSupervisor extends StrictLogging {
       durable: DurableRecord,
       lspClient: LanguageClient
   ): Unit = {
-    val uri      = params.getTextDocument.getUri
-    val targetId = Option(params.getBuildTarget).map(_.getUri).getOrElse("")
+    val uri = params.getTextDocument.getUri
+    val targetIdOpt = Option(params.getBuildTarget)
+    if targetIdOpt.isEmpty then return // no target = can't attribute diagnostics
+    val targetId = targetIdOpt.get
     val newDiags = Option(params.getDiagnostics)
       .getOrElse(java.util.Collections.emptyList())
       .asScala
       .map(bspDiagToLsp)
       .toList
 
-    val perTarget: Map[String, List[Diagnostic]] =
+    val perTarget: Map[BuildTargetIdentifier, List[Diagnostic]] =
       durable.lastKnownDiagnostics.getOrElse(uri, Map.empty)
 
     val updated =

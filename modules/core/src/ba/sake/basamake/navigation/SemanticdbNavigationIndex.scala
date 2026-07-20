@@ -26,20 +26,20 @@ final case class SemanticdbFileSlice(
 final class SemanticdbNavigationIndex extends StrictLogging {
 
   private final case class TargetState(
-      targetOrder: List[String] = Nil,
-      workspaceSlicesByTarget: Map[String, Map[String, SemanticdbFileSlice]] = Map.empty,
-      dependencySlicesByTarget: Map[String, List[SemanticdbFileSlice]] = Map.empty
+      targetOrder: List[BuildTargetIdentifier] = Nil,
+      workspaceSlicesByTarget: Map[BuildTargetIdentifier, Map[String, SemanticdbFileSlice]] = Map.empty,
+      dependencySlicesByTarget: Map[BuildTargetIdentifier, List[SemanticdbFileSlice]] = Map.empty
   )
 
-  private val targetStates = mutable.Map.empty[String, TargetState]
-  private val targetSemanticdbFlags = mutable.Map.empty[String, Boolean]
+  private val targetStates = mutable.Map.empty[BuildTargetIdentifier, TargetState]
+  private val targetSemanticdbFlags = mutable.Map.empty[BuildTargetIdentifier, Boolean]
 
   def clear(): Unit = synchronized {
     targetStates.clear()
   }
 
   private[navigation] def setTargetSlicesForTest(
-      targetId: String,
+      targetId: BuildTargetIdentifier,
       fileSlices: Map[String, SemanticdbFileSlice]
   ): Unit = synchronized {
     val current = targetStates.getOrElse(targetId, TargetState(targetOrder = List(targetId)))
@@ -53,7 +53,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
   }
 
   private[navigation] def setTargetDependencySlicesForTest(
-      targetId: String,
+      targetId: BuildTargetIdentifier,
       slices: List[SemanticdbFileSlice]
   ): Unit = synchronized {
     val current = targetStates.getOrElse(targetId, TargetState(targetOrder = List(targetId)))
@@ -69,11 +69,11 @@ final class SemanticdbNavigationIndex extends StrictLogging {
   def refresh(
       workspaceRoot: os.Path,
       buildServer: BuildServer,
-      targetIds: List[String],
-      sourceRootsByTarget: Map[String, List[String]],
-      dependencySourceUrisByTarget: Map[String, List[String]]
+      targetIds: List[BuildTargetIdentifier],
+      sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]],
+      dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]]
   ): Unit = synchronized {
-    val buildTargetIds = targetIds.map(id => new BuildTargetIdentifier(id)).asJava
+    val buildTargetIds = targetIds.asJava
     val outputRootsByTarget = fetchOutputRoots(buildServer, buildTargetIds)
     val scalaOptionsByTarget = fetchScalacOptions(buildServer, buildTargetIds)
 
@@ -107,7 +107,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
         )
       )
       logger.debug(
-        s"SemanticDB index refreshed for $targetId: workspace=${workspaceSlices.size} dependency=${dependencySlices.size}"
+        s"SemanticDB index refreshed for ${targetId.getUri}: workspace=${workspaceSlices.size} dependency=${dependencySlices.size}"
       )
     }
   }
@@ -135,7 +135,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
     slicesForUri(NavigationUriUtils.normalizeUri(uri)).flatMap(_.documentSymbols)
   }
 
-  def getTargetSemanticdbFlags: Map[String, Boolean] = synchronized {
+  def getTargetSemanticdbFlags: Map[BuildTargetIdentifier, Boolean] = synchronized {
     targetSemanticdbFlags.toMap
   }
 
@@ -181,7 +181,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
   private def fetchOutputRoots(
       buildServer: BuildServer,
       targetIds: java.util.List[BuildTargetIdentifier]
-  ): Map[String, List[String]] =
+  ): Map[BuildTargetIdentifier, List[String]] =
     try {
       val result = buildServer.buildTargetOutputPaths(new OutputPathsParams(targetIds)).get()
       Option(result.getItems)
@@ -192,7 +192,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
             Option(item.getOutputPaths).map(_.asScala.toList).getOrElse(Nil).collect {
               case p if p.getKind == OutputPathItemKind.DIRECTORY => p.getUri
             }
-          item.getTarget.getUri -> roots
+          item.getTarget -> roots
         }
         .toMap
     } catch {
@@ -201,11 +201,11 @@ final class SemanticdbNavigationIndex extends StrictLogging {
         Map.empty
     }
 
-  /** targetUri -> (scalacOptions, classDirectory) */
+  /** targetId -> (scalacOptions, classDirectory) */
   private def fetchScalacOptions(
       buildServer: BuildServer,
       targetIds: java.util.List[BuildTargetIdentifier]
-  ): Map[String, (List[String], Option[String])] =
+  ): Map[BuildTargetIdentifier, (List[String], Option[String])] =
     buildServer match {
       case scalaBuild: ScalaBuildServer =>
         try {
@@ -214,7 +214,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
             .map(_.asScala.toList)
             .getOrElse(Nil)
             .map(item =>
-              item.getTarget.getUri ->
+              item.getTarget ->
                 (
                   Option(item.getOptions).map(_.asScala.toList).getOrElse(Nil),
                   Option(item.getClassDirectory).filter(_.nonEmpty)

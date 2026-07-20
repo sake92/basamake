@@ -1,6 +1,7 @@
 package ba.sake.basamake.core
 
 import ba.sake.basamake.bsp.{BspConnectionSpec, BspConnectionState}
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.Diagnostic
 
 /**
@@ -12,6 +13,7 @@ import org.eclipse.lsp4j.Diagnostic
 final case class DurableRecord(
     var bspFile: BspConnectionSpec,
     var attemptCounter: Int,
-    var lastKnownDiagnostics: Map[String, Map[String, List[Diagnostic]]],
+    /** file URI → (target → diagnostics) */
+    var lastKnownDiagnostics: Map[String, Map[BuildTargetIdentifier, List[Diagnostic]]],
     @volatile var currentState: BspConnectionState
 )
