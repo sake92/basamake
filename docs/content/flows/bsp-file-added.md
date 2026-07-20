@@ -52,7 +52,7 @@ sequenceDiagram
 
 ## Key Points
 
-- **Lazy** — adding a `.bsp/*.json` creates the connection infrastructure (record, queue, VT) but starts **no BSP process**. Process spawn waits for the first LSP message targeting this connection.
+- **Lazy auto-start** — adding a `.bsp/*.json` (when enabled by config) creates the connection infrastructure but starts **no BSP process**. Process spawn waits for the first LSP message targeting this connection.
 - **Debounced** — rapid batch changes wait 300ms before processing.
 - **Overrides honored** — config can disable a connection even before first spawn.
 - **Open URIs replayed** — if any currently-open files fall in the new BSP's territory, they get `RecheckUri` to trigger spawn+compile.

@@ -14,12 +14,12 @@ flowchart TD
     Q -->|"dispatch()"| SVC["BspConnectionSupervisor"]
     SVC --> HD["handleDiagnostics(params, durable, lspClient)"]
     
-    HD --> ACC["Accumulate per URI, per targetId\nrespecting reset flag"]
-    ACC --> PUBLISH["Publish full union across all targets\nfor this URI"]
+    HD --> ACC["Accumulate per URI, per targetId<br/>respecting reset flag"]
+    ACC --> PUBLISH["Publish full union across all targets<br/>for this URI"]
     PUBLISH --> EDITOR["editor.publishDiagnostics(uri, allDiags)"]
     
     BSP -->|"compile complete"| SVC["supervisor: triggerCompile returns"]
-    SVC -->|"onCompileSuccess"| MGR["BuildServerManager\n→ refreshNavigationIndex"]
+    SVC -->|"onCompileSuccess"| MGR["BuildServerManager<br/>→ refreshNavigationIndex"]
 ```
 
 Diagnostics are stored per-file, per-target in `DurableRecord.lastKnownDiagnostics`. When a connection is detached, empty diagnostics are published for all previously-diagnosed URIs to clear stale errors.

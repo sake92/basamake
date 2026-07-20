@@ -59,7 +59,7 @@ sequenceDiagram
 
 ## Key Points
 
-- **Stale diagnostics cleared** — empty diagnostics published for every file that previously had errors from this connection.
+- **BSP process auto-shutdown** — deleting the `.json` (or setting `enabled: false` in config) triggers `detachConnection`. The BSP process is killed by the supervisor's `finally` block, all diagnostics cleared, routing removed.
 - **Poison pill** — `Shutdown` unblocks the supervisor VT. The `finally` block in `transitionToRunning` calls `destroyProcess`.
 - **Routing removed** — ground truth and bootstrap cache entries deleted.
 - **Navigation index cleared** — all symbol data for this connection is dropped.

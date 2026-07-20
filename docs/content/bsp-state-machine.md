@@ -13,13 +13,13 @@ Every connection has a state machine running in its own virtual thread. Seven st
 stateDiagram-v2
     [*] --> Idle : supervisor thread starts
 
-    Idle --> Spawning : first message arrives on queue\n(DidOpen/DidSave/RecheckUri)
+    Idle --> Spawning : first message arrives on queue<br/>(DidOpen/DidSave/RecheckUri)
     Idle --> Detached : Shutdown poison pill
 
-    Spawning --> Connected : handshake successful\n(spawn → init → targets → sources)
+    Spawning --> Connected : handshake successful<br/>(spawn → init → targets → sources)
     Spawning --> Failed : handshake exception
 
-    Connected --> BackoffWait : dispatch exception\nor health probe failure
+    Connected --> BackoffWait : dispatch exception<br/>or health probe failure
     Connected --> Reloading : ReloadRequested (JSON changed)
     Connected --> Detached : Shutdown poison pill
 
@@ -47,7 +47,7 @@ stateDiagram-v2
 ```diagram:mermaid
 flowchart TD
     A[dispatch exception] --> B[transitionToBackoff]
-    B --> C{State is Detached\nor Failed?}
+    B --> C{State is Detached<br/>or Failed?}
     C -->|Yes| D[return]
     C -->|No| E[increment attemptCounter]
     E --> F{attemptCounter > 1?}

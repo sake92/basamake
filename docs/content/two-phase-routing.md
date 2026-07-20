@@ -13,7 +13,7 @@ Every LSP method call needs to find the owning BSP connection for a given source
 flowchart TD
     URI["uri: file:///workspace/foo/src/Main.scala"] --> ROUTE["router.route(uri)"]
     
-    ROUTE --> L1["Phase 1: RoutingTable\n(longest-prefix via source dirs)"]
+    ROUTE --> L1["Phase 1: RoutingTable<br/>(longest-prefix via source dirs)"]
     
     L1 --> L1A["reverseLookupCandidates(uri)"]
     L1A --> L1B{Matches found?}
@@ -21,15 +21,15 @@ flowchart TD
     L1B -->|"Multiple (tie)"| TIE["tieBreakByNearestBspRoot"]
     L1B -->|"0"| L2["Phase 2: Bootstrap Heuristic"]
     
-    TIE --> TIE_RES{"Nearest .bsp/ root\nresolves tie?"}
+    TIE --> TIE_RES{"Nearest .bsp/ root<br/>resolves tie?"}
     TIE_RES -->|Yes| DONE2["Return connId"]
-    TIE_RES -->|No| ALPHA["Return alphabetically\nfirst connId"]
+    TIE_RES -->|No| ALPHA["Return alphabetically<br/>first connId"]
     
     L2 --> L2A["Walk up directory tree"]
     L2A --> L2B{Each ancestor has .bsp/?}
-    L2B -->|"Found"| L2C["Cache result\nper directory"]
+    L2B -->|"Found"| L2C["Cache result<br/>per directory"]
     L2C --> DONE3["Return connId"]
-    L2B -->|"Not found"| L2D["Cache as None,\nreturn None"]
+    L2B -->|"Not found"| L2D["Cache as None,<br/>return None"]
 ```
 
 ## Phase 1: RoutingTable (Ground Truth)
@@ -62,12 +62,12 @@ Inside `BspConnectionSupervisor`, `selectCompileTargetIds` determines which buil
 
 ```diagram:mermaid
 flowchart TD
-    URI["uri"] --> T1["1. buildTargetInverseSources(uri)\n(5s timeout)"]
+    URI["uri"] --> T1["1. buildTargetInverseSources(uri)<br/>(5s timeout)"]
     T1 --> T1R{Success?}
     T1R -->|"Yes, non-empty"| DONE["Return those targets"]
-    T1R -->|"No / empty"| T2["2. targetIdsForUri(uri, sourceRoots)\n(directory prefix match)"]
+    T1R -->|"No / empty"| T2["2. targetIdsForUri(uri, sourceRoots)<br/>(directory prefix match)"]
     T2 --> T2R{Match found?}
     T2R -->|"Yes"| DONE
-    T2R -->|"No"| T3["3. Fallback: all connection targets\n(warns)"]
+    T2R -->|"No"| T3["3. Fallback: all connection targets<br/>(warns)"]
     T3 --> DONE
 ```

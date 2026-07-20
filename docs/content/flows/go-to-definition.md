@@ -43,12 +43,12 @@ sequenceDiagram
 
 ```diagram:mermaid
 flowchart TD
-    POS["position (line, char)"] --> OCCUR["slicesForUri(uri)\nfind owned SemanticdbFileSlice"]
-    OCCUR --> SYM["symbolAt(position)\nrange containment check"]
-    SYM --> KEYS["candidateSymbolKeys(symbol)\nsuffix expansion"]
-    KEYS --> WDEF["Search workspace slices\nfor first definition"]
+    POS["position (line, char)"] --> OCCUR["slicesForUri(uri)<br/>find owned SemanticdbFileSlice"]
+    OCCUR --> SYM["symbolAt(position)<br/>range containment check"]
+    SYM --> KEYS["candidateSymbolKeys(symbol)<br/>suffix expansion"]
+    KEYS --> WDEF["Search workspace slices<br/>for first definition"]
     WDEF -->|found| DONE["return Location"]
-    WDEF -->|not found| DDEF["Search dependency slices\nfor first definition"]
+    WDEF -->|not found| DDEF["Search dependency slices<br/>for first definition"]
     DDEF -->|found| DONE
     DDEF -->|not found| EMPTY["return None"]
 ```

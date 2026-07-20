@@ -26,7 +26,8 @@ Users control BSP connections via `.basamake/config.json`:
 ```
 
 Each override matches a `.bsp/*.json` file by its path **relative to workspace root**. An override can:
-- Disable a connection entirely (`enabled: false`)
+- Disable a connection entirely (`enabled: false`) — **auto-shuts down the BSP process** if already running, clears diagnostics, removes routing.
+- Enable a connection (`enabled: true`) — **auto-attaches the connection** (lazy: BSP process spawns on first LSP message).
 - Override per-connection compile debounce (`debounceMs`)
 
-Overrides apply at `initialize()` time and during `reloadConnection` when `.json` files change.
+These behaviors apply at `initialize()` time and reactively when `.json` files change on disk (see [file watching](file-watching-topology.html)).

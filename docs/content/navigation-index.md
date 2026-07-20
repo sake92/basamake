@@ -12,24 +12,24 @@ description: SemanticDB-based go-to-definition, references, and document symbols
 ```diagram:mermaid
 flowchart TD
     subgraph TRIGGER["Refresh Trigger"]
-        ROUTING["onRoutingReady\n(after handshake)"]
-        COMPILE["onCompileSuccess\n(after compile)"]
+        ROUTING["onRoutingReady<br/>(after handshake)"]
+        COMPILE["onCompileSuccess<br/>(after compile)"]
     end
 
     TRIGGER --> REFRESH["SemanticdbNavigationIndex.refresh()"]
 
-    REFRESH --> SRCROOTS["sourceRootsByTarget\n(from buildTargetSources)"]
-    REFRESH --> DEPSRCS["dependencySourceUrisByTarget\n(from buildTargetDependencySources)"]
-    REFRESH --> SCALAC["fetchScalacOptions()\n→ -Xsemanticdb flags?"]
-    REFRESH --> OUTPUTS["fetchOutputRoots()\n→ buildTargetOutputPaths"]
+    REFRESH --> SRCROOTS["sourceRootsByTarget<br/>(from buildTargetSources)"]
+    REFRESH --> DEPSRCS["dependencySourceUrisByTarget<br/>(from buildTargetDependencySources)"]
+    REFRESH --> SCALAC["fetchScalacOptions()<br/>→ -Xsemanticdb flags?"]
+    REFRESH --> OUTPUTS["fetchOutputRoots()<br/>→ buildTargetOutputPaths"]
 
-    SCALAC --> CANDIDATE["candidateSemanticdbRoots\n(semanticdb output dirs)"]
+    SCALAC --> CANDIDATE["candidateSemanticdbRoots<br/>(semanticdb output dirs)"]
     OUTPUTS --> CANDIDATE
 
-    CANDIDATE --> WORKSPACE["indexWorkspaceTarget\n(walk .semanticdb files)"]
-    DEPSRCS --> DEPS["indexDependencySources\n(extract from JARs/ZIPs)"]
+    CANDIDATE --> WORKSPACE["indexWorkspaceTarget<br/>(walk .semanticdb files)"]
+    DEPSRCS --> DEPS["indexDependencySources<br/>(extract from JARs/ZIPs)"]
 
-    WORKSPACE --> MERGE["TargetState:\nworkspaceSlicesByTarget +\ndependencySlicesByTarget"]
+    WORKSPACE --> MERGE["TargetState:<br/>workspaceSlicesByTarget +<br/>dependencySlicesByTarget"]
     DEPS --> MERGE
 ```
 
@@ -58,16 +58,16 @@ flowchart TD
     RESOLVE --> IS_DIR{Path is dir?}
     IS_DIR -->|Yes| WALK["os.walk, filter .scala/.java"]
     RESOLVE --> IS_JAR{Path is JAR/ZIP?}
-    IS_JAR -->|Yes| EXTRACT["readArchiveEntries\n→ cache in .basamake/dependency-sources/"]
+    IS_JAR -->|Yes| EXTRACT["readArchiveEntries<br/>→ cache in .basamake/dependency-sources/"]
     RESOLVE --> IS_FILE{Path is .scala/.java?}
     IS_FILE -->|Yes| READ["readText"]
     RESOLVE --> HAS_BANG{URI contains ! ?}
     HAS_BANG -->|Yes| NESTED["strip jar: prefix, resolve archive"]
     
-    EXTRACT --> PARSE["indexSourceContent\n→ regex extractDefinitions"]
+    EXTRACT --> PARSE["indexSourceContent<br/>→ regex extractDefinitions"]
     WALK --> PARSE
     READ --> PARSE
-    PARSE --> SLICE["SemanticdbFileSlice\n(definitions only, no SemanticDB protobuf)"]
+    PARSE --> SLICE["SemanticdbFileSlice<br/>(definitions only, no SemanticDB protobuf)"]
 ```
 
 Dependency sources have no SemanticDB protobuf data, so they fall back to regex parsing:
@@ -84,10 +84,10 @@ Extracted definitions provide go-to-definition and outline view for library symb
 ```diagram:mermaid
 flowchart TD
     REQ["definition(uri, position)"] --> NORM["normalize uri"]
-    NORM --> OCCUR["slicesForUri → find\nowned occurrences at position"]
+    NORM --> OCCUR["slicesForUri → find<br/>owned occurrences at position"]
     OCCUR --> SYMBOL["extract symbol string"]
-    SYMBOL --> KEYS["NavigationSymbolLookup\ncandidateSymbolKeys(symbol)"]
-    KEYS --> LOOKUP["firstDefinition:\nworkspace slices first,\nthen dependency slices"]
+    SYMBOL --> KEYS["NavigationSymbolLookup<br/>candidateSymbolKeys(symbol)"]
+    KEYS --> LOOKUP["firstDefinition:<br/>workspace slices first,<br/>then dependency slices"]
     LOOKUP --> DONE["return first Location found"]
 ```
 

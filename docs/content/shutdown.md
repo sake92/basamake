@@ -27,9 +27,9 @@ sequenceDiagram
 
     loop For each connection
         MGR->>MGR: detachConnection(connId)
-        MGR->>SVC: publish empty diagnostics\nfor all known URIs
-        MGR->>SVC: state = Detached\nqueue.offer(Shutdown)
-        MGR->>MGR: unregisterGroundTruth\nunregisterBspRoot
+        MGR->>SVC: publish empty diagnostics<br/>for all known URIs
+        MGR->>SVC: state = Detached<br/>queue.offer(Shutdown)
+        MGR->>MGR: unregisterGroundTruth<br/>unregisterBspRoot
         MGR->>MGR: navIndex.clear()
     end
 
