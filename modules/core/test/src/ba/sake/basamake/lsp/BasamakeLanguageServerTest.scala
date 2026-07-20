@@ -1,7 +1,7 @@
 package ba.sake.basamake.lsp
 
-import ba.sake.basamake.manager.BuildServerManager
 import munit.FunSuite
+import ba.sake.basamake.bsp.BuildServerManager
 
 class BasamakeLanguageServerTest extends FunSuite:
 

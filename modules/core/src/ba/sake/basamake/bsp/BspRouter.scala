@@ -1,9 +1,8 @@
-package ba.sake.basamake.routing
+package ba.sake.basamake.bsp
 
-import ba.sake.basamake.bsp.BspConnectionId
-import com.typesafe.scalalogging.StrictLogging
 import java.nio.file.{Files, Path}
 import scala.collection.mutable
+import com.typesafe.scalalogging.StrictLogging
 
 /** Two-phase routing for multi-BSP workspaces.
   *

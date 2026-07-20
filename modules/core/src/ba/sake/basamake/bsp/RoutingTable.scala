@@ -1,6 +1,4 @@
-package ba.sake.basamake.routing
-
-import ba.sake.basamake.bsp.BspConnectionId
+package ba.sake.basamake.bsp
 
 /** Thread-safe routing table mapping BSP connections to owned document URIs.
   * Uses longest-path-prefix matching. Each connection registers source directory

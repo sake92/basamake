@@ -8,8 +8,8 @@ import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 import ba.sake.basamake.core.ConnectionMessage
 import ba.sake.basamake.config.BasamakeConfig
-import ba.sake.basamake.manager.BuildServerManager
 import ba.sake.basamake.util.LoggingUtils
+import ba.sake.basamake.bsp.BuildServerManager
 
 class BasamakeLanguageServer(
     private val manager: BuildServerManager = BuildServerManager()

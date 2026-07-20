@@ -1,6 +1,5 @@
-package ba.sake.basamake.routing
+package ba.sake.basamake.bsp
 
-import ba.sake.basamake.bsp.BspConnectionId
 import java.nio.file.Files
 import java.nio.file.Path
 import munit.FunSuite

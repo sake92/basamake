@@ -1,7 +1,5 @@
-package ba.sake.basamake.core
+package ba.sake.basamake.bsp
 
-import ba.sake.basamake.routing.RoutingTable
-import ba.sake.basamake.bsp.BspConnectionId
 import munit.FunSuite
 
 class RoutingTableTest extends FunSuite:

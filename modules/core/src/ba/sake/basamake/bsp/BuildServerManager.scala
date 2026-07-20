@@ -1,4 +1,4 @@
-package ba.sake.basamake.manager
+package ba.sake.basamake.bsp
 
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
 import java.util.Timer
@@ -13,20 +13,11 @@ import org.eclipse.lsp4j.services.LanguageClient
 import ch.epfl.scala.bsp4j.SourcesResult
 import ch.epfl.scala.bsp4j.SourceItemKind
 import ba.sake.basamake.core.*
-import ba.sake.basamake.bsp.{BspConnectionSupervisor, BspDiscovery, BspConnectionId, BspConnectionState, BspConnectionSpec}
 import ba.sake.basamake.config.BasamakeConfig
-import ba.sake.basamake.routing.BspRouter
 import ba.sake.basamake.navigation.SemanticdbNavigationIndex
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
 
-private case class ConnectionContext(
-    record: DurableRecord,
-    queue: BlockingQueue[ConnectionMessage],
-    navIndex: SemanticdbNavigationIndex,
-    var sourceRootsByTarget: Map[String, List[String]] = Map.empty,
-    var dependencySourceUrisByTarget: Map[String, List[String]] = Map.empty
-)
 
 /** Manages BSP connections in a workspace, including lifecycle, message routing, and shutdown. */
 class BuildServerManager extends StrictLogging {
@@ -52,15 +43,15 @@ class BuildServerManager extends StrictLogging {
     this.workspaceRoot = workspaceRoot
     this.config = config
 
-    val bspSpecs = BspDiscovery.discover(workspaceRoot)
-    if bspSpecs.isEmpty then
+    val discoveredBspSpecs = BspDiscovery.discover(workspaceRoot)
+    if discoveredBspSpecs.isEmpty then
       logger.warn(s"No .bsp JSON files discovered under $workspaceRoot. No BSP connections will be established.")
     else
-      logger.info(s"Discovered ${bspSpecs.size} BSP(s) — connections set up lazily (no processes started yet)")
+      logger.info(s"Discovered ${discoveredBspSpecs.size} BSP(s) — connections set up lazily (no processes started yet)")
     // Snapshot initial .bsp JSON files for change detection
-    knownBspFiles = bspSpecs.map(_.path).toSet
+    knownBspFiles = discoveredBspSpecs.map(_.path).toSet
 
-    for bspSpec <- bspSpecs do {
+    for bspSpec <- discoveredBspSpecs do {
       val overriddenSpec = applyOverrides(bspSpec)
       overriddenSpec.foreach(attachConnection)
     }
@@ -97,7 +88,7 @@ class BuildServerManager extends StrictLogging {
 
   /** Create a durable record, queue, and VT for a new connection spec. */
   private def attachConnection(bspSpec: BspConnectionSpec): Unit = try {
-    logger.info(s"Attaching (lazy) BSP connection for ${bspSpec.path} (${bspSpec.content.name})")
+    logger.debug(s"Attaching (lazy) BSP connection for ${bspSpec.path} (${bspSpec.content.name})")
     val id = BspConnectionId(bspSpec.path.toString)
     val record = DurableRecord(
       bspFile = bspSpec,
@@ -105,8 +96,8 @@ class BuildServerManager extends StrictLogging {
       lastKnownDiagnostics = Map.empty,
       currentState = BspConnectionState.Idle
     )
-    val queue = new LinkedBlockingQueue[ConnectionMessage]()
-    val ctx = ConnectionContext(record, queue, SemanticdbNavigationIndex())
+    val msgQueue = new LinkedBlockingQueue[ConnectionMessage]()
+    val ctx = ConnectionContext(record, msgQueue, SemanticdbNavigationIndex())
     connections(id) = ctx
 
     val bspDir = bspSpec.path.toNIO.getParent
@@ -120,7 +111,7 @@ class BuildServerManager extends StrictLogging {
       ctx.sourceRootsByTarget = extractTargetSourceRoots(sources)
       ctx.dependencySourceUrisByTarget = extractTargetDependencySourceUris(dependencySources)
       router.registerGroundTruth(id, dirs)
-      logger.info(s"Routing updated for $id: ${dirs.size} source dirs")
+      logger.debug(s"Routing updated for $id: ${dirs.size} source dirs")
       dirs.foreach(d => logger.debug(s"  $d"))
       refreshNavigationIndex(id, buildServer, targets.map(_.getId.getUri))
     }
@@ -129,9 +120,9 @@ class BuildServerManager extends StrictLogging {
       refreshNavigationIndex(id, buildServer, targetIds)
 
     val vt = Thread.ofVirtual().start(() =>
-      BspConnectionSupervisor.supervise(record, queue, client, routingCallback, compileCallback)
+      BspConnectionSupervisor.supervise(record, msgQueue, client, routingCallback, compileCallback)
     )
-    logger.info(s"Spawned supervisor thread for $id (${bspSpec.path})")
+    logger.debug(s"Spawned supervisor thread for $id (${bspSpec.path})")
   } catch {
     case e: Exception =>
       logger.error(s"Failed to attach BSP connection for ${bspSpec.path}: ${e.getMessage}", e)
@@ -391,8 +382,8 @@ class BuildServerManager extends StrictLogging {
       case None    => ()
 }
 
-object BuildServerManager:
-  private[manager] def classifyBspChanges(
+object BuildServerManager {
+  private[bsp] def classifyBspChanges(
       known: Set[os.Path],
       current: Set[os.Path],
       changed: Set[os.Path]
@@ -401,5 +392,13 @@ object BuildServerManager:
     val deletedFiles = known -- current
     val modifiedFiles = known.intersect(current).intersect(changed)
     (newFiles, deletedFiles, modifiedFiles)
+}
 
 
+private case class ConnectionContext(
+    record: DurableRecord,
+    queue: BlockingQueue[ConnectionMessage],
+    navIndex: SemanticdbNavigationIndex,
+    var sourceRootsByTarget: Map[String, List[String]] = Map.empty,
+    var dependencySourceUrisByTarget: Map[String, List[String]] = Map.empty
+)

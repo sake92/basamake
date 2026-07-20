@@ -1,4 +1,4 @@
-package ba.sake.basamake.manager
+package ba.sake.basamake.bsp
 
 import ba.sake.basamake.util.ProcessUtils
 import munit.FunSuite
