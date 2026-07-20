@@ -1,8 +1,10 @@
 package ba.sake.basamake.bsp
 
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
+import java.util.concurrent.atomic.AtomicReference
 import java.util.Timer
 import java.util.TimerTask
+import java.util.concurrent.locks.LockSupport
 import scala.collection.mutable
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
@@ -25,6 +27,7 @@ class BuildServerManager extends StrictLogging {
 
   // TODO check thread safety
   private val connections = mutable.LinkedHashMap[BspConnectionId, ConnectionContext]()
+  private val navStates = mutable.HashMap.empty[BspConnectionId, NavRefreshState]
   private var client: LanguageClient = uninitialized
   private var workspaceRoot: os.Path = uninitialized
   private var config: BasamakeConfig = uninitialized
@@ -106,19 +109,43 @@ class BuildServerManager extends StrictLogging {
     val bspDir = bspSpec.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
 
+    // Nav refresh runner: serialized per connection, latest-wins — never blocks supervisor VT.
+    val navRefreshPending = new AtomicReference[List[BuildTargetIdentifier]](null)
+    val navRefreshThread = Thread.ofVirtual().start(() => {
+      while !ctx.shuttingDown do
+        LockSupport.park()
+        var targets = navRefreshPending.getAndSet(null)
+        while targets != null && !ctx.shuttingDown do
+          try
+            if targets.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) then
+              ctx.navIndex.refresh(
+                workspaceRoot, ctx.buildServer, targets,
+                ctx.sourceRootsByTarget, ctx.dependencySourceUrisByTarget
+              )
+              logger.info(s"SemanticDB refresh conn=$id targets=${targets.size} workspace=${ctx.sourceRootsByTarget.size} dependency=${ctx.dependencySourceUrisByTarget.size}")
+          catch case e: Exception =>
+            logger.warn(s"Nav refresh failed for $id: ${e.getMessage}", e)
+          targets = navRefreshPending.getAndSet(null)
+    })
+    navStates(id) = NavRefreshState(navRefreshPending, navRefreshThread)
+
     val routingReadyCallback = (buildServer: bsp4j.BuildServer,
                            targets: List[bsp4j.BuildTarget],
                            sources: bsp4j.SourcesResult,
                            dependencySources: bsp4j.DependencySourcesResult) => {
+      ctx.buildServer = buildServer
       ctx.sourceRootsByTarget = extractTargetSourceRoots(sources)
       ctx.dependencySourceUrisByTarget = extractTargetDependencySourceUris(dependencySources)
       val dirs = extractSourceDirs(sources)
       router.registerGroundTruth(id, dirs)
-      refreshNavigationIndex(id, buildServer, targets.map(_.getId))
+      navRefreshPending.set(targets.map(_.getId))
+      LockSupport.unpark(navRefreshThread)
     }
 
     val compileCallback = (buildServer: bsp4j.BuildServer, targetIds: List[BuildTargetIdentifier]) =>
-      refreshNavigationIndex(id, buildServer, targetIds)
+      ctx.buildServer = buildServer // keep server ref fresh
+      navRefreshPending.set(targetIds)
+      LockSupport.unpark(navRefreshThread)
 
     val vt = Thread.ofVirtual().start(() =>
       BspConnectionSupervisor.supervise(record, msgQueue, client, routingReadyCallback, compileCallback)
@@ -168,6 +195,7 @@ class BuildServerManager extends StrictLogging {
         logger.debug(s"Cleared diagnostics for ${ctx.record.lastKnownDiagnostics.size} files")
 
         // Mark as Detached and send poison pill
+        ctx.shuttingDown = true
         ctx.record.currentState = BspConnectionState.Detached
         ctx.queue.offer(ConnectionMessage.Shutdown)
         ctx.record.lastKnownDiagnostics = Map.empty
@@ -177,6 +205,10 @@ class BuildServerManager extends StrictLogging {
         val bspDir = ctx.record.bspFile.path.toNIO.getParent
         router.unregisterBspRoot(bspDir, connId)
         ctx.navIndex.clear()
+        navStates.remove(connId).foreach { navState =>
+          navState.shuttingDown = true
+          LockSupport.unpark(navState.thread)
+        }
         connections -= connId
         logger.debug(s"Connection $connId detached")
       case None =>
@@ -355,7 +387,8 @@ class BuildServerManager extends StrictLogging {
           targets = ctx.sourceRootsByTarget.keys.toList.sortBy(_.getUri).map { targetId =>
             BspTargetStatus(
               id = targetId.getUri,
-              semanticdbEnabled = ctx.navIndex.getTargetSemanticdbFlags.get(targetId)
+              semanticdbEnabled = ctx.navIndex.getTargetSemanticdbFlags.get(targetId),
+              bestEffortEnabled = ctx.navIndex.getTargetBestEffortFlags.get(targetId)
             )
           }
         )
@@ -395,29 +428,6 @@ class BuildServerManager extends StrictLogging {
   private def connectionForUri(uri: String): Option[ConnectionContext] =
     router.route(uri).flatMap(connections.get)
 
-  private def refreshNavigationIndex(
-      connId: BspConnectionId,
-      buildServer: bsp4j.BuildServer,
-      targetIds: List[BuildTargetIdentifier]
-  ): Unit =
-    connections.get(connId) match {
-      case Some(ctx) if targetIds.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) =>
-        try
-          ctx.navIndex.refresh(
-            workspaceRoot,
-            buildServer,
-            targetIds,
-            ctx.sourceRootsByTarget,
-            ctx.dependencySourceUrisByTarget
-          )
-          logger.debug(
-            s"SemanticDB refresh conn=$connId targets=${targetIds.size} sourceRoots=${ctx.sourceRootsByTarget.size} dependencySources=${ctx.dependencySourceUrisByTarget.size}"
-          )
-        catch case e: Exception =>
-          logger.warn(s"SemanticDB refresh failed for $connId: ${e.getMessage}")
-      case Some(_) => ()
-      case None    => ()
-    }
 }
 
 object BuildServerManager {
@@ -433,6 +443,12 @@ object BuildServerManager {
 }
 
 
+private case class NavRefreshState(
+    pending: java.util.concurrent.atomic.AtomicReference[List[BuildTargetIdentifier]],
+    thread: Thread,
+    @volatile var shuttingDown: Boolean = false
+)
+
 private case class ConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage],
@@ -440,5 +456,7 @@ private case class ConnectionContext(
     /** target → list of source directories */
     var sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
     /** target → list of source JARs */
-    var dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
+    var dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
+    @volatile var buildServer: bsp4j.BuildServer = null,
+    @volatile var shuttingDown: Boolean = false
 )

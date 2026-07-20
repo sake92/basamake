@@ -7,6 +7,27 @@ description: SemanticDB-based go-to-definition, references, and document symbols
 
 **Files:** `SemanticdbNavigationIndex.scala`, `DependencySourceParsing.scala`, `NavigationSymbolLookup.scala`, `NavigationLocationUtils.scala`, `NavigationRangeUtils.scala`, `NavigationUriUtils.scala`
 
+## Prerequisite: Best-Effort Compilation
+
+Go-to-definition and references require SemanticDB files produced by the Scala compiler. By default, the compiler **does not** emit SemanticDB when compilation has errors — which means navigation stops working on broken code.
+
+To fix this, enable Best-Effort Compilation (Scala ≥3.5):
+
+```scala
+// sbt
+ThisBuild / scalacOptions += "-Ybest-effort"
+
+// Deder (deder.pkl)
+scalacOptions = Seq("-Ybest-effort")
+
+// Scala CLI
+//.scalacOptions += "-Ybest-effort"
+```
+
+With `-Ybest-effort`, the compiler runs through the typer and `ExtractSemanticDB` phases even when errors exist, producing normal SemanticDB files. No index code changes required — files land in the same `-semanticdb-target` directory and are picked up automatically.
+
+Check `status.json` (`.basamake/status.json` in your workspace root) for per-target `bestEffortEnabled` and `semanticdbEnabled` flags to verify.
+
 ## How Indexing Works
 
 ```diagram:mermaid

@@ -14,5 +14,6 @@ final case class BspConnectionStatus(
 
 final case class BspTargetStatus(
     id: String,
-    semanticdbEnabled: Option[Boolean]
+    semanticdbEnabled: Option[Boolean],
+    bestEffortEnabled: Option[Boolean]
 ) derives JsonRW

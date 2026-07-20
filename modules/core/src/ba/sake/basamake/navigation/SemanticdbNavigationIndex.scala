@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation
 
 import java.util.zip.ZipFile
+import java.util.concurrent.TimeUnit
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -33,9 +34,12 @@ final class SemanticdbNavigationIndex extends StrictLogging {
 
   private val targetStates = mutable.Map.empty[BuildTargetIdentifier, TargetState]
   private val targetSemanticdbFlags = mutable.Map.empty[BuildTargetIdentifier, Boolean]
+  private val targetBestEffortFlags = mutable.Map.empty[BuildTargetIdentifier, Boolean]
+  private val depSliceCache = mutable.Map.empty[Set[String], List[SemanticdbFileSlice]]
 
   def clear(): Unit = synchronized {
     targetStates.clear()
+    depSliceCache.clear()
   }
 
   private[navigation] def setTargetSlicesForTest(
@@ -72,7 +76,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       targetIds: List[BuildTargetIdentifier],
       sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]],
       dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]]
-  ): Unit = synchronized {
+  ): Unit = {
     val buildTargetIds = targetIds.asJava
     val outputRootsByTarget = fetchOutputRoots(buildServer, buildTargetIds)
     val scalaOptionsByTarget = fetchScalacOptions(buildServer, buildTargetIds)
@@ -84,13 +88,16 @@ final class SemanticdbNavigationIndex extends StrictLogging {
         opts
       )
       val flagsDetected = opts.exists { case (options, _) => hasSemanticdbFlags(options) }
-      targetSemanticdbFlags(targetId) = flagsDetected
+      val bestEffort = opts.exists { case (options, _) => options.exists(_ == "-Ybest-effort") }
 
       val sourceRoots = sourceRootsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
       val dependencySourceUris = dependencySourceUrisByTarget.getOrElse(targetId, Nil)
+      val depUriSet = dependencySourceUris.toSet
       val dependencySlices =
-        if dependencySourceUris.nonEmpty then
-          indexDependencySources(workspaceRoot, dependencySourceUris)
+        if depUriSet.nonEmpty then
+          depSliceCache.synchronized {
+            depSliceCache.getOrElseUpdate(depUriSet, indexDependencySources(workspaceRoot, dependencySourceUris))
+          }
         else Nil
 
       val workspaceSlices =
@@ -98,18 +105,30 @@ final class SemanticdbNavigationIndex extends StrictLogging {
           indexWorkspaceTarget(workspaceRoot, semanticdbRoots, sourceRoots)
         else Map.empty
 
-      targetStates.update(
-        targetId,
-        TargetState(
-          targetOrder = List(targetId),
-          workspaceSlicesByTarget = Map(targetId -> workspaceSlices),
-          dependencySlicesByTarget = Map(targetId -> dependencySlices)
-        )
-      )
-      logger.debug(
+      commitRefresh(targetId, flagsDetected, bestEffort, workspaceSlices, dependencySlices)
+      logger.info(
         s"SemanticDB index refreshed for ${targetId.getUri}: workspace=${workspaceSlices.size} dependency=${dependencySlices.size}"
       )
     }
+  }
+
+  private def commitRefresh(
+      targetId: BuildTargetIdentifier,
+      flagsDetected: Boolean,
+      bestEffort: Boolean,
+      workspaceSlices: Map[String, SemanticdbFileSlice],
+      dependencySlices: List[SemanticdbFileSlice]
+  ): Unit = synchronized {
+    targetSemanticdbFlags(targetId) = flagsDetected
+    targetBestEffortFlags(targetId) = bestEffort
+    targetStates.update(
+      targetId,
+      TargetState(
+        targetOrder = List(targetId),
+        workspaceSlicesByTarget = Map(targetId -> workspaceSlices),
+        dependencySlicesByTarget = Map(targetId -> dependencySlices)
+      )
+    )
   }
 
   def definition(uri: String, position: Position): List[Location] = synchronized {
@@ -137,6 +156,10 @@ final class SemanticdbNavigationIndex extends StrictLogging {
 
   def getTargetSemanticdbFlags: Map[BuildTargetIdentifier, Boolean] = synchronized {
     targetSemanticdbFlags.toMap
+  }
+
+  def getTargetBestEffortFlags: Map[BuildTargetIdentifier, Boolean] = synchronized {
+    targetBestEffortFlags.toMap
   }
 
   private def slicesForUri(uri: String): List[SemanticdbFileSlice] =
@@ -183,7 +206,8 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       targetIds: java.util.List[BuildTargetIdentifier]
   ): Map[BuildTargetIdentifier, List[String]] =
     try {
-      val result = buildServer.buildTargetOutputPaths(new OutputPathsParams(targetIds)).get()
+      val result = buildServer.buildTargetOutputPaths(new OutputPathsParams(targetIds))
+        .get(10, TimeUnit.SECONDS)
       Option(result.getItems)
         .map(_.asScala.toList)
         .getOrElse(Nil)
@@ -209,7 +233,8 @@ final class SemanticdbNavigationIndex extends StrictLogging {
     buildServer match {
       case scalaBuild: ScalaBuildServer =>
         try {
-          val result = scalaBuild.buildTargetScalacOptions(new ScalacOptionsParams(targetIds)).get()
+          val result = scalaBuild.buildTargetScalacOptions(new ScalacOptionsParams(targetIds))
+            .get(10, TimeUnit.SECONDS)
           Option(result.getItems)
             .map(_.asScala.toList)
             .getOrElse(Nil)
@@ -323,6 +348,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
     val cacheRoot = workspaceRoot / ".basamake" / "dependency-sources" / DependencySourceParsing.dependencyCacheKey(archiveUri)
     val relPath = os.RelPath(entryName)
     val target = cacheRoot / relPath
+    if os.exists(target) then return target
     os.makeDir.all(target / os.up)
     Using.resource(inputStream) { in =>
       os.write.over(target, new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8))

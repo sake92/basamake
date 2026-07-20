@@ -15,5 +15,7 @@ final case class DurableRecord(
     var attemptCounter: Int,
     /** file URI → (target → diagnostics) */
     var lastKnownDiagnostics: Map[String, Map[BuildTargetIdentifier, List[Diagnostic]]],
-    @volatile var currentState: BspConnectionState
+    @volatile var currentState: BspConnectionState,
+    /** inverseSources perma-failed for this connection lifetime — cached to avoid 5s stall per didSave */
+    var inverseSourcesUnsupported: Boolean = false
 )

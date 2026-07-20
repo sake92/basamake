@@ -87,7 +87,7 @@ try:
     proc.stdin.flush()
 
     # Step 3: Touch the file to force Deder to recompile (otherwise it uses cached result)
-    src_file = f"{WORKSPACE}/hello/src/hello/Main.scala"
+    src_file = f"{WORKSPACE}/hello-deder/src/hello/Main.scala"
     os.utime(src_file, None)
 
     with open(src_file) as f:

@@ -32,6 +32,19 @@ object BspHandshake extends StrictLogging {
     val process = pb.start()
     logger.info(s"BSP process spawned for ${bspFile.path} (pid ${process.pid()})")
 
+    // Drain stderr asynchronously — prevents pipe-buffer deadlock (64KB on Linux)
+    // when BSP child logs enough to stderr that it blocks the process.
+    Thread.ofVirtual().start(() => {
+      val stderr = process.getErrorStream
+      try
+        val reader = java.io.BufferedReader(java.io.InputStreamReader(stderr, java.nio.charset.StandardCharsets.UTF_8))
+        try Iterator.continually(reader.readLine()).takeWhile(_ != null).foreach { line =>
+          logger.debug(s"[bsp-stderr ${bspFile.content.name}] $line")
+        }
+        finally reader.close()
+      catch case _: java.io.IOException => () // process terminated, expected
+    })
+
     try {
       val buildClient = BasamakeBuildClient(queue)
 
