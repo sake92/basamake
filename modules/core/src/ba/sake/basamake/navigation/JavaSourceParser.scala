@@ -20,46 +20,69 @@ object JavaSourceParser {
     val pkgPrefix = if pkg.nonEmpty then pkg.replace('.', '/') + "/" else ""
 
     val builder = List.newBuilder[SourceDefinition]
+    cu.getTypes.forEach { t => extractTypeDecl(t, pkgPrefix, Nil, builder) }
+    builder.result()
+  }
 
-    // Top-level and nested types
-    cu.findAll(classOf[TypeDeclaration[?]]).forEach { t =>
-      val name = t.getNameAsString
-      val kind = t match
-        case _: EnumDeclaration            => SymbolKind.Enum
-        case c: ClassOrInterfaceDeclaration if c.isInterface => SymbolKind.Interface
-        case _                             => SymbolKind.Class
-      val pos = nameRange(t.getName)
-      builder += SourceDefinition(name, kind, s"$pkgPrefix$name", pos)
+  private def extractTypeDecl(
+      t: TypeDeclaration[?],
+      pkgPrefix: String,
+      ownerChain: List[String],
+      builder: scala.collection.mutable.Builder[SourceDefinition, List[SourceDefinition]]
+  ): Unit = {
+    val name = t.getNameAsString
+    val kind = t match
+      case _: EnumDeclaration                         => SymbolKind.Enum
+      case c: ClassOrInterfaceDeclaration if c.isInterface => SymbolKind.Interface
+      case _                                          => SymbolKind.Class
 
-      // Enum constants
-      t match {
-        case enumDecl: EnumDeclaration =>
-          enumDecl.getEntries.forEach { entry =>
-            val entryName = entry.getNameAsString
-            val entryPos = nameRange(entry.getName)
-            builder += SourceDefinition(entryName, SymbolKind.EnumMember, s"$pkgPrefix$name.$entryName", entryPos)
+    val ownerPrefix = ownerChain.mkString(".")
+    val symbol =
+      if ownerPrefix.nonEmpty then s"$pkgPrefix$ownerPrefix.$name"
+      else s"$pkgPrefix$name"
+    val ownerName =
+      if ownerPrefix.nonEmpty then s"$ownerPrefix.$name"
+      else name
+
+    builder += SourceDefinition(name, kind, symbol, ownerName, nameRange(t.getName))
+
+    val childChain = ownerChain :+ name
+
+    // Enum constants
+    t match {
+      case enumDecl: EnumDeclaration =>
+        enumDecl.getEntries.forEach { entry =>
+          val entryName = entry.getNameAsString
+          val entrySymbol = s"${symbol}.$entryName"
+          val entryOwnerName = s"${ownerName}.$entryName"
+          builder += SourceDefinition(entryName, SymbolKind.EnumMember, entrySymbol, entryOwnerName, nameRange(entry.getName))
+        }
+      case _ =>
+    }
+
+    // Members: methods, fields, nested types
+    t.getMembers.forEach { member =>
+      member match {
+        case m: MethodDeclaration =>
+          val mName = m.getNameAsString
+          val mSymbol = s"${symbol}.$mName"
+          val mOwnerName = s"${ownerName}.$mName"
+          builder += SourceDefinition(mName, SymbolKind.Method, mSymbol, mOwnerName, nameRange(m.getName))
+
+        case f: FieldDeclaration =>
+          f.getVariables.forEach { v =>
+            val vName = v.getNameAsString
+            val vSymbol = s"${symbol}.$vName"
+            val vOwnerName = s"${ownerName}.$vName"
+            builder += SourceDefinition(vName, SymbolKind.Field, vSymbol, vOwnerName, nameRange(v.getName))
           }
+
+        case nested: TypeDeclaration[?] =>
+          extractTypeDecl(nested, pkgPrefix, childChain, builder)
+
         case _ =>
       }
     }
-
-    // Methods
-    cu.findAll(classOf[MethodDeclaration]).forEach { m =>
-      val name = m.getNameAsString
-      val pos = nameRange(m.getName)
-      builder += SourceDefinition(name, SymbolKind.Method, s"$pkgPrefix$name", pos)
-    }
-
-    // Fields
-    cu.findAll(classOf[FieldDeclaration]).forEach { f =>
-      f.getVariables.forEach { v =>
-        val name = v.getNameAsString
-        val pos = nameRange(v.getName)
-        builder += SourceDefinition(name, SymbolKind.Field, s"$pkgPrefix$name", pos)
-      }
-    }
-
-    builder.result()
   }
 
   private def nameRange(name: Node): Range = {

@@ -369,6 +369,7 @@ final class SemanticdbNavigationIndex extends StrictLogging {
       }
       val symbolDefinitions =
         definitions.groupMap(_.symbol)(d => new Location(sourceUri, d.range)) ++
+          definitions.groupMap(_.ownerName)(d => new Location(sourceUri, d.range)) ++
           definitions.groupMap(_.name)(d => new Location(sourceUri, d.range))
       val documentSymbols =
         definitions.flatMap { defn =>

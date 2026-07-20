@@ -14,6 +14,11 @@ class DependencySourceParsingTest extends FunSuite {
     assert(definitions.exists(d => d.name == "Foo" && d.kind == org.eclipse.lsp4j.SymbolKind.Object), clues(definitions))
     assert(definitions.exists(d => d.name == "bar" && d.kind == org.eclipse.lsp4j.SymbolKind.Method), clues(definitions))
     assert(definitions.exists(d => d.name == "baz" && d.kind == org.eclipse.lsp4j.SymbolKind.Property), clues(definitions))
+
+    // owner-qualified symbols
+    val barDef = definitions.find(_.name == "bar")
+    assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.ownerName == "Foo.bar"), clues(barDef))
   }
 
   test("extractDefinitions dispatches to java parser for .java files") {
@@ -25,6 +30,13 @@ class DependencySourceParsingTest extends FunSuite {
     assert(definitions.exists(d => d.name == "Foo" && d.kind == org.eclipse.lsp4j.SymbolKind.Class), clues(definitions))
     assert(definitions.exists(d => d.name == "bar" && d.kind == org.eclipse.lsp4j.SymbolKind.Method), clues(definitions))
     assert(definitions.exists(d => d.name == "x" && d.kind == org.eclipse.lsp4j.SymbolKind.Field), clues(definitions))
+
+    // Java owner-qualified symbols
+    val barDef = definitions.find(_.name == "bar")
+    assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.ownerName == "Foo.bar"), clues(barDef))
+    val xDef = definitions.find(_.name == "x")
+    assert(xDef.exists(_.symbol == "Foo.x"), clues(xDef))
   }
 
   test("extractDefinitions returns empty for unsupported file types") {
@@ -37,7 +49,7 @@ class DependencySourceParsingTest extends FunSuite {
     assertEquals(definitions, List.empty)
   }
 
-  test("symbol includes package prefix for scala files with package") {
+  test("symbol includes package prefix and owner for scala files with package") {
     val definitions = DependencySourceParsing.extractDefinitions(
       "Foo.scala",
       "package com.example\nclass Foo { def bar = 1 }"
@@ -45,8 +57,10 @@ class DependencySourceParsingTest extends FunSuite {
 
     val fooDef = definitions.find(_.name == "Foo")
     assert(fooDef.exists(_.symbol == "com/example/Foo"), clues(fooDef))
+    assert(fooDef.exists(_.ownerName == "Foo"), clues(fooDef))
     val barDef = definitions.find(_.name == "bar")
-    assert(barDef.exists(_.symbol == "com/example/bar"), clues(barDef))
+    assert(barDef.exists(_.symbol == "com/example/Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.ownerName == "Foo.bar"), clues(barDef))
   }
 
   test("symbol is bare name for scala files without package") {
@@ -56,6 +70,103 @@ class DependencySourceParsingTest extends FunSuite {
     )
 
     assertEquals(definitions.map(_.symbol), List("Foo"))
+    assertEquals(definitions.map(_.ownerName), List("Foo"))
+  }
+
+  test("parses Scala 2.13 syntax via dialect fallback") {
+    val scala2Code = "class Foo { def foo: Unit = { println(\"hello\") } }"
+    val definitions = DependencySourceParsing.extractDefinitions("Foo.scala", scala2Code)
+    assert(definitions.nonEmpty, clues(definitions))
+    assert(definitions.exists(_.name == "Foo"), clues(definitions))
+    assert(definitions.exists(d => d.name == "foo" && d.symbol == "Foo.foo"), clues(definitions))
+  }
+
+  test("parses Scala 3 givens and enums") {
+    val scala3Code =
+      """package pkg
+        |enum Color { case Red, Blue }
+        |given x: Int = 1
+        |""".stripMargin
+    val definitions = DependencySourceParsing.extractDefinitions("Color.scala", scala3Code)
+
+    assert(definitions.exists(d => d.name == "Color" && d.kind == org.eclipse.lsp4j.SymbolKind.Enum), clues(definitions))
+    assert(definitions.exists(d => d.name == "Red" && d.kind == org.eclipse.lsp4j.SymbolKind.EnumMember), clues(definitions))
+    assert(definitions.exists(d => d.name == "Blue" && d.kind == org.eclipse.lsp4j.SymbolKind.EnumMember), clues(definitions))
+    assert(definitions.exists(d => d.name == "x"), clues(definitions))
+
+    // enum cases have owner-qualified symbols
+    val redDef = definitions.find(_.name == "Red")
+    assert(redDef.exists(_.symbol == "pkg/Color.Red"), clues(redDef))
+    assert(redDef.exists(_.ownerName == "Color.Red"), clues(redDef))
+  }
+
+  test("skips local defs inside method bodies") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.scala",
+      "object Foo { def bar = { val local = 1; local } }"
+    )
+
+    // local should NOT be indexed
+    assert(!definitions.exists(_.name == "local"), clues(definitions))
+    // bar and Foo should be indexed
+    assert(definitions.exists(_.name == "Foo"), clues(definitions))
+    assert(definitions.exists(_.name == "bar"), clues(definitions))
+  }
+
+  test("handles deeply nested owners") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Nested.scala",
+      "package com.example\nclass Outer { object Inner { def baz = 1 } }"
+    )
+
+    val bazDef = definitions.find(_.name == "baz")
+    assert(bazDef.exists(_.symbol == "com/example/Outer.Inner.baz"), clues(bazDef))
+    assert(bazDef.exists(_.ownerName == "Outer.Inner.baz"), clues(bazDef))
+  }
+
+  test("handles brace-delimited nested packages") {
+    val code = "package com { package example { class Foo { def bar = 1 } } }"
+    val definitions = DependencySourceParsing.extractDefinitions("Foo.scala", code)
+
+    val fooDef = definitions.find(_.name == "Foo")
+    assert(fooDef.exists(_.symbol == "com/example/Foo"), clues(fooDef))
+    val barDef = definitions.find(_.name == "bar")
+    assert(barDef.exists(_.symbol == "com/example/Foo.bar"), clues(barDef))
+  }
+
+  test("Java methods and fields have owner-qualified symbols") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.java",
+      "class Foo { void bar() {} int x; }"
+    )
+
+    val barDef = definitions.find(_.name == "bar")
+    assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
+    val xDef = definitions.find(_.name == "x")
+    assert(xDef.exists(_.symbol == "Foo.x"), clues(xDef))
+  }
+
+  test("Java nested classes track owner chain") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Nested.java",
+      "class Outer { class Inner { void run() {} } }"
+    )
+
+    val runDef = definitions.find(_.name == "run")
+    assert(runDef.exists(_.symbol == "Outer.Inner.run"), clues(runDef))
+    assert(runDef.exists(_.ownerName == "Outer.Inner.run"), clues(runDef))
+  }
+
+  test("Java enum constants have owner-qualified symbols") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Color.java",
+      "enum Color { RED, GREEN }"
+    )
+
+    val redDef = definitions.find(_.name == "RED")
+    assert(redDef.exists(_.symbol == "Color.RED"), clues(redDef))
+    assert(redDef.exists(_.ownerName == "Color.RED"), clues(redDef))
+    assert(redDef.exists(_.kind == org.eclipse.lsp4j.SymbolKind.EnumMember), clues(redDef))
   }
 
   test("dependencyCacheKey includes maven coordinates when available") {
