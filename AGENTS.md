@@ -26,7 +26,7 @@ deder clean && deder exec
 pkill -9 -f "deder bsp"; pkill -9 -f "basamake.*jar"; sleep 1
 ```
 
-The code also auto-kills stale `deder bsp` processes on handshake start (`BspHandshake.killStaleBspProcesses`).
+The code now performs ownership-bounded cleanup during shutdown fallback (`BuildServerManager.killBspProcesses`) by terminating tracked BSP roots and this JVM's descendant process tree.
 
 **Deder server** keeps socket files in `.deder/`. Run `deder shutdown` before branch switches or deleting the project.
 
@@ -117,7 +117,7 @@ Build tools emit ANSI color codes in compile error messages. `BspConnectionSuper
 
 Two layers:
 1. `BspConnectionSupervisor.destroyProcess()` in `finally` block — kills the BSP process when transitionRunning exits
-2. `BspHandshake.killStaleBspProcesses()` scans OS process handles for orphan `deder bsp` before spawning new ones
+2. `BuildServerManager.killBspProcesses()` performs a last-resort ownership-bounded sweep over this JVM's descendants during server shutdown (no global process-table scanning)
 
 ## Logging
 

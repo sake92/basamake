@@ -69,10 +69,8 @@ object BspConnectionSupervisor extends StrictLogging {
 
   private def destroyProcess(process: java.lang.Process): Unit = {
     if process != null && process.isAlive then
-      logger.info(s"Destroying BSP process ${process.pid()}")
-      process.destroyForcibly()
-      try process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
-      catch case _: InterruptedException => ()
+      val signaled = ProcessUtils.terminateProcessTree(process)
+      logger.info(s"Destroying BSP process ${process.pid()} (signaled $signaled process node(s))")
   }
 
   // ---- State handlers ----
@@ -142,8 +140,21 @@ object BspConnectionSupervisor extends StrictLogging {
     } catch {
       case e: Exception =>
         logger.error(s"Handshake failed", e)
-        durable.currentState = BspConnectionState.Failed
+        handleHandshakeFailure(durable)
     }
+  }
+
+  private def handleHandshakeFailure(durable: DurableRecord): Unit = {
+    durable.bspProcess.foreach { process =>
+      val signaled = ProcessUtils.terminateProcessTree(process)
+      logger.warn(s"Handshake failure cleanup for PID ${process.pid()} (signaled $signaled process node(s))")
+    }
+    durable.bspProcess = None
+    durable.currentState = BspConnectionState.Failed
+  }
+
+  private[bsp] def handleHandshakeFailureForTest(durable: DurableRecord): Unit = {
+    handleHandshakeFailure(durable)
   }
 
   private def dispatch(

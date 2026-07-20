@@ -44,6 +44,7 @@ class BuildServerManager extends StrictLogging {
   private val debounceLock = Object()
   private var pendingBspChanges: Set[os.Path] = Set.empty
   private var pendingDebounceTask: Option[TimerTask] = None
+  private var shutdownProcessSnapshot: List[java.lang.Process] = Nil
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -350,6 +351,7 @@ class BuildServerManager extends StrictLogging {
     }
     debounceTimer.cancel()
 
+    shutdownProcessSnapshot = connections.values.flatMap(_.record.bspProcess).toList
     connections.keys.toList.foreach: connId =>
       detachConnection(connId)
     logger.info("All connections detached")
@@ -362,9 +364,14 @@ class BuildServerManager extends StrictLogging {
     killAllBspProcesses()
 
   private def killAllBspProcesses(): Unit =
-    val processes = connections.values.flatMap(_.record.bspProcess).toList
-    val killed = BuildServerManager.terminateProcesses(processes)
-    if killed > 0 then logger.info(s"Force-killed $killed BSP process(es)")
+    val directProcesses = (shutdownProcessSnapshot ++ connections.values.flatMap(_.record.bspProcess)).distinctBy(_.pid())
+    val directKilled = BuildServerManager.terminateProcesses(directProcesses)
+    val descendantKilled = BuildServerManager.terminateProcessHandles(BuildServerManager.currentProcessDescendants())
+
+    val totalKilled = directKilled + descendantKilled
+    if totalKilled > 0 then
+      logger.info(s"Force-killed $totalKilled process node(s) (ownedRoots=$directKilled, jvmDescendants=$descendantKilled)")
+    shutdownProcessSnapshot = Nil
     connections.values.foreach(_.record.bspProcess = None)
 
   private def connectionForUri(uri: String): Option[ConnectionContext] =
@@ -407,9 +414,18 @@ object BuildServerManager:
 
   private[manager] def terminateProcess(process: java.lang.Process): Boolean =
     if process != null && process.isAlive then
-      process.destroyForcibly()
-      true
+      ProcessUtils.terminateProcessTree(process) > 0
     else false
 
   private[manager] def terminateProcesses(processes: Iterable[java.lang.Process]): Int =
     processes.count(terminateProcess)
+
+  private[manager] def terminateProcessHandles(handles: Iterable[java.lang.ProcessHandle]): Int =
+    handles.map(ProcessUtils.terminateProcessHandleTree).sum
+
+  private[manager] def currentProcessDescendants(): List[java.lang.ProcessHandle] =
+    java.lang.ProcessHandle.current()
+      .descendants()
+      .iterator()
+      .asScala
+      .toList

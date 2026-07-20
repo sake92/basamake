@@ -100,3 +100,14 @@ class BuildServerManagerTest extends FunSuite:
     assertEquals(p2.destroyForciblyCalls, 0)
     assertEquals(p3.destroyForciblyCalls, 1)
   }
+
+  test("currentProcessDescendants includes spawned child process") {
+    val p = new java.lang.ProcessBuilder("bash", "-lc", "sleep 60").start()
+    try {
+      val descendants = BuildServerManager.currentProcessDescendants()
+      assert(descendants.exists(_.pid() == p.pid()))
+    } finally {
+      p.destroyForcibly()
+      p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+    }
+  }
