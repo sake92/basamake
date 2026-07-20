@@ -1,5 +1,6 @@
 package ba.sake.basamake.navigation
 
+import java.util.concurrent.atomic.AtomicLong
 import scala.meta.*
 import scala.meta.dialects.Scala3
 import scala.meta.dialects.Scala213
@@ -8,27 +9,52 @@ import org.eclipse.lsp4j.{Position, Range, SymbolKind}
 
 object ScalaSourceParser extends StrictLogging {
 
-  def extractDefinitions(content: String): List[SourceDefinition] = {
+  private val totalParsed = new AtomicLong(0)
+  private val parsedScala3 = new AtomicLong(0)
+  private val parsedScala213 = new AtomicLong(0)
+  private val parseFailed = new AtomicLong(0)
+
+  def extractDefinitions(content: String, fileName: String = ""): List[SourceDefinition] = {
+    totalParsed.incrementAndGet()
     val parsed3 = {
       given Dialect = Scala3
       content.parse[Source]
     }
     parsed3 match
       case Parsed.Success(source) =>
+        parsedScala3.incrementAndGet()
         extractFromSource(source)
       case Parsed.Error(_, msg, _) =>
-        logger.debug(s"Scala 3 parse failed, retrying with Scala 2.13: $msg")
+        logger.debug(s"Scala 3 parse failed for $fileName, retrying with Scala 2.13: $msg")
         val parsed213 = {
           given Dialect = Scala213
           content.parse[Source]
         }
         parsed213 match
           case Parsed.Success(source) =>
+            parsedScala213.incrementAndGet()
             extractFromSource(source)
           case Parsed.Error(_, msg2, _) =>
+            parseFailed.incrementAndGet()
+            val fileInfo = if fileName.nonEmpty then s" [$fileName]" else ""
             val preview = if content.length > 80 then content.take(80) + "..." else content
-            logger.warn(s"Both Scala 3 and Scala 2.13 parse failed for source [$preview]: $msg2")
+            // Known limitation: scalameta 4.17.2 doesn't support ^ capture checking syntax (Scala 3.8.x stdlib)
+            // Debug-level because this is expected for experimental language features
+            logger.debug(s"Both Scala 3 and Scala 2.13 parse failed for source$fileInfo: $msg2")
             List.empty
+  }
+
+  /** Logs a summary of parse success/failure counts. Called after indexing completes. */
+  def logSummary(): Unit = {
+    val total = totalParsed.get()
+    val ok3 = parsedScala3.get()
+    val ok213 = parsedScala213.get()
+    val failed = parseFailed.get()
+    val ok = ok3 + ok213
+    if total > 0 then
+      logger.info(
+        s"ScalaSourceParser summary: $ok/$total parsed ($ok3 Scala 3, $ok213 Scala 2.13, $failed failed)"
+      )
   }
 
   private def extractFromSource(source: Source): List[SourceDefinition] = {

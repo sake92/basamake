@@ -16,8 +16,8 @@ object DependencySourceParsing {
   private final case class MavenCoordinates(groupId: String, artifactId: String, version: String)
 
   def extractDefinitions(fileName: String, content: String): List[SourceDefinition] =
-    if fileName.endsWith(".scala") then ScalaSourceParser.extractDefinitions(content)
-    else if fileName.endsWith(".java") then JavaSourceParser.extractDefinitions(content)
+    if fileName.endsWith(".scala") then ScalaSourceParser.extractDefinitions(content, fileName)
+    else if fileName.endsWith(".java") then JavaSourceParser.extractDefinitions(content, fileName)
     else Nil
 
   def dependencyCacheKey(archiveUri: String): String = {

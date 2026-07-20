@@ -9,7 +9,7 @@ object JavaSourceParser {
 
   private val parser = new JavaParser()
 
-  def extractDefinitions(content: String): List[SourceDefinition] = {
+  def extractDefinitions(content: String, fileName: String = ""): List[SourceDefinition] = {
     val result = parser.parse(content)
     if !result.isSuccessful || !result.getResult.isPresent then
       return List.empty

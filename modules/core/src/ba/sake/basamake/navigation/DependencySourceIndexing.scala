@@ -16,11 +16,13 @@ object DependencySourceIndexing extends StrictLogging {
       cache: mutable.Map[Set[String], List[SemanticdbFileSlice]]
   ): List[SemanticdbFileSlice] = {
     val depUriSet = dependencySourceUris.toSet
-    if depUriSet.nonEmpty then
+    val result = if depUriSet.nonEmpty then
       cache.synchronized {
         cache.getOrElseUpdate(depUriSet, dependencySourceUris.flatMap(indexDependencySourceUri(workspaceRoot, _)))
       }
     else Nil
+    ScalaSourceParser.logSummary()
+    result
   }
 
   private def indexDependencySourceUri(workspaceRoot: os.Path, uri: String): List[SemanticdbFileSlice] =
