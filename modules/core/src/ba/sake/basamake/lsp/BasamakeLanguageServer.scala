@@ -15,7 +15,7 @@ class BasamakeLanguageServer(
     private val manager: BuildServerManager = BuildServerManager()
 ) extends LanguageServer, TextDocumentService, LanguageClientAware, StrictLogging {
 
-  private var client: LanguageClient = uninitialized
+  @volatile private var client: LanguageClient = uninitialized
   @volatile private var isInitialized = false
   private var workspaceRoot: os.Path = uninitialized
 

@@ -36,7 +36,7 @@ final class NavigationIndex extends StrictLogging {
 
   def clear(): Unit = synchronized {
     targetStates.clear()
-    depSliceCache.clear()
+    depSliceCache.synchronized { depSliceCache.clear() }
   }
 
   private[navigation] def setTargetSlicesForTest(
