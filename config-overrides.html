@@ -68,10 +68,11 @@
 </code></pre>
    <p>Each override matches a <code>.bsp/*.json</code> file by its path <strong>relative to workspace root</strong>. An override can:</p>
    <ul>
-    <li>Disable a connection entirely (<code>enabled: false</code>)</li>
+    <li>Disable a connection entirely (<code>enabled: false</code>) — <strong>auto-shuts down the BSP process</strong> if already running, clears diagnostics, removes routing.</li>
+    <li>Enable a connection (<code>enabled: true</code>) — <strong>auto-attaches the connection</strong> (lazy: BSP process spawns on first LSP message).</li>
     <li>Override per-connection compile debounce (<code>debounceMs</code>)</li>
    </ul>
-   <p>Overrides apply at <code>initialize()</code> time and during <code>reloadConnection</code> when <code>.json</code> files change.</p>
+   <p>These behaviors apply at <code>initialize()</code> time and reactively when <code>.json</code> files change on disk (see <a href="file-watching-topology.html">file watching</a>).</p>
   </main>
   <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
  </body>
