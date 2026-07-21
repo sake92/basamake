@@ -7,7 +7,7 @@ class NavigationSymbolLookupTest extends FunSuite {
 
   test("candidateSymbolKeys returns markerless qualified key + dotted inits") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("_empty_/foo.bar.baz().")
-    assertEquals(keys, List("_empty_/foo.bar.baz", "foo.bar", "foo.bar.baz"))
+    assertEquals(keys, List("_empty_/foo.bar.baz", "foo.bar.baz", "foo.bar", "baz"))
   }
 
   test("candidateSymbolKeys includes qualified key, excludes bare name in inits") {
@@ -19,8 +19,7 @@ class NavigationSymbolLookupTest extends FunSuite {
 
   test("candidateSymbolKeys for packageless dotted symbol") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("Foo.bar().")
-    // clean == "Foo.bar", inits == ["Foo.bar"] -> distinct -> ["Foo.bar"]
-    assertEquals(keys, List("Foo.bar"))
+    assertEquals(keys, List("Foo.bar", "bar"))
   }
 
   test("candidateSymbolKeys for single-segment symbol returns clean key") {
@@ -31,14 +30,12 @@ class NavigationSymbolLookupTest extends FunSuite {
 
   test("candidateSymbolKeys for scala/Unit# returns qualified markerless key") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Unit#")
-    // clean = "scala/Unit", afterPackage = "Unit", single segment -> inits = Nil
-    assertEquals(keys, List("scala/Unit"))
+    assertEquals(keys, List("scala/Unit", "Unit"))
   }
 
   test("candidateSymbolKeys for scala/Predef.println(). returns qualified + dotted") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Predef.println().")
-    // clean = "scala/Predef.println", inits = ["Predef.println"]
-    assertEquals(keys, List("scala/Predef.println", "Predef.println"))
+    assertEquals(keys, List("scala/Predef.println", "Predef.println", "println"))
   }
 
   test("firstDefinitionInSlices matches scala/Unit# against dep slice keyed scala/Unit") {
@@ -83,12 +80,12 @@ class NavigationSymbolLookupTest extends FunSuite {
 
   test("candidateSymbolKeys for class/trait member strips mid-symbol # and replaces with dot") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("upickle/Api#write().")
-    assertEquals(keys, List("upickle/Api.write", "Api.write"))
+    assertEquals(keys, List("upickle/Api.write", "Api.write", "write"))
   }
 
   test("candidateSymbolKeys for overloaded method strips (+N) disambiguator") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Predef.println(+1).")
-    assertEquals(keys, List("scala/Predef.println", "Predef.println"))
+    assertEquals(keys, List("scala/Predef.println", "Predef.println", "println"))
   }
 
   test("firstDefinitionInSlices matches class member symbol against dep slice") {
@@ -153,7 +150,7 @@ class NavigationSymbolLookupTest extends FunSuite {
 
   test("candidateSymbolKeys for scala/package.Seq. returns qualified + dotted owner key") {
     val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/package.Seq.")
-    assertEquals(keys, List("scala/package.Seq", "package.Seq"))
+    assertEquals(keys, List("scala/package.Seq", "package.Seq", "Seq"))
   }
 
   test("firstDefinitionInSlices matches scala/package.Seq. against dep slice keyed scala/package.Seq") {

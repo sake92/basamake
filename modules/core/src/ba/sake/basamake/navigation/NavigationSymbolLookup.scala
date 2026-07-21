@@ -9,24 +9,24 @@ object NavigationSymbolLookup {
       .stripSuffix(".")
       .stripSuffix("#")
       .replace('#', '.')             // class-member separator -> owner-qualified form
+    val strippedPkg = clean
+      .stripPrefix("_root_/")
+      .stripPrefix("_empty_/")
     val afterPackage =
-      clean.lastIndexOf('/') match
-        case idx if idx >= 0 => clean.substring(idx + 1)
-        case _               => clean
+      strippedPkg.lastIndexOf('/') match
+        case idx if idx >= 0 => strippedPkg.substring(idx + 1)
+        case _               => strippedPkg
     val segments = afterPackage.split('.').toList.filter(_.nonEmpty)
     val inits =
       segments match
         case Nil => Nil
         case many =>
-          // Require at least 2 segments (owner + name), exclude bare name
           many.inits.toList.reverse
             .filter(_.size >= 2)
             .map(_.mkString("."))
             .filter(_.nonEmpty)
-    // Markerless fully-qualified key matches dependency-source index keys
-    // (synthesized without SemanticDB markers). Distinct to avoid dup when
-    // symbol had no marker.
-    if clean.nonEmpty then (clean +: inits).distinct else inits
+    val bareName = segments.lastOption.toList
+    (List(clean, strippedPkg) ++ inits ++ bareName).filter(_.nonEmpty).distinct
   }
 
   def isLocalSymbol(symbol: String): Boolean =

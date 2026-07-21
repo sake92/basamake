@@ -152,8 +152,11 @@ object DependencySourceIndexing extends StrictLogging {
         Some(SemanticdbOccurrence(defn.symbol, defn.range, isDefinition = true))
       }
       val symbolDefinitions =
-        definitions.groupMap(_.symbol)(d => new Location(sourceUri, d.range)) ++
-          definitions.groupMap(_.ownerName)(d => new Location(sourceUri, d.range))
+        definitions.flatMap { defn =>
+          val loc = new Location(sourceUri, defn.range)
+          val keys = (defn.symbol +: defn.ownerName +: defn.name +: NavigationSymbolLookup.candidateSymbolKeys(defn.symbol)).distinct
+          keys.map(_ -> loc)
+        }.groupMap(_._1)(_._2)
       val documentSymbols =
         definitions.flatMap { defn =>
           val symbolInfo = new SymbolInformation()
