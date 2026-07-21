@@ -48,9 +48,29 @@ object SemanticdbIndexing extends StrictLogging {
       sourceRoots: List[os.Path]
   ): Map[String, SemanticdbFileSlice] = {
     val semanticdbFiles = semanticdbRoots.flatMap(semanticdbFilesUnder).toList.distinct
-    semanticdbFiles.flatMap { file =>
-      parseSemanticdbFile(workspaceRoot, file, sourceRoots).map(slice => slice.sourceUri -> slice)
-    }.toMap
+
+    if semanticdbFiles.size <= 1 then
+      // Single file or empty — no need for concurrency
+      semanticdbFiles.flatMap { file =>
+        parseSemanticdbFile(workspaceRoot, file, sourceRoots).map(slice => slice.sourceUri -> slice)
+      }.toMap
+    else {
+      val executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
+      try {
+        val futures = semanticdbFiles.map { file =>
+          executor.submit[java.util.Map.Entry[String, SemanticdbFileSlice]] { () =>
+            parseSemanticdbFile(workspaceRoot, file, sourceRoots)
+              .map(slice => java.util.Map.entry(slice.sourceUri, slice))
+              .orNull
+          }
+        }
+        futures.flatMap { f =>
+          Option(f.get()).map(e => e.getKey -> e.getValue)
+        }.toMap
+      } finally {
+        executor.shutdown()
+      }
+    }
   }
 
   def semanticdbTargetPaths(options: List[String]): List[os.Path] = {
