@@ -147,6 +147,27 @@ class NavigationIndexTest extends FunSuite {
     assertEquals(paths, List(os.Path("/tmp/out1"), os.Path("/tmp/out2")))
   }
 
+  test("semanticdbTargetPaths handles space-separated -semanticdb-target") {
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+      List("-Xsemanticdb", "-semanticdb-target", "/tmp/custom/space")
+    )
+    assertEquals(paths, List(os.Path("/tmp/custom/space")))
+  }
+
+  test("semanticdbTargetPaths handles space-separated -P:semanticdb:targetroot") {
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+      List("-P:semanticdb:targetroot", "/tmp/custom-s2")
+    )
+    assertEquals(paths, List(os.Path("/tmp/custom-s2")))
+  }
+
+  test("semanticdbTargetPaths ignores space-separated when next token is another flag") {
+    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+      List("-Xsemanticdb", "-semanticdb-target", "-deprecation")
+    )
+    assertEquals(paths, Nil)
+  }
+
   test("semanticdb index handles Scala 3 flags") {
     val index = refreshWith(List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, s"-semanticdb-target:${workspaceRoot.toString}"))
 

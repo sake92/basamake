@@ -120,13 +120,16 @@ class BuildServerManager extends StrictLogging {
         var targets = navRefreshPending.getAndSet(null)
         while targets != null && !ctx.shuttingDown do
           try
-            if targets.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) then
-              ctx.navIndex.refresh(
-                workspaceRoot, ctx.buildServer, targets,
-                ctx.sourceRootsByTarget, ctx.dependencySourceUrisByTarget,
-                openUris.asScala.toSet
-              )
-              logger.info(s"SemanticDB refresh conn=$id targets=${targets.size} workspace=${ctx.sourceRootsByTarget.size} dependency=${ctx.dependencySourceUrisByTarget.size}")
+            if targets.nonEmpty then
+              if ctx.sourceRootsByTarget.isEmpty && ctx.dependencySourceUrisByTarget.isEmpty then
+                logger.warn(s"Nav refresh pending (${targets.size} targets) but source and dependency maps are both empty — nothing to index. BSP may not have reported sources yet.")
+              else
+                ctx.navIndex.refresh(
+                  workspaceRoot, ctx.buildServer, targets,
+                  ctx.sourceRootsByTarget, ctx.dependencySourceUrisByTarget,
+                  openUris.asScala.toSet
+                )
+                logger.info(s"SemanticDB refresh conn=$id targets=${targets.size} workspace=${ctx.sourceRootsByTarget.size} dependency=${ctx.dependencySourceUrisByTarget.size}")
           catch case e: Exception =>
             logger.warn(s"Nav refresh failed for $id: ${e.getMessage}", e)
           targets = navRefreshPending.getAndSet(null)
@@ -184,16 +187,20 @@ class BuildServerManager extends StrictLogging {
           si.getUri
       }
 
-  private def extractTargetSourceRoots(sources: bsp4j.SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
-    def extractSourceDirsForItem(item: bsp4j.SourcesItem): List[String] =
-      Option(item.getSources).toList.flatMap(_.asScala).collect {
-        case si if si.getKind == bsp4j.SourceItemKind.DIRECTORY && !si.getGenerated =>
-          si.getUri
-      }
-    sources.getItems.asScala.toList.flatMap { item =>
-      Option(item.getTarget).map(_ -> extractSourceDirsForItem(item))
+  /** Extract source roots per target. Aligned with targetToSourceRoots in
+    * BspConnectionSupervisor: accepts both DIRECTORY and FILE kinds, uses .map so
+    * ALL targets appear in the map (even those with no source items). The nav
+    * refresh guard depends on this map being populated. */
+  private def extractTargetSourceRoots(sources: bsp4j.SourcesResult): Map[BuildTargetIdentifier, List[String]] =
+    sources.getItems.asScala.toList.map { item =>
+      val roots = Option(item.getSources).map(_.asScala.toList).getOrElse(Nil)
+        .filterNot(_.getGenerated)
+        .collect {
+          case si if si.getKind == bsp4j.SourceItemKind.DIRECTORY => si.getUri
+          case si if si.getKind == bsp4j.SourceItemKind.FILE      => si.getUri
+        }
+      item.getTarget -> roots
     }.toMap
-  }
 
   private def extractTargetDependencySourceUris(dependencySources: bsp4j.DependencySourcesResult): Map[BuildTargetIdentifier, List[String]] =
     dependencySources.getItems.asScala.toList.flatMap { item =>

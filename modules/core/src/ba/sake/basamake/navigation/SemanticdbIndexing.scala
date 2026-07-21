@@ -127,7 +127,14 @@ object SemanticdbIndexing extends StrictLogging {
       case s if s.startsWith("-P:semanticdb:targetroot:") =>
         os.Path(s.stripPrefix("-P:semanticdb:targetroot:"))
     }
-    scala3 ++ scala2
+    // Space-separated forms: flag followed by path in next element
+    val space3 = options.sliding(2).collect {
+      case Seq("-semanticdb-target", path) if !path.startsWith("-") => os.Path(path)
+    }.toList
+    val space2 = options.sliding(2).collect {
+      case Seq("-P:semanticdb:targetroot", path) if !path.startsWith("-") => os.Path(path)
+    }.toList
+    scala3 ++ scala2 ++ space3 ++ space2
   }
 
   def semanticdbFilesUnder(root: os.Path): List[os.Path] =
