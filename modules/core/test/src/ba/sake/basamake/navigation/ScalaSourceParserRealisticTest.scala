@@ -7,9 +7,7 @@ import munit.FunSuite
  * including experimental features like capture checking, transparent
  * traits, erased definitions, and named tuples.
  *
- * When scalameta cannot parse a construct, the parser returns List.empty
- * gracefully — no exceptions, no crashes. These tests document which
- * constructs are currently supported by scalameta 4.17.2.
+ * Scala3Future dialect (scalameta 4.17.2) supports capture checking (^) syntax.
  */
 class ScalaSourceParserRealisticTest extends FunSuite {
 
@@ -129,33 +127,29 @@ class ScalaSourceParserRealisticTest extends FunSuite {
     assert(defs.exists(_.name == "Classifier"), clues(defs))
   }
 
-  // ── Known limitation: ^ capture checking syntax ──────────
+  // ── Capture checking (^) — now supported via Scala3Future ──
 
-  test("gracefully degrades on capture caret in return type") {
-    // scalameta 4.17.2 does NOT support ^ capture syntax
+  test("parses capture caret in return type (Scala3Future)") {
     val code =
       """package scala
         |import language.experimental.captureChecking
         |trait Foo[A] { def bar(x: A^): A^ }
         |""".stripMargin
     val defs = ScalaSourceParser.extractDefinitions(code)
-    // Returns empty — no crash, no exception
-    assertEquals(defs, List.empty)
+    assert(defs.exists(_.name == "Foo"), clues(defs))
   }
 
-  test("gracefully degrades on capture sets with refs") {
-    // ^^{f, g} syntax unsupported by scalameta 4.17.2
+  test("parses capture sets with refs (Scala3Future)") {
     val code =
       """package scala
         |import language.experimental.captureChecking
         |trait Foo[A, B] { def compose(f: A^, g: B^): Foo[A, B]^{f, g} }
         |""".stripMargin
     val defs = ScalaSourceParser.extractDefinitions(code)
-    assertEquals(defs, List.empty)
+    assert(defs.exists(_.name == "Foo"), clues(defs))
   }
 
-  test("gracefully degrades on self-type with capture") {
-    // self: Foo^ => unsupported
+  test("parses self-type with capture (Scala3Future)") {
     val code =
       """package scala
         |import language.experimental.captureChecking
@@ -164,11 +158,10 @@ class ScalaSourceParserRealisticTest extends FunSuite {
         |}
         |""".stripMargin
     val defs = ScalaSourceParser.extractDefinitions(code)
-    assertEquals(defs, List.empty)
+    assert(defs.exists(_.name == "PartialFunction"), clues(defs))
   }
 
-  test("gracefully degrades on capture in constructor param") {
-    // Foo^ in constructor param
+  test("parses capture in constructor param (Scala3Future)") {
     val code =
       """package scala
         |import language.experimental.captureChecking
@@ -176,11 +169,12 @@ class ScalaSourceParserRealisticTest extends FunSuite {
         |class Bar[A](pf: Foo[A]^) extends Foo[A]
         |""".stripMargin
     val defs = ScalaSourceParser.extractDefinitions(code)
-    assertEquals(defs, List.empty)
+    assert(defs.exists(_.name == "Foo"), clues(defs))
+    assert(defs.exists(_.name == "Bar"), clues(defs))
   }
 
-  test("gracefully degrades on real PartialFunction header from stdlib") {
-    // Actual scala.PartialFunction head from Scala 3.8.4 — ^ syntax causes failure
+  test("parses real PartialFunction header from stdlib (Scala3Future)") {
+    // Actual scala.PartialFunction head from Scala 3.8.4 — ^ syntax now parses
     val code =
       """/*
         | * Scala (https://www.scala-lang.org)
@@ -193,8 +187,22 @@ class ScalaSourceParserRealisticTest extends FunSuite {
         |}
         |""".stripMargin
     val defs = ScalaSourceParser.extractDefinitions(code)
-    assertEquals(defs, List.empty)
+    assert(defs.exists(_.name == "PartialFunction"), clues(defs))
   }
+
+  test("parses capture checking method with AnyRef^ params") {
+    val code =
+      """package foo
+        |
+        |object Bar:
+        |  def copy(src: AnyRef^, dest: AnyRef^): Unit = {}
+        |""".stripMargin
+    val defs = ScalaSourceParser.extractDefinitions(code)
+    assert(defs.exists(_.name == "Bar"), clues(defs))
+    assert(defs.exists(d => d.name == "copy" && d.symbol == "foo/Bar.copy"), clues(defs))
+  }
+
+  // ── Graceful degradation for genuinely unparsable input ──
 
   test("gracefully degrades on completely unparseable input") {
     val code = "class class class"

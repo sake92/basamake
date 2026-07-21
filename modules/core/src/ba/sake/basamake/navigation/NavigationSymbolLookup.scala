@@ -13,14 +13,19 @@ object NavigationSymbolLookup {
         case idx if idx >= 0 => clean.substring(idx + 1)
         case _               => clean
     val segments = afterPackage.split('.').toList.filter(_.nonEmpty)
-    segments match
-      case Nil => Nil
-      case many =>
-        // Require at least 2 segments (owner + name), exclude bare name
-        many.inits.toList.reverse
-          .filter(_.size >= 2)
-          .map(_.mkString("."))
-          .filter(_.nonEmpty)
+    val inits =
+      segments match
+        case Nil => Nil
+        case many =>
+          // Require at least 2 segments (owner + name), exclude bare name
+          many.inits.toList.reverse
+            .filter(_.size >= 2)
+            .map(_.mkString("."))
+            .filter(_.nonEmpty)
+    // Markerless fully-qualified key matches dependency-source index keys
+    // (synthesized without SemanticDB markers). Distinct to avoid dup when
+    // symbol had no marker.
+    if clean.nonEmpty then (clean +: inits).distinct else inits
   }
 
   def isLocalSymbol(symbol: String): Boolean =
