@@ -23,7 +23,7 @@ object ScalaSourceParser extends StrictLogging {
     parsed3 match
       case Parsed.Success(source) =>
         parsedScala3Future.incrementAndGet()
-        extractFromSource(source)
+        extractFromSource(source, fileName)
       case Parsed.Error(_, msg, _) =>
         logger.debug(s"Scala 3 parse failed for $fileName, retrying with Scala 2.13: $msg")
         val parsed213 = {
@@ -33,7 +33,7 @@ object ScalaSourceParser extends StrictLogging {
         parsed213 match
           case Parsed.Success(source) =>
             parsedScala213.incrementAndGet()
-            extractFromSource(source)
+            extractFromSource(source, fileName)
           case Parsed.Error(_, msg2, _) =>
             parseFailed.incrementAndGet()
             val fileInfo = if fileName.nonEmpty then s" [$fileName]" else ""
@@ -56,14 +56,23 @@ object ScalaSourceParser extends StrictLogging {
       )
   }
 
-  private def extractFromSource(source: Source): List[SourceDefinition] = {
-    extractFromStats(source.stats, "", Nil)
+  private def topLevelOwnerWrapper(fileName: String): Option[String] =
+    fileName match
+      case ""                     => None // tests that omit fileName keep old behavior
+      case "package.scala"        => Some("package")
+      case n if n.endsWith(".scala") => Some(n.stripSuffix(".scala") + "$package")
+      case _                      => None
+
+  private def extractFromSource(source: Source, fileName: String): List[SourceDefinition] = {
+    val wrapper = topLevelOwnerWrapper(fileName)
+    extractFromStats(source.stats, "", Nil, wrapper)
   }
 
   private def extractFromStats(
       stats: List[Stat],
       pkgPrefix: String,
-      ownerChain: List[String]
+      ownerChain: List[String],
+      wrapper: Option[String]
   ): List[SourceDefinition] = {
     stats.flatMap {
       case p: Pkg =>
@@ -72,27 +81,32 @@ object ScalaSourceParser extends StrictLogging {
           if relPkg.isEmpty then pkgPrefix
           else if pkgPrefix.nonEmpty then pkgPrefix + relPkg.replace('.', '/') + "/"
           else relPkg.replace('.', '/') + "/"
-        extractFromStats(p.stats, newPkg, ownerChain)
+        extractFromStats(p.stats, newPkg, ownerChain, wrapper)
+
+      case d: Pkg.Object =>
+        val newPkg = pkgPrefix + d.name.value + "/"
+        val childChain = ownerChain :+ "package"
+        extractFromStats(d.templ.stats, newPkg, childChain, wrapper)
 
       case d: Defn.Class =>
         val defn = makeDef(SymbolKind.Class, d.name, pkgPrefix, ownerChain)
         val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain)
+        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
 
       case d: Defn.Trait =>
         val defn = makeDef(SymbolKind.Interface, d.name, pkgPrefix, ownerChain)
         val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain)
+        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
 
       case d: Defn.Object =>
         val defn = makeDef(SymbolKind.Object, d.name, pkgPrefix, ownerChain)
         val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain)
+        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
 
       case d: Defn.Enum =>
         val defn = makeDef(SymbolKind.Enum, d.name, pkgPrefix, ownerChain)
         val childChain = ownerChain :+ d.name.value
-        val inner = extractFromStats(d.templ.stats, pkgPrefix, childChain)
+        val inner = extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
         defn :: inner
 
       case d: Defn.EnumCase =>
@@ -105,47 +119,51 @@ object ScalaSourceParser extends StrictLogging {
         }
 
       case d: Defn.Given if hasName(d) =>
-        val defn = makeDef(SymbolKind.Interface, d.name, pkgPrefix, ownerChain)
-        val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain)
+        val chain = wrapOwner(ownerChain, wrapper)
+        val defn = makeDef(SymbolKind.Interface, d.name, pkgPrefix, chain)
+        val childChain = chain :+ d.name.value
+        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
 
       case d: Defn.GivenAlias if hasName(d) =>
-        List(makeDef(SymbolKind.Interface, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.Interface, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case d: Defn.Def =>
-        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case d: Defn.Macro =>
-        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case d: Defn.Type =>
-        List(makeDef(SymbolKind.TypeParameter, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.TypeParameter, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case d: Defn.Val =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Property, name, pkgPrefix, ownerChain) }
+        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Property, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
 
       case d: Defn.Var =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Variable, name, pkgPrefix, ownerChain) }
+        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Variable, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
 
       case d: Decl.Val =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Property, name, pkgPrefix, ownerChain) }
+        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Property, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
 
       case d: Decl.Var =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Variable, name, pkgPrefix, ownerChain) }
+        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Variable, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
 
       case d: Decl.Def =>
-        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case d: Decl.Type =>
-        List(makeDef(SymbolKind.TypeParameter, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.TypeParameter, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case d: Decl.Given if hasName(d) =>
-        List(makeDef(SymbolKind.Interface, d.name, pkgPrefix, ownerChain))
+        List(makeDef(SymbolKind.Interface, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
 
       case _ =>
         Nil
     }
   }
+
+  private def wrapOwner(ownerChain: List[String], wrapper: Option[String]): List[String] =
+    if ownerChain.isEmpty then wrapper.toList else ownerChain
 
   private def makeDef(
       kind: SymbolKind,

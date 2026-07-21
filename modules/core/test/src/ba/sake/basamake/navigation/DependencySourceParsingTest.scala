@@ -177,4 +177,53 @@ class DependencySourceParsingTest extends FunSuite {
     assert(key.startsWith("com.lihaoyi-upickle_3-4.0.0-"), clues(key))
     assert(key.matches(".*-[0-9a-f]{8}$"), clues(key))
   }
+
+  test("package object members indexed under <pkg>/package.* (Bug A)") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "package.scala",
+      "package object scala { type Seq[+A] = collection.immutable.Seq[A]; val Seq = collection.immutable.Seq }"
+    )
+
+    val seqDefs = definitions.filter(_.name == "Seq")
+    assertEquals(seqDefs.size, 2, clues(definitions))
+    assert(seqDefs.forall(_.symbol == "scala/package.Seq"), clues(seqDefs))
+    assert(seqDefs.forall(_.ownerName == "package.Seq"), clues(seqDefs))
+  }
+
+  test("top-level defs in package.scala indexed under <pkg>/package.* (Bug B)") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "package.scala",
+      "package scala\npackage compiletime\ndef error(msg: String): Nothing = ???"
+    )
+
+    val errorDef = definitions.find(_.name == "error")
+    assert(errorDef.nonEmpty, clues(definitions))
+    assertEquals(errorDef.get.symbol, "scala/compiletime/package.error", clues(errorDef))
+  }
+
+  test("top-level defs in X.scala indexed under <pkg>/X$package.*, classes unchanged (Bug C)") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.scala",
+      "package a.b\ndef foo = 1\nclass C"
+    )
+
+    val fooDef = definitions.find(_.name == "foo")
+    assert(fooDef.nonEmpty, clues(definitions))
+    assertEquals(fooDef.get.symbol, "a/b/Foo$package.foo", clues(fooDef))
+
+    val cDef = definitions.find(_.name == "C")
+    assert(cDef.nonEmpty, clues(definitions))
+    assertEquals(cDef.get.symbol, "a/b/C", clues(cDef))
+  }
+
+  test("empty fileName → no top-level wrapping (guards test-compat path)") {
+    val definitions = ScalaSourceParser.extractDefinitions(
+      "package a.b\ndef foo = 1",
+      ""
+    )
+
+    val fooDef = definitions.find(_.name == "foo")
+    assert(fooDef.nonEmpty, clues(definitions))
+    assertEquals(fooDef.get.symbol, "a/b/foo", clues(fooDef))
+  }
 }

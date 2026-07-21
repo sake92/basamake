@@ -150,4 +150,29 @@ class NavigationSymbolLookupTest extends FunSuite {
     assert(defn.nonEmpty)
     assertEquals(defn.get.getUri, depUri)
   }
+
+  test("candidateSymbolKeys for scala/package.Seq. returns qualified + dotted owner key") {
+    val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/package.Seq.")
+    assertEquals(keys, List("scala/package.Seq", "package.Seq"))
+  }
+
+  test("firstDefinitionInSlices matches scala/package.Seq. against dep slice keyed scala/package.Seq") {
+    val depUri = "file:///tmp/scala/package.scala"
+    val depRange = new Range(new Position(42, 0), new Position(42, 3))
+    val depSlice = SemanticdbFileSlice(
+      sourceUri = depUri,
+      occurrences = Nil,
+      symbolDefinitions = Map("scala/package.Seq" -> List(new Location(depUri, depRange))),
+      symbolReferences = Map.empty,
+      documentSymbols = Nil
+    )
+
+    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
+      symbol = "scala/package.Seq.",
+      slices = List(depSlice)
+    )
+
+    assert(defn.nonEmpty)
+    assertEquals(defn.get.getUri, depUri)
+  }
 }
