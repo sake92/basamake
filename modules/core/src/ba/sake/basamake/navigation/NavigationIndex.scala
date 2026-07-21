@@ -17,8 +17,22 @@ final case class SemanticdbFileSlice(
     symbolReferences: Map[String, List[Location]],
     documentSymbols: List[Either[SymbolInformation, org.eclipse.lsp4j.DocumentSymbol]]
 ) {
-  def symbolAt(position: Position): Option[String] =
-    occurrences.find(occ => NavigationRangeUtils.contains(occ.range, position)).map(_.symbol)
+  def symbolAt(position: Position): Option[String] = {
+    val matchingOccs = occurrences.filter(occ => NavigationRangeUtils.contains(occ.range, position))
+    if matchingOccs.isEmpty then None
+    else {
+      val smallest = matchingOccs.minBy { occ =>
+        val range = occ.range
+        val lineSpan = range.getEnd.getLine - range.getStart.getLine
+        val charSpan = if lineSpan == 0 then
+          range.getEnd.getCharacter - range.getStart.getCharacter
+        else
+          Int.MaxValue
+        (lineSpan, charSpan)
+      }
+      Some(smallest.symbol)
+    }
+  }
 }
 
 final class NavigationIndex extends StrictLogging {

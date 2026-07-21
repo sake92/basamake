@@ -602,4 +602,36 @@ class NavigationIndexTest extends FunSuite {
     finally
       os.remove.all(tmp)
   }
+
+  test("symbolAt prefers smallest enclosing range over larger enclosing range") {
+    val tmp = os.temp.dir(prefix = "nav-range")
+    try
+      val index = new NavigationIndex()
+      val uri = "file:///ws/Main.scala"
+
+      val outerRange = new Range(new Position(2, 0), new Position(2, 7))
+      val innerRange = new Range(new Position(2, 4), new Position(2, 7))
+
+      val slice = SemanticdbFileSlice(
+        sourceUri = uri,
+        occurrences = List(
+          SemanticdbOccurrence("foo", outerRange, isDefinition = false),
+          SemanticdbOccurrence("foo.bar", innerRange, isDefinition = false)
+        ),
+        symbolDefinitions = Map(
+          "foo" -> List(new Location(uri, outerRange)),
+          "foo.bar" -> List(new Location(uri, innerRange))
+        ),
+        symbolReferences = Map.empty,
+        documentSymbols = Nil
+      )
+
+      index.setTargetSlicesForTest(targetId, Map(uri -> slice))
+
+      // Cursor at "bar" (position 2,5) should resolve to foo.bar, not foo
+      val defs = index.definition(uri, new Position(2, 5))
+      assertEquals(defs.map(_.getRange), List(innerRange))
+    finally
+      os.remove.all(tmp)
+  }
 }
