@@ -121,7 +121,8 @@ class BuildServerManager extends StrictLogging {
             if targets.nonEmpty && (ctx.sourceRootsByTarget.nonEmpty || ctx.dependencySourceUrisByTarget.nonEmpty) then
               ctx.navIndex.refresh(
                 workspaceRoot, ctx.buildServer, targets,
-                ctx.sourceRootsByTarget, ctx.dependencySourceUrisByTarget
+                ctx.sourceRootsByTarget, ctx.dependencySourceUrisByTarget,
+                openUris.asScala.toSet
               )
               logger.info(s"SemanticDB refresh conn=$id targets=${targets.size} workspace=${ctx.sourceRootsByTarget.size} dependency=${ctx.dependencySourceUrisByTarget.size}")
           catch case e: Exception =>

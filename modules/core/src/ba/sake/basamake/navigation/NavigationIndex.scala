@@ -86,7 +86,8 @@ final class NavigationIndex extends StrictLogging {
       buildServer: BuildServer,
       targetIds: List[BuildTargetIdentifier],
       sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]],
-      dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]]
+      dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]],
+      openUris: Set[String] = Set.empty
   ): Unit = {
     val buildTargetIds = targetIds.asJava
 
@@ -133,7 +134,7 @@ final class NavigationIndex extends StrictLogging {
 
       val workspaceSlices =
         if semanticdbRoots.nonEmpty then
-          SemanticdbIndexing.indexWorkspaceTarget(workspaceRoot, semanticdbRoots, sourceRoots)
+          SemanticdbIndexing.indexWorkspaceTarget(workspaceRoot, semanticdbRoots, sourceRoots, openUris)
         else Map.empty
 
       commitRefresh(targetId, flagsDetected, bestEffort, workspaceSlices, dependencySlices)
