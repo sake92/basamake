@@ -38,7 +38,8 @@ class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends Build
     )
 
   override def onBuildTargetDidChange(params: DidChangeBuildTarget): Unit =
-    logger.debug(s"BSP TARGET DID CHANGE ${params}")
+    logger.debug(s"BSP TARGET DID CHANGE: ${params.getChanges.size()} event(s)")
+    queue.offer(ConnectionMessage.BuildTargetChanged(params))
   
   override def onRunPrintStderr(x$0: ch.epfl.scala.bsp4j.PrintParams): Unit = ()
   
