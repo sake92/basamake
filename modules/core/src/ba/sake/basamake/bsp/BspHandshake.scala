@@ -83,13 +83,16 @@ object BspHandshake extends StrictLogging {
 
       logger.debug("Requesting buildTargetSources...")
       val sourcesParams = new SourcesParams(targetIds.asJava)
-      val sourcesResult = buildServer.buildTargetSources(sourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
-      logger.debug("buildTargetSources OK")
+      val sourcesFuture = buildServer.buildTargetSources(sourcesParams)
 
       logger.debug("Requesting buildTargetDependencySources...")
       val dependencySourcesParams = new DependencySourcesParams(targetIds.asJava)
-      val dependencySourcesResult =
-        buildServer.buildTargetDependencySources(dependencySourcesParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      val depSourcesFuture = buildServer.buildTargetDependencySources(dependencySourcesParams)
+
+      val sourcesResult = sourcesFuture.get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      logger.debug("buildTargetSources OK")
+
+      val dependencySourcesResult = depSourcesFuture.get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("buildTargetDependencySources OK")
 
       HandshakeResult(process, buildServer, targetsResult, sourcesResult, dependencySourcesResult)

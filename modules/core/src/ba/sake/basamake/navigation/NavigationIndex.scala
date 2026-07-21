@@ -3,7 +3,7 @@ package ba.sake.basamake.navigation
 import java.util.concurrent.TimeUnit
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
-import ch.epfl.scala.bsp4j.{BuildServer, BuildTargetIdentifier, OutputPathsParams, OutputPathItemKind, ScalacOptionsParams, ScalaBuildServer}
+import ch.epfl.scala.bsp4j.{BuildServer, BuildTargetIdentifier, OutputPathsParams, OutputPathsResult, OutputPathItemKind, ScalacOptionsParams, ScalacOptionsResult, ScalaBuildServer}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{Location, Position, Range, SymbolInformation, SymbolKind}
 import org.eclipse.lsp4j.jsonrpc.messages.Either
@@ -75,8 +75,33 @@ final class NavigationIndex extends StrictLogging {
       dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]]
   ): Unit = {
     val buildTargetIds = targetIds.asJava
-    val outputRootsByTarget = fetchOutputRoots(buildServer, buildTargetIds)
-    val scalaOptionsByTarget = fetchScalacOptions(buildServer, buildTargetIds)
+
+    // Issue both requests concurrently
+    val outputPathsFuture = buildServer.buildTargetOutputPaths(new OutputPathsParams(buildTargetIds))
+    val scalacOptionsFuture = buildServer match {
+      case scalaBuild: ScalaBuildServer =>
+        scalaBuild.buildTargetScalacOptions(new ScalacOptionsParams(buildTargetIds))
+      case _ =>
+        java.util.concurrent.CompletableFuture.completedFuture(
+          new ScalacOptionsResult(java.util.Collections.emptyList())
+        )
+    }
+
+    val outputRootsByTarget = try {
+      resolveOutputRoots(outputPathsFuture.get(10, TimeUnit.SECONDS))
+    } catch {
+      case e: Exception =>
+        logger.debug(s"buildTargetOutputPaths failed: ${e.getMessage}")
+        Map.empty
+    }
+
+    val scalaOptionsByTarget = try {
+      resolveScalacOptions(scalacOptionsFuture.get(10, TimeUnit.SECONDS))
+    } catch {
+      case e: Exception =>
+        logger.debug(s"buildTargetScalacOptions failed: ${e.getMessage}")
+        Map.empty
+    }
 
     targetIds.foreach { targetId =>
       val opts = scalaOptionsByTarget.get(targetId)
@@ -193,58 +218,36 @@ final class NavigationIndex extends StrictLogging {
         acc.updated(symbol, acc.getOrElse(symbol, Nil) ++ locations)
     }
 
-  private def fetchOutputRoots(
-      buildServer: BuildServer,
-      targetIds: java.util.List[BuildTargetIdentifier]
+  private def resolveOutputRoots(
+      result: OutputPathsResult
   ): Map[BuildTargetIdentifier, List[String]] =
-    try {
-      val result = buildServer.buildTargetOutputPaths(new OutputPathsParams(targetIds))
-        .get(10, TimeUnit.SECONDS)
-      Option(result.getItems)
-        .map(_.asScala.toList)
-        .getOrElse(Nil)
-        .map { item =>
-          val roots =
-            Option(item.getOutputPaths).map(_.asScala.toList).getOrElse(Nil).collect {
-              case p if p.getKind == OutputPathItemKind.DIRECTORY => p.getUri
-            }
-          item.getTarget -> roots
-        }
-        .toMap
-    } catch {
-      case e: Exception =>
-        logger.debug(s"buildTargetOutputPaths failed: ${e.getMessage}")
-        Map.empty
-    }
+    Option(result.getItems)
+      .map(_.asScala.toList)
+      .getOrElse(Nil)
+      .map { item =>
+        val roots =
+          Option(item.getOutputPaths).map(_.asScala.toList).getOrElse(Nil).collect {
+            case p if p.getKind == OutputPathItemKind.DIRECTORY => p.getUri
+          }
+        item.getTarget -> roots
+      }
+      .toMap
 
   /** targetId -> (scalacOptions, classDirectory) */
-  private def fetchScalacOptions(
-      buildServer: BuildServer,
-      targetIds: java.util.List[BuildTargetIdentifier]
+  private def resolveScalacOptions(
+      result: ScalacOptionsResult
   ): Map[BuildTargetIdentifier, (List[String], Option[String])] =
-    buildServer match {
-      case scalaBuild: ScalaBuildServer =>
-        try {
-          val result = scalaBuild.buildTargetScalacOptions(new ScalacOptionsParams(targetIds))
-            .get(10, TimeUnit.SECONDS)
-          Option(result.getItems)
-            .map(_.asScala.toList)
-            .getOrElse(Nil)
-            .map(item =>
-              item.getTarget ->
-                (
-                  Option(item.getOptions).map(_.asScala.toList).getOrElse(Nil),
-                  Option(item.getClassDirectory).filter(_.nonEmpty)
-                )
-            )
-            .toMap
-        } catch {
-          case e: Exception =>
-            logger.debug(s"buildTargetScalacOptions failed: ${e.getMessage}")
-            Map.empty
-        }
-      case _ => Map.empty
-    }
+    Option(result.getItems)
+      .map(_.asScala.toList)
+      .getOrElse(Nil)
+      .map(item =>
+        item.getTarget ->
+          (
+            Option(item.getOptions).map(_.asScala.toList).getOrElse(Nil),
+            Option(item.getClassDirectory).filter(_.nonEmpty)
+          )
+      )
+      .toMap
 
   private def orderedWorkspaceSlices: List[SemanticdbFileSlice] =
     targetStates.values.toList.flatMap { state =>
