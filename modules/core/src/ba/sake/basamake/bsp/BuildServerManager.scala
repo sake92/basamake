@@ -151,8 +151,25 @@ class BuildServerManager extends StrictLogging {
       navRefreshPending.set(targetIds)
       LockSupport.unpark(navRefreshThread)
 
+    val targetChangedCallback = (
+        buildServer: bsp4j.BuildServer,
+        depSourcesResult: bsp4j.DependencySourcesResult,
+        changedOrCreatedIds: List[BuildTargetIdentifier],
+        deletedIds: List[BuildTargetIdentifier]) => {
+      if depSourcesResult != null then
+        ctx.dependencySourceUrisByTarget =
+          ctx.dependencySourceUrisByTarget ++ extractTargetDependencySourceUris(depSourcesResult)
+      for tid <- deletedIds do
+        ctx.sourceRootsByTarget -= tid
+        ctx.dependencySourceUrisByTarget -= tid
+      val allAffected = changedOrCreatedIds ++ deletedIds
+      if allAffected.nonEmpty then
+        navRefreshPending.set(allAffected)
+        LockSupport.unpark(navRefreshThread)
+    }
+
     val vt = Thread.ofVirtual().start(() =>
-      BspConnectionSupervisor.supervise(record, msgQueue, client, routingReadyCallback, compileCallback)
+      BspConnectionSupervisor.supervise(record, msgQueue, client, routingReadyCallback, compileCallback, targetChangedCallback)
     )
     logger.debug(s"Spawned supervisor thread for $id (${bspSpec.path})")
   } catch {
