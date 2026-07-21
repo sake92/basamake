@@ -14,8 +14,13 @@ object NavigationSymbolLookup {
         case _               => clean
     val segments = afterPackage.split('.').toList.filter(_.nonEmpty)
     segments match
-      case Nil  => Nil
-      case many => many.inits.toList.reverse.map(_.mkString(".")).filter(_.nonEmpty)
+      case Nil => Nil
+      case many =>
+        // Require at least 2 segments (owner + name), exclude bare name
+        many.inits.toList.reverse
+          .filter(_.size >= 2)
+          .map(_.mkString("."))
+          .filter(_.nonEmpty)
   }
 
   def isLocalSymbol(symbol: String): Boolean =
