@@ -13,7 +13,7 @@ sequenceDiagram
     participant LSP as BasamakeLanguageServer
     participant MGR as BuildServerManager
     participant RTR as BspRouter
-    participant NAV as SemanticdbNavigationIndex
+    participant NAV as NavigationIndex
 
     ED->>LSP: definition(uri, position)
     LSP->>MGR: definition(uri, position)
@@ -28,7 +28,7 @@ sequenceDiagram
         MGR->>NAV: definition(uri, position)
         
         Note over NAV: 1. slicesForUri(uri) → find source file slices
-        Note over NAV: 2. match symbol at position via range containment
+        Note over NAV: 2. symbolAt(position): smallest enclosing occurrence wins
         Note over NAV: 3. candidateSymbolKeys(symbol) → suffix variants
         Note over NAV: 4. firstDefinition: workspace slices first, deps second
         Note over NAV: 5. post-process locations (normalize, dedup, check exist)
@@ -53,18 +53,21 @@ flowchart TD
     DDEF -->|not found| EMPTY["return None"]
 ```
 
-`candidateSymbolKeys` handles symbol mismatches between source and dependency:
+`candidateSymbolKeys` handles symbol mismatches between source and dependency.
+SemanticDB occurrence symbols carry markers (`()` / `.` / `#`); dependency index keys
+don't. Suffixes require at least 2 segments (owner + name) — bare names are excluded to
+prevent cross-library collisions:
 
 ```
 Input: "com/example/Foo.bar()."
-Strip: "com/example/Foo.bar"
+Strip markers: "com/example/Foo.bar"
 After last '/': "Foo.bar"
 Segments: ["Foo", "bar"]
-Suffixes: ["Foo.bar", "bar"]
+Suffixes: ["Foo.bar"]   // bare "bar" excluded (single segment)
 ```
 
 ## Key Points
 
 - **Workspace-first** — definitions in your own source code take priority over dependency symbols.
-- **Synchronized** — `SemanticdbNavigationIndex.definition()` is `synchronized`, so navigation queries don't race with index refreshes from compile.
+- **Synchronized** — `NavigationIndex.definition()` is `synchronized`, so navigation queries don't race with index refreshes from compile.
 - **Post-processing** — locations are normalized (URI canonicalization), deduplicated, and filtered for existence on disk (source files or archive entries).

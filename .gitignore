@@ -19,6 +19,9 @@ target/
 # ai
 docs/superpowers/
 .agents/
+.opencode/
+.scalex/
+plans/
 
 # docs
 _site/

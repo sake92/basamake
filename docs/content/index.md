@@ -18,7 +18,7 @@ If you also have **Metals** installed, VS Code will prompt which LSP to use for 
 - **Multi-BSP by default** — a workspace may contain multiple build tools (sbt, Mill, scala-cli, etc.), each in a subdirectory with its own `.bsp/` config. Basamake discovers all of them and routes editor requests to the right one automatically.
 - **Lazy connections** — BSP processes are not started at editor startup. They spawn only when the first LSP message (didOpen/didSave) targets a URI in their territory.
 - **Simple concurrency with virtual threads** — `BlockingQueue`, `@volatile` and `synchronized`.
-- **SemanticDB for navigation** — go-to-definition and references use SemanticDB protobuf files produced by the compiler, plus a regex-based fallback for dependency sources.
+- **SemanticDB for navigation** — go-to-definition and references use SemanticDB protobuf files produced by the compiler (parsed concurrently on virtual threads), plus a parser-based fallback (scalameta/javaparser) for dependency sources.
 
 ---
 
@@ -87,8 +87,8 @@ flowchart TB
 | URI→BSP routing | `BspRouter.scala`, `RoutingTable.scala` |
 | File watcher | `FileChangeWatcher.scala` |
 | Diagnostics accumulation | `DiagnosticsAccumulator.scala` |
-| Navigation / go-to-def | `SemanticdbNavigationIndex.scala`, `NavigationSymbolLookup.scala`, `NavigationLocationUtils.scala`, `NavigationRangeUtils.scala`, `NavigationUriUtils.scala` |
-| Dependency source parsing | `DependencySourceParsing.scala` |
+| Navigation / go-to-def | `NavigationIndex.scala`, `SemanticdbIndexing.scala`, `NavigationSymbolLookup.scala`, `NavigationLocationUtils.scala`, `NavigationRangeUtils.scala`, `NavigationUriUtils.scala` |
+| Dependency source parsing | `DependencySourceIndexing.scala`, `DependencySourceParsing.scala`, `ScalaSourceParser.scala`, `JavaSourceParser.scala` |
 | Process tree termination | `ProcessUtils.scala` |
 
 ---
@@ -160,7 +160,7 @@ flowchart LR
     subgraph sync["synchronized Blocks"]
         MGR["BuildServerManager<br/>(connection state)"]
         ROUT["RoutingTable<br/>(routing entries)"]
-        NAV["SemanticdbNavigationIndex<br/>(index state)"]
+        NAV["NavigationIndex<br/>(index state)"]
     end
     subgraph oscope["os-lib Threads"]
         WAT["File watcher<br/>(os-lib internal)"]
@@ -186,7 +186,7 @@ flowchart LR
 - **One virtual thread per BSP connection** — supervisor VTs block on their connection's `BlockingQueue.take()`.
 - **LSP handlers return instantly** — they only `route(uri)` and `queue.offer(msg)`. No compile work on lsp4j threads.
 - **File watcher** runs on os-lib internal threads. It calls `BuildServerManager.onFileChanged` which **debounces** and diffs filesystem, then calls `handleBspChanges` from a `TimerTask`.
-- **Synchronized on `BuildServerManager`**, `RoutingTable`, and `SemanticdbNavigationIndex` since they are shared mutable state touched from multiple VTs.
+- **Synchronized on `BuildServerManager`**, `RoutingTable`, and `NavigationIndex` since they are shared mutable state touched from multiple VTs.
 - **Pooling not needed** — each connection supervisor has a dedicated queue. No thread-pool contention.
 
 ---
@@ -219,7 +219,7 @@ classDiagram
     class ConnectionContext {
         record: DurableRecord
         queue: BlockingQueue~ConnectionMessage~
-        navIndex: SemanticdbNavigationIndex
+        navIndex: NavigationIndex
         sourceRootsByTarget: Map
         dependencySourceUrisByTarget: Map
     }

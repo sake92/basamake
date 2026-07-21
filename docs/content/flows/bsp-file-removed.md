@@ -15,7 +15,7 @@ sequenceDiagram
     participant TIMER as Debounce Timer
     participant RTR as BspRouter
     participant SVC as BspConnectionSupervisor
-    participant NAV as SemanticdbNavigationIndex
+    participant NAV as NavigationIndex
 
     FS-->>WAT: file deleted
     WAT->>MGR: onFileChanged([path])
