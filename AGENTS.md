@@ -138,12 +138,19 @@ The extension registers `.scala`/`.sbt` file associations. If you also have Meta
 
 ## Tests
 
-Tests live in `modules/core/test/src/ba/sake/basamake/` — Deder's `core-test` module with `moduleDeps { core }` and munit 1.0.4. Two suites:
+Tests live in `modules/core/test/src/ba/sake/basamake/` — Deder's `core-test` module with `moduleDeps { core }` and munit 1.0.4. Suites:
 
-- `DiagnosticsAccumulatorTest` — pure-function BSP→LSP diagnostic accumulation (reset semantics, multi-target union, clearUri)
+- `DependencySourceParsingTest` — Scala/Java source parsing, symbol synthesis, pkg-object + toplevel wrapping
+- `NavigationSymbolLookupTest` — `candidateSymbolKeys` marker stripping, inits, `firstDefinitionInSlices`
+- `NavigationIndexTest` — refresh flow, semanticdb target paths, dep jar resolution, local symbol scoping
+- `DiagnosticsAccumulatorTest` — pure-function BSP→LSP diagnostic accumulation
 - `StateMachineTest` — backoff counter, delay calculation, supervisor loop conditions
 
 Tests don't require a real BSP process. Run with `deder exec -t test -m core-test`.
+
+## SemanticDB Reference
+
+Spec summary + basamake consumer notes: **`agents/semanticdb.md`** — symbol format, descriptor suffixes, occurrences, SUID encoding, TextDocument layout, Scala 2 vs 3 differences.
 
 ## Key Files for Agents
 
