@@ -117,6 +117,9 @@ class BackoffMessagePreservationTest extends FunSuite {
     val spec = createSpec()
     // MaxCrashRetries is 5 (private val in BspConnectionSupervisor)
     val record = freshRecord(spec, BspConnectionState.BackoffWait, attempts = 5)
+    // Set recent connection time so grace period does NOT reset counter.
+    // Default connectedAtMs=0 would appear as >30s old and trigger a reset.
+    record.connectedAtMs = java.lang.System.currentTimeMillis()
 
     BspConnectionSupervisor.transitionToBackoff(record)
 
@@ -149,6 +152,67 @@ class BackoffMessagePreservationTest extends FunSuite {
     // Counter unchanged, state stays Failed
     assertEquals(record.attemptCounter.get(), 5)
     assertEquals(record.currentState, BspConnectionState.Failed)
+
+    os.remove.all(spec.path / os.up / os.up)
+  }
+
+  // ── grace-period tests ──
+
+  test("transitionToBackoff resets counter for long-lived connection (connectedAtMs >= grace period)") {
+    val spec = createSpec()
+    val record = freshRecord(spec, BspConnectionState.Connected, attempts = 2)
+    // Simulate a connection that survived 60s (past the 30s grace period)
+    record.connectedAtMs = java.lang.System.currentTimeMillis() - 60_000L
+
+    BspConnectionSupervisor.transitionToBackoff(record)
+
+    // Counter resets to 0 then increments to 1
+    assertEquals(record.attemptCounter.get(), 1)
+    assertEquals(record.currentState, BspConnectionState.BackoffWait)
+
+    os.remove.all(spec.path / os.up / os.up)
+  }
+
+  test("transitionToBackoff does NOT reset counter for short-lived connection (< grace period)") {
+    val spec = createSpec()
+    val record = freshRecord(spec, BspConnectionState.Connected, attempts = 2)
+    // Simulate a connection that just connected 1s ago — crash is rapid, count it
+    record.connectedAtMs = java.lang.System.currentTimeMillis() - 1_000L
+
+    BspConnectionSupervisor.transitionToBackoff(record)
+
+    // Counter should NOT reset — rapid crashes keep incrementing
+    assertEquals(record.attemptCounter.get(), 3)
+    assertEquals(record.currentState, BspConnectionState.BackoffWait)
+
+    os.remove.all(spec.path / os.up / os.up)
+  }
+
+  test("transitionToBackoff reaches Failed after MaxCrashRetries rapid crashes") {
+    val spec = createSpec()
+    // Simulate 5 rapid connect-crash cycles — counter at 5, about to hit 6
+    val record = freshRecord(spec, BspConnectionState.Connected, attempts = 5)
+    record.connectedAtMs = java.lang.System.currentTimeMillis() - 1_000L // recent crash
+
+    BspConnectionSupervisor.transitionToBackoff(record)
+
+    // Attempt 6 > MaxCrashRetries(5) → Failed
+    assertEquals(record.attemptCounter.get(), 6)
+    assertEquals(record.currentState, BspConnectionState.Failed)
+
+    os.remove.all(spec.path / os.up / os.up)
+  }
+
+  test("transitionToBackoff with zero attempts and recent crash — no reset needed, still increments") {
+    val spec = createSpec()
+    val record = freshRecord(spec, BspConnectionState.Connected, attempts = 0)
+    record.connectedAtMs = java.lang.System.currentTimeMillis() - 500L // very recent
+
+    BspConnectionSupervisor.transitionToBackoff(record)
+
+    // No prior attempts to reset; increments to 1
+    assertEquals(record.attemptCounter.get(), 1)
+    assertEquals(record.currentState, BspConnectionState.BackoffWait)
 
     os.remove.all(spec.path / os.up / os.up)
   }

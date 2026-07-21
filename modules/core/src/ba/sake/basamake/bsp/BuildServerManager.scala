@@ -345,10 +345,14 @@ class BuildServerManager extends StrictLogging {
         BspDiscovery.parseSingleSpec(p).foreach(spec => applyOverrides(spec).foreach(attachConnection))
 
       for p <- modifiedFiles do
-        logger.info(s"BSP config modified: $p")
         BspDiscovery.parseSingleSpec(p).foreach: spec =>
           val connId = BspConnectionId(spec.path.toString)
-          reloadConnection(connId, spec)
+          val currentContent = Option(connections.get(connId)).map(_.record.bspFile.get().content)
+          if currentContent.contains(spec.content) then
+            logger.debug(s"BSP config rewritten but content unchanged, skipping reload: $p")
+          else
+            logger.info(s"BSP config modified: $p")
+            reloadConnection(connId, spec)
 
       if hadTopologyChange then
         replayOpenAndErroredUris()

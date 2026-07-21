@@ -16,6 +16,7 @@ object BspConnectionSupervisor extends StrictLogging {
   private val HandshakeTimeoutSec = 20L
   private val HealthTtlSec = 30L
   private val HealthProbeTimeoutSec = 10L
+  private val ConnectionGracePeriodMs = 30_000L // reset attempt counter only if connection survived 30s+
 
   def supervise(
       durable: DurableRecord,
@@ -69,10 +70,20 @@ object BspConnectionSupervisor extends StrictLogging {
     }
   }
 
+  private val ShutdownTimeoutSec = 2L
+
   private def destroyProcess(process: java.lang.Process): Unit = {
     if process != null && process.isAlive then
       val signaled = ProcessUtils.terminateProcessTree(process)
       logger.info(s"Destroying BSP process ${process.pid()} (signaled $signaled process node(s))")
+  }
+
+  private def gracefulShutdown(buildServer: ch.epfl.scala.bsp4j.BuildServer): Unit = {
+    try
+      buildServer.buildShutdown().get(ShutdownTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      buildServer.onBuildExit()
+    catch
+      case _: Exception => () // best-effort, destroyProcess follows
   }
 
   // ---- State handlers ----
@@ -97,7 +108,7 @@ object BspConnectionSupervisor extends StrictLogging {
       val targetSourceRootsById = targetToSourceRoots(result.sources)
 
       durable.currentState = BspConnectionState.Connected
-      durable.attemptCounter.set(0)
+      durable.connectedAtMs = java.lang.System.currentTimeMillis()
       logger.info(s"Connected with ${durable.bspFile.get().path} (targets: ${allTargetIds.map(_.getUri).mkString(", ")})")
 
       // Immediate crash detection: listen for process exit
@@ -159,6 +170,7 @@ object BspConnectionSupervisor extends StrictLogging {
                     queue.offer(msg)
           }
       } finally {
+        gracefulShutdown(buildServer)
         destroyProcess(process)
       }
     } catch {
@@ -428,6 +440,13 @@ object BspConnectionSupervisor extends StrictLogging {
     if durable.currentState == BspConnectionState.Detached
         || durable.currentState == BspConnectionState.Failed
     then return
+
+    // Only reset crash counter if connection survived longer than grace period.
+    // Prevents infinite crash loops where a healthy handshake is immediately followed
+    // by process exit (e.g. sbt rewriting .bsp/sbt.json triggers reload→kill→respawn).
+    val connectionLivedMs = java.lang.System.currentTimeMillis() - durable.connectedAtMs
+    if connectionLivedMs >= ConnectionGracePeriodMs then
+      durable.attemptCounter.set(0)
 
     durable.attemptCounter.incrementAndGet()
     if durable.attemptCounter.get() > MaxCrashRetries then

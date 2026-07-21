@@ -7,6 +7,6 @@ object Main:
 
   def broken(): Unit =
     // Deliberate compile error: type mismatch + undefined identifier
-    val x: Int = "this is a string"
-    val y = nonexistentFunction(x)
+    val x = "this is a string"
+    val y =5// nonexistentFunction(x)
     println(y)

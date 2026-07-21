@@ -17,5 +17,7 @@ final case class DurableRecord(
     lastKnownDiagnostics: AtomicReference[Map[String, Map[BuildTargetIdentifier, List[Diagnostic]]]],
     @volatile var currentState: BspConnectionState,
     /** inverseSources perma-failed for this connection lifetime — cached to avoid 5s stall per didSave */
-    @volatile var inverseSourcesUnsupported: Boolean = false
+    @volatile var inverseSourcesUnsupported: Boolean = false,
+    /** Timestamp of last successful connection. Used for grace-period crash counting. */
+    @volatile var connectedAtMs: Long = 0L
 )
