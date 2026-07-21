@@ -244,7 +244,9 @@ object BspConnectionSupervisor extends StrictLogging {
       val result = buildServer.buildTargetCompile(params)
         .get(durable.bspFile.get().compileTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.info(s"Compile completed for $uri with status ${result.getStatusCode}")
-      if result.getStatusCode == ch.epfl.scala.bsp4j.StatusCode.OK then
+      val shouldIndex = result.getStatusCode == ch.epfl.scala.bsp4j.StatusCode.OK ||
+        hasBestEffortFlag(buildServer, targetIds)
+      if shouldIndex then
         try onCompileSuccess(buildServer, targetIds)
         catch case e: Exception =>
           logger.warn(s"SemanticDB refresh failed after compile for $uri: ${e.getMessage}")
@@ -253,6 +255,28 @@ object BspConnectionSupervisor extends StrictLogging {
         logger.error(s"Compile failed for $uri", e)
     finally
       compileInFlight.set(false)
+  }
+
+  /** Check if any target has -Ybest-effort in scalacOptions.
+    * Returns false for non-Scala servers or on timeout/error (safe default). */
+  private def hasBestEffortFlag(
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      targetIds: List[BuildTargetIdentifier]
+  ): Boolean = {
+    try {
+      buildServer match {
+        case scalaBuild: ch.epfl.scala.bsp4j.ScalaBuildServer =>
+          val params = new ch.epfl.scala.bsp4j.ScalacOptionsParams(targetIds.asJava)
+          val result = scalaBuild.buildTargetScalacOptions(params)
+            .get(2, java.util.concurrent.TimeUnit.SECONDS)
+          Option(result.getItems).toList.flatMap(_.asScala).exists { item =>
+            Option(item.getOptions).toList.flatMap(_.asScala).contains("-Ybest-effort")
+          }
+        case _ => false
+      }
+    } catch {
+      case _: Exception => false
+    }
   }
 
   private[bsp] def selectCompileTargetIds(

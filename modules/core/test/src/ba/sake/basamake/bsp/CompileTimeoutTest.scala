@@ -192,6 +192,126 @@ class CompileTimeoutTest extends FunSuite {
     os.remove.all(spec.path / os.up / os.up)
   }
 
+  /** Mock BuildServer where buildTargetCompile returns ERROR status,
+    * and buildTargetScalacOptions returns -Ybest-effort. */
+  private def errorWithBestEffortServer: BuildServer =
+    val handler = new InvocationHandler {
+      override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef =
+        method.getName match
+          case "buildTargetCompile" =>
+            val result = new CompileResult(StatusCode.ERROR)
+            CompletableFuture.completedFuture(result)
+          case "buildTargetScalacOptions" =>
+            val items = List(
+              new ScalacOptionsItem(
+                testTargetId,
+                List("-Xsemanticdb", "-Ybest-effort").asJava,
+                List.empty[String].asJava,
+                "/ws"
+              )
+            ).asJava
+            CompletableFuture.completedFuture(new ScalacOptionsResult(items))
+          case "buildTargetInverseSources" =>
+            val result = new InverseSourcesResult(java.util.Collections.emptyList())
+            CompletableFuture.completedFuture(result)
+          case "toString" => "mock-error-best-effort-server"
+          case _ => throw new UnsupportedOperationException(method.getName)
+    }
+    Proxy
+      .newProxyInstance(getClass.getClassLoader, Array(classOf[BuildServer], classOf[ScalaBuildServer]), handler)
+      .asInstanceOf[BuildServer]
+
+  /** Mock BuildServer where buildTargetCompile returns ERROR status,
+    * and buildTargetScalacOptions does NOT return -Ybest-effort. */
+  private def errorWithoutBestEffortServer: BuildServer =
+    val handler = new InvocationHandler {
+      override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef =
+        method.getName match
+          case "buildTargetCompile" =>
+            val result = new CompileResult(StatusCode.ERROR)
+            CompletableFuture.completedFuture(result)
+          case "buildTargetScalacOptions" =>
+            val items = List(
+              new ScalacOptionsItem(
+                testTargetId,
+                List("-Xsemanticdb").asJava,
+                List.empty[String].asJava,
+                "/ws"
+              )
+            ).asJava
+            CompletableFuture.completedFuture(new ScalacOptionsResult(items))
+          case "buildTargetInverseSources" =>
+            val result = new InverseSourcesResult(java.util.Collections.emptyList())
+            CompletableFuture.completedFuture(result)
+          case "toString" => "mock-error-no-best-effort-server"
+          case _ => throw new UnsupportedOperationException(method.getName)
+    }
+    Proxy
+      .newProxyInstance(getClass.getClassLoader, Array(classOf[BuildServer], classOf[ScalaBuildServer]), handler)
+      .asInstanceOf[BuildServer]
+
+  test("triggerCompile calls onCompileSuccess on ERROR status when -Ybest-effort enabled") {
+    val spec = createSpec(compileTimeoutSec = 5)
+    val record = DurableRecord(
+      bspFile = new AtomicReference(spec),
+      attemptCounter = new AtomicInteger(0),
+      lastKnownDiagnostics = new AtomicReference(Map.empty),
+      currentState = BspConnectionState.Connected
+    )
+    val compileInFlight = new AtomicBoolean(false)
+    val buildServer = errorWithBestEffortServer
+    val targetToSourceRoots = Map(testTargetId -> List("file:///ws/src/"))
+    val allTargetIds = List(testTargetId)
+    var callbackCalled = false
+    var callbackTargets: List[BuildTargetIdentifier] = Nil
+
+    BspConnectionSupervisor.triggerCompile(
+      uri = testUri,
+      buildServer = buildServer,
+      targetToSourceRoots = targetToSourceRoots,
+      allTargetIds = allTargetIds,
+      onCompileSuccess = (bs, targets) => { callbackCalled = true; callbackTargets = targets },
+      durable = record,
+      compileInFlight = compileInFlight
+    )
+
+    assert(callbackCalled, "onCompileSuccess must be called on ERROR status with -Ybest-effort")
+    assertEquals(callbackTargets, List(testTargetId))
+    assert(!compileInFlight.get(), "compileInFlight must be false after completion")
+
+    os.remove.all(spec.path / os.up / os.up)
+  }
+
+  test("triggerCompile does NOT call onCompileSuccess on ERROR status without -Ybest-effort") {
+    val spec = createSpec(compileTimeoutSec = 5)
+    val record = DurableRecord(
+      bspFile = new AtomicReference(spec),
+      attemptCounter = new AtomicInteger(0),
+      lastKnownDiagnostics = new AtomicReference(Map.empty),
+      currentState = BspConnectionState.Connected
+    )
+    val compileInFlight = new AtomicBoolean(false)
+    val buildServer = errorWithoutBestEffortServer
+    val targetToSourceRoots = Map(testTargetId -> List("file:///ws/src/"))
+    val allTargetIds = List(testTargetId)
+    var callbackCalled = false
+
+    BspConnectionSupervisor.triggerCompile(
+      uri = testUri,
+      buildServer = buildServer,
+      targetToSourceRoots = targetToSourceRoots,
+      allTargetIds = allTargetIds,
+      onCompileSuccess = (_, _) => callbackCalled = true,
+      durable = record,
+      compileInFlight = compileInFlight
+    )
+
+    assert(!callbackCalled, "onCompileSuccess must NOT be called on ERROR status without -Ybest-effort")
+    assert(!compileInFlight.get(), "compileInFlight must be false after completion")
+
+    os.remove.all(spec.path / os.up / os.up)
+  }
+
   // ── selectCompileTargetIds fallback tests ──
 
   test("selectCompileTargetIds falls back to allTargets when source-root match fails") {
