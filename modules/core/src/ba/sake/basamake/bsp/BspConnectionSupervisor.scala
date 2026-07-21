@@ -240,11 +240,98 @@ object BspConnectionSupervisor extends StrictLogging {
         ()
       case ConnectionMessage.RecheckUri(uri) =>
         triggerCompile(uri, buildServer, targetToSourceRoots, allTargetIds, onCompileSuccess, durable, compileInFlight)
+      case ConnectionMessage.BuildTargetChanged(params) =>
+        handleBuildTargetChanged(params, durable, buildServer, lspClient, onBuildTargetChanged, progressTokenRegistered, progressSupported)
       case ConnectionMessage.Shutdown =>
         logger.info("Received shutdown poison pill")
         durable.currentState = BspConnectionState.Detached
       case _ => ()
     }
+
+  private val ReindexProgressToken = "basamake-reindex"
+
+  private def handleBuildTargetChanged(
+      params: ch.epfl.scala.bsp4j.DidChangeBuildTarget,
+      durable: DurableRecord,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      lspClient: LanguageClient,
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit,
+      progressTokenRegistered: AtomicBoolean,
+      progressSupported: AtomicBoolean
+  ): Unit = {
+    if buildServer == null || durable.currentState != BspConnectionState.Connected then return
+
+    val changes = Option(params.getChanges).map(_.asScala.toList).getOrElse(Nil)
+    if changes.isEmpty then return
+
+    val (changedOrCreated, deleted) = changes.partition { e =>
+      val kind = Option(e.getKind)
+      kind.contains(ch.epfl.scala.bsp4j.BuildTargetEventKind.CREATED) ||
+        kind.contains(ch.epfl.scala.bsp4j.BuildTargetEventKind.CHANGED)
+    }
+    val changedOrCreatedIds = changedOrCreated.map(_.getTarget)
+    val deletedIds = deleted.map(_.getTarget)
+
+    if !progressTokenRegistered.getAndSet(true) then {
+      try {
+        val token = Either.forLeft[String, Integer](ReindexProgressToken)
+        lspClient.createProgress(new WorkDoneProgressCreateParams(token))
+          .get(2, java.util.concurrent.TimeUnit.SECONDS)
+        progressSupported.set(true)
+        logger.debug(s"Progress token '$ReindexProgressToken' registered")
+      } catch {
+        case e: Exception =>
+          logger.debug(s"Progress token '$ReindexProgressToken' registration failed: ${e.getMessage}")
+          progressSupported.set(false)
+      }
+    }
+
+    if changedOrCreatedIds.nonEmpty then {
+      sendProgressBegin(lspClient, changedOrCreatedIds.size, progressSupported)
+      try {
+        val depParams = new ch.epfl.scala.bsp4j.DependencySourcesParams(changedOrCreatedIds.asJava)
+        val result = buildServer.buildTargetDependencySources(depParams)
+          .get(durable.bspFile.get().compileTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+        onBuildTargetChanged(buildServer, result, changedOrCreatedIds, Nil)
+      } catch {
+        case e: Exception =>
+          logger.error(s"Failed to fetch dependency sources for changed targets: ${e.getMessage}")
+      } finally {
+        sendProgressEnd(lspClient, progressSupported)
+      }
+    }
+
+    if deletedIds.nonEmpty then {
+      logger.info(s"BSP target(s) deleted: ${deletedIds.map(_.getUri).mkString(", ")}")
+      onBuildTargetChanged(buildServer, null, Nil, deletedIds)
+    }
+  }
+
+  private def sendProgressBegin(lspClient: LanguageClient, targetCount: Int, progressSupported: AtomicBoolean): Unit = {
+    if !progressSupported.get() then return
+    try {
+      val token = Either.forLeft[String, Integer](ReindexProgressToken)
+      val beginNotif = new WorkDoneProgressBegin()
+      beginNotif.setTitle(s"Reindexing $targetCount target(s)…")
+      val begin = Either.forLeft[WorkDoneProgressNotification, Object](beginNotif)
+      lspClient.notifyProgress(new ProgressParams(token, begin))
+    } catch {
+      case e: Exception => logger.debug(s"Failed to send progress begin: ${e.getMessage}")
+    }
+  }
+
+  private def sendProgressEnd(lspClient: LanguageClient, progressSupported: AtomicBoolean): Unit = {
+    if !progressSupported.get() then return
+    try {
+      val token = Either.forLeft[String, Integer](ReindexProgressToken)
+      val end = Either.forLeft[WorkDoneProgressNotification, Object](
+        new WorkDoneProgressEnd()
+      )
+      lspClient.notifyProgress(new ProgressParams(token, end))
+    } catch {
+      case e: Exception => logger.debug(s"Failed to send progress end: ${e.getMessage}")
+    }
+  }
 
   private[bsp] def triggerCompile(
       uri: String,
