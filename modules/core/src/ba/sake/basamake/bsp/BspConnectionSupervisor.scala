@@ -6,6 +6,7 @@ import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.{BuildTarget, BuildTargetIdentifier, DependencySourcesResult, SourceItemKind, SourcesResult}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
+import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
 import ba.sake.basamake.core.*
 import ba.sake.basamake.util.ProcessUtils
@@ -23,7 +24,8 @@ object BspConnectionSupervisor extends StrictLogging {
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
-      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit = (_, _) => ()
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit = (_, _) => (),
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit = (_, _, _, _) => ()
   ): Unit = {
     logger.info(s"Supervisor started for ${durable.bspFile.get().path} (state: Idle)")
 
@@ -40,14 +42,14 @@ object BspConnectionSupervisor extends StrictLogging {
               durable.bspFile.set(newSpec)
             case _ =>
               logger.info(s"Idle -> Spawning (triggered by ${msg.getClass.getSimpleName})")
-              transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, Some(msg))
+              transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, onBuildTargetChanged, Some(msg))
         case BspConnectionState.Reloading =>
-          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, None)
+          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, onBuildTargetChanged, None)
         case BspConnectionState.BackoffWait =>
           backoffSleep(durable, queue)
         case BspConnectionState.Spawning | BspConnectionState.Handshaking =>
           logger.info(s"$durable.currentState at top-level — re-entering transitionToRunning")
-          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, None)
+          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, onBuildTargetChanged, None)
         case BspConnectionState.Connected =>
           logger.warn(s"Connected state at top level — triggering reload")
           durable.currentState = BspConnectionState.Reloading
@@ -94,6 +96,7 @@ object BspConnectionSupervisor extends StrictLogging {
       lspClient: LanguageClient,
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit,
       triggerMsg: Option[ConnectionMessage]
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
@@ -118,13 +121,15 @@ object BspConnectionSupervisor extends StrictLogging {
 
       // compile-in-flight flag: suppress health probes while waiting for buildTargetCompile response
       val compileInFlight = new AtomicBoolean(false)
+      val progressTokenRegistered = new AtomicBoolean(false)
+      val progressSupported = new AtomicBoolean(false)
 
       try onRoutingReady(buildServer, targets, result.sources, result.dependencySources)
       catch case e: Exception => logger.error(s"Failed to announce routing info", e)
 
       triggerMsg.foreach { msg =>
         logger.debug(s"Dispatching trigger message: ${msg.getClass.getSimpleName}")
-        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, compileInFlight)
+        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, onBuildTargetChanged, compileInFlight, progressTokenRegistered, progressSupported)
       }
 
       try {
@@ -159,7 +164,7 @@ object BspConnectionSupervisor extends StrictLogging {
                     queue.offer(msg)
             else
               try
-                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, compileInFlight)
+                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, onBuildTargetChanged, compileInFlight, progressTokenRegistered, progressSupported)
                 lastSuccessfulResponse = now
                 consecutiveProbeFailures = 0
               catch
@@ -193,7 +198,10 @@ object BspConnectionSupervisor extends StrictLogging {
       targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
       allTargetIds: List[BuildTargetIdentifier],
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
-      compileInFlight: AtomicBoolean
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit,
+      compileInFlight: AtomicBoolean,
+      progressTokenRegistered: AtomicBoolean,
+      progressSupported: AtomicBoolean
   ): Unit = 
     msg match {
       case ConnectionMessage.ProcessExited =>
