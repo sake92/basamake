@@ -152,7 +152,7 @@ final class NavigationIndex extends StrictLogging {
     val normalized = NavigationUriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
     NavigationSymbolLookup
-      .firstDefinition(symbols, orderedWorkspaceSlices, orderedDependencySlices)
+      .firstDefinition(symbols, normalized, orderedWorkspaceSlices, orderedDependencySlices)
       .toList
   }
 
@@ -160,10 +160,18 @@ final class NavigationIndex extends StrictLogging {
     val normalized = NavigationUriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
     symbols.flatMap { symbol =>
-      val candidateKeys = NavigationSymbolLookup.candidateSymbolKeys(symbol)
-      val defs = allDefinitions.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allDefinitions.getOrElse(k, Nil))
-      val refs = allReferences.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allReferences.getOrElse(k, Nil))
-      NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
+      if NavigationSymbolLookup.isLocalSymbol(symbol) then
+        // Local symbols: find references only in current file
+        val currentFileSlices = slicesForUri(normalized)
+        val defs = currentFileSlices.flatMap(_.symbolDefinitions.getOrElse(symbol, Nil))
+        val refs = currentFileSlices.flatMap(_.symbolReferences.getOrElse(symbol, Nil))
+        NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
+      else
+        // Non-local symbols: search all files
+        val candidateKeys = NavigationSymbolLookup.candidateSymbolKeys(symbol)
+        val defs = allDefinitions.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allDefinitions.getOrElse(k, Nil))
+        val refs = allReferences.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allReferences.getOrElse(k, Nil))
+        NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
     }.distinct
   }
 

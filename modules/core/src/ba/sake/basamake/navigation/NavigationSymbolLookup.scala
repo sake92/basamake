@@ -18,18 +18,25 @@ object NavigationSymbolLookup {
       case many => many.inits.toList.reverse.map(_.mkString(".")).filter(_.nonEmpty)
   }
 
+  def isLocalSymbol(symbol: String): Boolean =
+    symbol.startsWith("local")
+
   def firstDefinition(
       symbols: List[String],
+      currentFileUri: String,
       workspaceSlices: List[SemanticdbFileSlice],
       dependencySlices: List[SemanticdbFileSlice]
   ): Option[Location] =
-    symbols.iterator
-      .flatMap { symbol =>
+    symbols.iterator.flatMap { symbol =>
+      if isLocalSymbol(symbol) then
+        // Local symbols: search only in current file
+        workspaceSlices.find(_.sourceUri == currentFileUri)
+          .flatMap(slice => firstDefinitionInSlices(symbol, List(slice)))
+      else
+        // Non-local symbols: search all files
         firstDefinitionInSlices(symbol, workspaceSlices)
           .orElse(firstDefinitionInSlices(symbol, dependencySlices))
-      }
-      .toList
-      .headOption
+    }.toList.headOption
 
   def firstDefinitionInSlices(symbol: String, slices: List[SemanticdbFileSlice]): Option[Location] = {
     val keys = symbol +: candidateSymbolKeys(symbol)

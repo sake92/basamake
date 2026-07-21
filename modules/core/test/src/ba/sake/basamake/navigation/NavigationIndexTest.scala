@@ -499,4 +499,107 @@ class NavigationIndexTest extends FunSuite {
     finally
       os.remove.all(tmp)
   }
+
+  test("definition scopes local symbols to current file only") {
+    val tmp = os.temp.dir(prefix = "nav-local")
+    try
+      val index = new NavigationIndex()
+      val file1Uri = "file:///ws/File1.scala"
+      val file2Uri = "file:///ws/File2.scala"
+
+      val file1Slice = SemanticdbFileSlice(
+        sourceUri = file1Uri,
+        occurrences = List(
+          SemanticdbOccurrence("local0", new Range(new Position(5, 4), new Position(5, 10)), isDefinition = false)
+        ),
+        symbolDefinitions = Map.empty,
+        symbolReferences = Map("local0" -> List(new Location(file1Uri, new Range(new Position(5, 4), new Position(5, 10))))),
+        documentSymbols = Nil
+      )
+
+      val file2Slice = SemanticdbFileSlice(
+        sourceUri = file2Uri,
+        occurrences = List(
+          SemanticdbOccurrence("local0", new Range(new Position(10, 4), new Position(10, 10)), isDefinition = true)
+        ),
+        symbolDefinitions = Map("local0" -> List(new Location(file2Uri, new Range(new Position(10, 4), new Position(10, 10))))),
+        symbolReferences = Map.empty,
+        documentSymbols = Nil
+      )
+
+      index.setTargetSlicesForTest(targetId, Map(file1Uri -> file1Slice, file2Uri -> file2Slice))
+
+      // Goto-def on local0 in File1 should NOT jump to File2
+      val defs = index.definition(file1Uri, new Position(5, 6))
+      assertEquals(defs, Nil) // no definition in current file
+    finally
+      os.remove.all(tmp)
+  }
+
+  test("definition resolves local symbols within same file") {
+    val tmp = os.temp.dir(prefix = "nav-local-samefile")
+    try
+      val index = new NavigationIndex()
+      val fileUri = "file:///ws/File.scala"
+
+      val defRange = new Range(new Position(5, 4), new Position(5, 10))
+      val refRange = new Range(new Position(10, 4), new Position(10, 10))
+
+      val slice = SemanticdbFileSlice(
+        sourceUri = fileUri,
+        occurrences = List(
+          SemanticdbOccurrence("local0", defRange, isDefinition = true),
+          SemanticdbOccurrence("local0", refRange, isDefinition = false)
+        ),
+        symbolDefinitions = Map("local0" -> List(new Location(fileUri, defRange))),
+        symbolReferences = Map("local0" -> List(new Location(fileUri, refRange))),
+        documentSymbols = Nil
+      )
+
+      index.setTargetSlicesForTest(targetId, Map(fileUri -> slice))
+
+      // Goto-def on local0 reference should jump to local0 definition in same file
+      val defs = index.definition(fileUri, new Position(10, 6))
+      assertEquals(defs.size, 1)
+      assertEquals(defs.head.getUri, fileUri)
+      assertEquals(defs.head.getRange, defRange)
+    finally
+      os.remove.all(tmp)
+  }
+
+  test("references scopes local symbols to current file only") {
+    val tmp = os.temp.dir(prefix = "nav-local-refs")
+    try
+      val index = new NavigationIndex()
+      val file1Uri = "file:///ws/File1.scala"
+      val file2Uri = "file:///ws/File2.scala"
+
+      val file1Slice = SemanticdbFileSlice(
+        sourceUri = file1Uri,
+        occurrences = List(
+          SemanticdbOccurrence("local0", new Range(new Position(5, 4), new Position(5, 10)), isDefinition = true)
+        ),
+        symbolDefinitions = Map("local0" -> List(new Location(file1Uri, new Range(new Position(5, 4), new Position(5, 10))))),
+        symbolReferences = Map("local0" -> List(new Location(file1Uri, new Range(new Position(6, 4), new Position(6, 10))))),
+        documentSymbols = Nil
+      )
+
+      val file2Slice = SemanticdbFileSlice(
+        sourceUri = file2Uri,
+        occurrences = List(
+          SemanticdbOccurrence("local0", new Range(new Position(10, 4), new Position(10, 10)), isDefinition = false)
+        ),
+        symbolDefinitions = Map.empty,
+        symbolReferences = Map("local0" -> List(new Location(file2Uri, new Range(new Position(10, 4), new Position(10, 10))))),
+        documentSymbols = Nil
+      )
+
+      index.setTargetSlicesForTest(targetId, Map(file1Uri -> file1Slice, file2Uri -> file2Slice))
+
+      val refs = index.references(file1Uri, new Position(5, 6))
+      // Should only return references from file1, not file2
+      assert(refs.forall(_.getUri == file1Uri))
+    finally
+      os.remove.all(tmp)
+  }
 }
