@@ -87,7 +87,7 @@ final class NavigationIndex extends StrictLogging {
       targetIds: List[BuildTargetIdentifier],
       sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]],
       dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]],
-      openUris: Set[String] = Set.empty
+      openUris: Set[String] = Set.empty  // reserved for future two-phase commit
   ): Unit = {
     val buildTargetIds = targetIds.asJava
 
