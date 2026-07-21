@@ -399,7 +399,7 @@ class BuildServerManager extends StrictLogging {
     )
     val statusDir = workspaceRoot / ".basamake"
     os.makeDir.all(statusDir)
-    os.write.over(statusDir / "status.json", status.toJson)
+    os.write.over(statusDir / "status.json", status.toJson(spaces = 2))
   } catch case e: Exception =>
     logger.warn(s"Failed to write status.json: ${e.getMessage}")
 

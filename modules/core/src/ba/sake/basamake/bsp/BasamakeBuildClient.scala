@@ -6,7 +6,7 @@ import ch.epfl.scala.bsp4j.*
 import java.util.concurrent.BlockingQueue
 
 /** Basamake BSP client. Receives notifications from the build server and forwards them to the queue. */
-class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends BuildClient, StrictLogging:
+class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends BuildClient, StrictLogging {
 
   override def onBuildPublishDiagnostics(params: PublishDiagnosticsParams): Unit =
     logger.debug(
@@ -39,3 +39,8 @@ class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends Build
 
   override def onBuildTargetDidChange(params: DidChangeBuildTarget): Unit =
     logger.debug(s"BSP TARGET DID CHANGE ${params}")
+  
+  override def onRunPrintStderr(x$0: ch.epfl.scala.bsp4j.PrintParams): Unit = ()
+  
+  override def onRunPrintStdout(x$0: ch.epfl.scala.bsp4j.PrintParams): Unit = ()
+}
