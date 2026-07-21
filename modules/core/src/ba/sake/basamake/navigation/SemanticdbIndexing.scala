@@ -4,6 +4,7 @@ import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, BuildServer, OutputPathItemKi
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{Location, Position, Range, SymbolInformation, SymbolKind}
 import org.eclipse.lsp4j.jsonrpc.messages.Either
+import java.util.concurrent.{TimeUnit, TimeoutException}
 import scala.meta.internal.semanticdb.{Range as SemanticRange, TextDocument, TextDocuments}
 
 object SemanticdbIndexing extends StrictLogging {
@@ -52,7 +53,12 @@ object SemanticdbIndexing extends StrictLogging {
             .orNull
         }
       }
-      futures.flatMap(f => Option(f.get()).map(e => e.getKey -> e.getValue)).toMap
+      futures.flatMap { f =>
+        try Option(f.get(10, TimeUnit.SECONDS)).map(e => e.getKey -> e.getValue)
+        catch case _: TimeoutException =>
+          logger.warn(s"SemanticDB parse timed out after 10s, skipping")
+          None
+      }.toMap
     } finally executor.shutdown()
   }
 
