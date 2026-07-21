@@ -44,60 +44,24 @@ object SemanticdbIndexing extends StrictLogging {
     if allFiles.isEmpty then return Map.empty
 
     // Parse all files concurrently
-    val parsed: List[(String, SemanticdbFileSlice)] =
-      if allFiles.size == 1 then
-        allFiles.flatMap { f =>
-          parseSemanticdbFile(workspaceRoot, f, sourceRoots).map(s => s.sourceUri -> s)
-        }
-      else {
-        val executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
-        try {
-          val futures = allFiles.map { f =>
-            executor.submit[java.util.Map.Entry[String, SemanticdbFileSlice]] { () =>
-              parseSemanticdbFile(workspaceRoot, f, sourceRoots)
-                .map(s => java.util.Map.entry(s.sourceUri, s))
-                .orNull
-            }
+    val parsed: List[(String, SemanticdbFileSlice)] = {
+      val executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
+      try {
+        val futures = allFiles.map { f =>
+          executor.submit[java.util.Map.Entry[String, SemanticdbFileSlice]] { () =>
+            parseSemanticdbFile(workspaceRoot, f, sourceRoots)
+              .map(s => java.util.Map.entry(s.sourceUri, s))
+              .orNull
           }
-          futures.flatMap(f => Option(f.get()).map(e => e.getKey -> e.getValue))
-        } finally executor.shutdown()
-      }
+        }
+        futures.flatMap(f => Option(f.get()).map(e => e.getKey -> e.getValue))
+      } finally executor.shutdown()
+    }
 
     // Priority-sort: open files first, then rest
     val (openSlices, otherSlices) = parsed.partition((uri, _) => openUris.contains(uri))
 
     (openSlices ++ otherSlices).toMap
-  }
-
-  def indexRoots(
-      workspaceRoot: os.Path,
-      semanticdbRoots: Set[os.Path],
-      sourceRoots: List[os.Path]
-  ): Map[String, SemanticdbFileSlice] = {
-    val semanticdbFiles = semanticdbRoots.flatMap(semanticdbFilesUnder).toList.distinct
-
-    if semanticdbFiles.size <= 1 then
-      // Single file or empty — no need for concurrency
-      semanticdbFiles.flatMap { file =>
-        parseSemanticdbFile(workspaceRoot, file, sourceRoots).map(slice => slice.sourceUri -> slice)
-      }.toMap
-    else {
-      val executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
-      try {
-        val futures = semanticdbFiles.map { file =>
-          executor.submit[java.util.Map.Entry[String, SemanticdbFileSlice]] { () =>
-            parseSemanticdbFile(workspaceRoot, file, sourceRoots)
-              .map(slice => java.util.Map.entry(slice.sourceUri, slice))
-              .orNull
-          }
-        }
-        futures.flatMap { f =>
-          Option(f.get()).map(e => e.getKey -> e.getValue)
-        }.toMap
-      } finally {
-        executor.shutdown()
-      }
-    }
   }
 
   def semanticdbTargetPaths(options: List[String]): List[os.Path] = {
