@@ -81,6 +81,56 @@ class NavigationSymbolLookupTest extends FunSuite {
     assertEquals(defn.get.getUri, depUri)
   }
 
+  test("candidateSymbolKeys for class/trait member strips mid-symbol # and replaces with dot") {
+    val keys = NavigationSymbolLookup.candidateSymbolKeys("upickle/Api#write().")
+    assertEquals(keys, List("upickle/Api.write", "Api.write"))
+  }
+
+  test("candidateSymbolKeys for overloaded method strips (+N) disambiguator") {
+    val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Predef.println(+1).")
+    assertEquals(keys, List("scala/Predef.println", "Predef.println"))
+  }
+
+  test("firstDefinitionInSlices matches class member symbol against dep slice") {
+    val depUri = "file:///tmp/upickle/Api.scala"
+    val depRange = new Range(new Position(50, 0), new Position(50, 5))
+    val depSlice = SemanticdbFileSlice(
+      sourceUri = depUri,
+      occurrences = Nil,
+      symbolDefinitions = Map("upickle/Api.write" -> List(new Location(depUri, depRange))),
+      symbolReferences = Map.empty,
+      documentSymbols = Nil
+    )
+
+    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
+      symbol = "upickle/Api#write().",
+      slices = List(depSlice)
+    )
+
+    assert(defn.nonEmpty)
+    assertEquals(defn.get.getUri, depUri)
+  }
+
+  test("firstDefinitionInSlices matches overloaded method symbol against dep slice") {
+    val depUri = "file:///tmp/scala/Predef.scala"
+    val depRange = new Range(new Position(466, 0), new Position(466, 7))
+    val depSlice = SemanticdbFileSlice(
+      sourceUri = depUri,
+      occurrences = Nil,
+      symbolDefinitions = Map("scala/Predef.println" -> List(new Location(depUri, depRange))),
+      symbolReferences = Map.empty,
+      documentSymbols = Nil
+    )
+
+    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
+      symbol = "scala/Predef.println(+1).",
+      slices = List(depSlice)
+    )
+
+    assert(defn.nonEmpty)
+    assertEquals(defn.get.getUri, depUri)
+  }
+
   test("firstDefinitionInSlices returns first matching location using candidate keys") {
     val depUri = "file:///tmp/dep.scala"
     val depRange = new Range(new Position(0, 7), new Position(0, 14))

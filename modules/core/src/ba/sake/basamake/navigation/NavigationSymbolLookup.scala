@@ -5,9 +5,10 @@ import org.eclipse.lsp4j.Location
 object NavigationSymbolLookup {
   def candidateSymbolKeys(symbol: String): List[String] = {
     val clean = symbol
-      .replace("()", "")
+      .replaceAll("\\([^)]*\\)", "") // strip method descriptors: (), (+1), ...
       .stripSuffix(".")
       .stripSuffix("#")
+      .replace('#', '.')             // class-member separator -> owner-qualified form
     val afterPackage =
       clean.lastIndexOf('/') match
         case idx if idx >= 0 => clean.substring(idx + 1)
