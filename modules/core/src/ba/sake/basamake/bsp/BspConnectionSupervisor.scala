@@ -226,7 +226,7 @@ object BspConnectionSupervisor extends StrictLogging {
       case _ => ()
     }
 
-  private def triggerCompile(
+  private[bsp] def triggerCompile(
       uri: String,
       buildServer: ch.epfl.scala.bsp4j.BuildServer,
       targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
@@ -400,7 +400,7 @@ object BspConnectionSupervisor extends StrictLogging {
 
   // ---- Backoff ----
 
-  private def transitionToBackoff(durable: DurableRecord): Unit = {
+  private[bsp] def transitionToBackoff(durable: DurableRecord): Unit = {
     if durable.currentState == BspConnectionState.Detached
         || durable.currentState == BspConnectionState.Failed
     then return
@@ -418,7 +418,7 @@ object BspConnectionSupervisor extends StrictLogging {
       )
   }
 
-  private def backoffSleep(
+  private[bsp] def backoffSleep(
       durable: DurableRecord,
       queue: BlockingQueue[ConnectionMessage]
   ): Unit = {
