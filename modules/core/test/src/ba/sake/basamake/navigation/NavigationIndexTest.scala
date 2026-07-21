@@ -81,6 +81,44 @@ class NavigationIndexTest extends FunSuite {
     )
     index
 
+  test("refresh keeps previous state when BSP option requests fail") {
+    val options = List("-Xsemanticdb", "-sourceroot", workspaceRoot.toString, s"-semanticdb-target:${workspaceRoot.toString}")
+    val index = refreshWith(options)
+    assert(index.definition(sourceUri, new Position(2, 10)).nonEmpty)
+
+    // server whose BSP option requests fail (e.g. connection died mid-refresh)
+    val failingHandler = new InvocationHandler {
+      override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef =
+        method.getName match
+          case "buildTargetOutputPaths" | "buildTargetScalacOptions" =>
+            val f = new CompletableFuture[AnyRef]()
+            f.completeExceptionally(new RuntimeException("BSP dead"))
+            f
+          case "toString" => "failing-build-server"
+          case _          => throw new UnsupportedOperationException(method.getName)
+    }
+    val failingServer = Proxy
+      .newProxyInstance(
+        getClass.getClassLoader,
+        Array(classOf[BuildServer], classOf[ScalaBuildServer]),
+        failingHandler
+      )
+      .asInstanceOf[BuildServer]
+
+    index.refresh(
+      workspaceRoot,
+      failingServer,
+      List(targetId),
+      Map(targetId -> List(workspaceRoot.toNIO.toUri.toString)),
+      Map(targetId -> Nil)
+    )
+
+    assert(
+      index.definition(sourceUri, new Position(2, 10)).nonEmpty,
+      "failed refresh must not clobber previously indexed state"
+    )
+  }
+
   test("semanticdbTargetPaths parses Scala 3 -semanticdb-target") {
     val paths = SemanticdbIndexing.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target:/tmp/custom/output")

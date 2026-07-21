@@ -7,10 +7,11 @@ import org.eclipse.lsp4j.{Position, Range, SymbolKind}
 
 object JavaSourceParser {
 
-  private val parser = new JavaParser()
+  // No shared instance — JavaCC-generated parser is stateful (token, jj_nt).
+  // Concurrent extraction corrupts token stream: AssertionError "reference was unexpectedly null".
 
   def extractDefinitions(content: String, fileName: String = ""): List[SourceDefinition] = {
-    val result = parser.parse(content)
+    val result = new JavaParser().parse(content)
     if !result.isSuccessful || !result.getResult.isPresent then
       return List.empty
 

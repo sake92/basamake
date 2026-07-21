@@ -81,6 +81,7 @@ class BasamakeLanguageServer(
     val uri = params.getTextDocument.getUri
     logger.debug(s"didOpen: $uri")
     manager.trackDidOpen(uri)
+    manager.requestNavRefresh(uri)
     offerToConnection(uri, ConnectionMessage.DidOpen(params))
   }
 

@@ -16,7 +16,7 @@ import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import ba.sake.tupson.{given, *}
 import ba.sake.basamake.core.*
 import ba.sake.basamake.config.BasamakeConfig
-import ba.sake.basamake.navigation.NavigationIndex
+import ba.sake.basamake.navigation.{DependencySliceCache, NavigationIndex}
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
 
@@ -39,6 +39,8 @@ class BuildServerManager extends StrictLogging {
   private var pendingBspChanges: Set[os.Path] = Set.empty
   private var pendingDebounceTask: Option[TimerTask] = None
   private val shuttingDown = new AtomicBoolean(false)
+  /** Dep slices live across BSP re-attach/reload; keyed per dep (uri + fingerprint). */
+  private val depSliceCache = new DependencySliceCache()
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
     this.client = lspClient
@@ -104,7 +106,7 @@ class BuildServerManager extends StrictLogging {
       currentState = BspConnectionState.Idle
     )
     val msgQueue = new LinkedBlockingQueue[ConnectionMessage]()
-    val ctx = ConnectionContext(record, msgQueue, NavigationIndex())
+    val ctx = ConnectionContext(record, msgQueue, NavigationIndex(depSliceCache))
     connections.put(id, ctx)
 
     val bspDir = bspSpec.path.toNIO.getParent
@@ -267,6 +269,22 @@ class BuildServerManager extends StrictLogging {
   def trackDidOpen(uri: String): Unit = {
     openUris.add(uri)
   }
+
+  /** Nudge a nav refresh for the connection owning uri. Refresh is incremental
+    * (mtime+size diff), so running it on didOpen is cheap and catches compiles
+    * done outside the editor (e.g. terminal build) without a file watcher.
+    * Latest-wins coalescing on the nav thread absorbs rapid open bursts. */
+  def requestNavRefresh(uri: String): Unit =
+    router.route(uri).foreach { connId =>
+      for
+        ctx <- Option(connections.get(connId))
+        state <- Option(navStates.get(connId))
+      do
+        val targets = (ctx.sourceRootsByTarget.keySet ++ ctx.dependencySourceUrisByTarget.keySet).toList
+        if targets.nonEmpty then
+          state.pending.set(targets)
+          LockSupport.unpark(state.thread)
+    }
 
   def trackDidClose(uri: String): Unit = {
     openUris.remove(uri)

@@ -35,50 +35,83 @@ final case class SemanticdbFileSlice(
   }
 }
 
-final class NavigationIndex extends StrictLogging {
+object NavigationIndex {
 
-  private final case class TargetState(
+  private[navigation] final case class TargetState(
       targetOrder: List[BuildTargetIdentifier] = Nil,
       workspaceSlicesByTarget: Map[BuildTargetIdentifier, Map[String, SemanticdbFileSlice]] = Map.empty,
-      dependencySlicesByTarget: Map[BuildTargetIdentifier, List[SemanticdbFileSlice]] = Map.empty
+      dependencySlicesByTarget: Map[BuildTargetIdentifier, List[SemanticdbFileSlice]] = Map.empty,
+      // precomputed query views, rebuilt on every commit
+      slicesByUri: Map[String, List[SemanticdbFileSlice]] = Map.empty,
+      mergedDefinitions: Map[String, List[Location]] = Map.empty,
+      mergedReferences: Map[String, List[Location]] = Map.empty,
+      orderedWorkspace: List[SemanticdbFileSlice] = Nil,
+      orderedDependency: List[SemanticdbFileSlice] = Nil
   )
+
+  private[navigation] object TargetState {
+    def build(
+        targetId: BuildTargetIdentifier,
+        workspaceSlices: Map[String, SemanticdbFileSlice],
+        dependencySlices: List[SemanticdbFileSlice]
+    ): TargetState = {
+      val orderedWs = workspaceSlices.values.toList.sortBy(_.sourceUri)
+      val allSlices = orderedWs ++ dependencySlices
+      TargetState(
+        targetOrder = List(targetId),
+        workspaceSlicesByTarget = Map(targetId -> workspaceSlices),
+        dependencySlicesByTarget = Map(targetId -> dependencySlices),
+        slicesByUri = allSlices.groupBy(_.sourceUri),
+        mergedDefinitions = mergeSymbolLocations(allSlices.flatMap(_.symbolDefinitions)),
+        mergedReferences = mergeSymbolLocations(allSlices.flatMap(_.symbolReferences)),
+        orderedWorkspace = orderedWs,
+        orderedDependency = dependencySlices
+      )
+    }
+
+    private def mergeSymbolLocations(
+        entries: List[(String, List[Location])]
+    ): Map[String, List[Location]] =
+      entries.foldLeft(Map.empty[String, List[Location]]) {
+        case (acc, (symbol, locations)) =>
+          acc.updated(symbol, acc.getOrElse(symbol, Nil) ++ locations)
+      }
+  }
+}
+
+final class NavigationIndex(
+    private val depSliceCache: DependencySliceCache = new DependencySliceCache()
+) extends StrictLogging {
+
+  import NavigationIndex.TargetState
 
   private val targetStates = mutable.Map.empty[BuildTargetIdentifier, TargetState]
   private val targetSemanticdbFlags = mutable.Map.empty[BuildTargetIdentifier, Boolean]
   private val targetBestEffortFlags = mutable.Map.empty[BuildTargetIdentifier, Boolean]
-  private val depSliceCache = mutable.Map.empty[Set[String], List[SemanticdbFileSlice]]
+  private val workspaceIndexStates =
+    mutable.Map.empty[BuildTargetIdentifier, SemanticdbIndexing.WorkspaceIndexState]
 
+  /** Clears per-connection state. The dep slice cache is owned by BuildServerManager
+    * and intentionally survives — it must not be cleared here. */
   def clear(): Unit = synchronized {
     targetStates.clear()
-    depSliceCache.synchronized { depSliceCache.clear() }
+    workspaceIndexStates.clear()
   }
 
   private[navigation] def setTargetSlicesForTest(
       targetId: BuildTargetIdentifier,
       fileSlices: Map[String, SemanticdbFileSlice]
   ): Unit = synchronized {
-    val current = targetStates.getOrElse(targetId, TargetState(targetOrder = List(targetId)))
-    targetStates.update(
-      targetId,
-      current.copy(
-        targetOrder = List(targetId),
-        workspaceSlicesByTarget = current.workspaceSlicesByTarget + (targetId -> fileSlices)
-      )
-    )
+    val currentDeps = targetStates.get(targetId).flatMap(_.dependencySlicesByTarget.get(targetId)).getOrElse(Nil)
+    targetStates.update(targetId, TargetState.build(targetId, fileSlices, currentDeps))
   }
 
   private[navigation] def setTargetDependencySlicesForTest(
       targetId: BuildTargetIdentifier,
       slices: List[SemanticdbFileSlice]
   ): Unit = synchronized {
-    val current = targetStates.getOrElse(targetId, TargetState(targetOrder = List(targetId)))
-    targetStates.update(
-      targetId,
-      current.copy(
-        targetOrder = List(targetId),
-        dependencySlicesByTarget = current.dependencySlicesByTarget + (targetId -> slices)
-      )
-    )
+    val currentWs = targetStates.get(targetId).flatMap(_.workspaceSlicesByTarget.get(targetId)).getOrElse(Map.empty)
+    targetStates.update(targetId, TargetState.build(targetId, currentWs, slices))
   }
 
   def refresh(
@@ -102,10 +135,12 @@ final class NavigationIndex extends StrictLogging {
         )
     }
 
+    var optionRequestsFailed = false
     val outputRootsByTarget = try {
       resolveOutputRoots(outputPathsFuture.get(10, TimeUnit.SECONDS))
     } catch {
       case e: Exception =>
+        optionRequestsFailed = true
         logger.debug(s"buildTargetOutputPaths failed: ${e.getMessage}")
         Map.empty
     }
@@ -114,9 +149,15 @@ final class NavigationIndex extends StrictLogging {
       resolveScalacOptions(scalacOptionsFuture.get(10, TimeUnit.SECONDS))
     } catch {
       case e: Exception =>
+        optionRequestsFailed = true
         logger.debug(s"buildTargetScalacOptions failed: ${e.getMessage}")
         Map.empty
     }
+
+    // Dead/dying BSP returns failures; committing empty roots would clobber a good index.
+    if optionRequestsFailed then
+      logger.warn(s"Skipping navigation refresh: BSP option requests failed, keeping previous index state")
+      return
 
     targetIds.foreach { targetId =>
       val opts = scalaOptionsByTarget.get(targetId)
@@ -132,15 +173,28 @@ final class NavigationIndex extends StrictLogging {
       val dependencySlices =
         DependencySourceIndexing.indexDependencySources(workspaceRoot, dependencySourceUris, depSliceCache)
 
-      val workspaceSlices =
+      val prevWsState = synchronized { workspaceIndexStates.get(targetId) }
+        .getOrElse(SemanticdbIndexing.WorkspaceIndexState(Map.empty, sourceRoots))
+      val (workspaceSlices, newWsState) =
         if semanticdbRoots.nonEmpty then
-          SemanticdbIndexing.indexWorkspaceTarget(workspaceRoot, semanticdbRoots, sourceRoots, openUris)
-        else Map.empty
+          SemanticdbIndexing.indexWorkspaceTargetIncremental(workspaceRoot, semanticdbRoots, sourceRoots, prevWsState)
+        else (Map.empty[String, SemanticdbFileSlice], SemanticdbIndexing.WorkspaceIndexState(Map.empty, sourceRoots))
 
-      commitRefresh(targetId, flagsDetected, bestEffort, workspaceSlices, dependencySlices)
+      commitRefresh(targetId, flagsDetected, bestEffort, workspaceSlices, dependencySlices, newWsState)
       logger.info(
         s"Navigation index refreshed for ${targetId.getUri}: workspace=${workspaceSlices.size} dependency=${dependencySlices.size}"
       )
+    }
+
+    // prune state for targets that no longer exist
+    synchronized {
+      val stale = targetStates.keySet -- targetIds.toSet
+      stale.foreach { t =>
+        targetStates.remove(t)
+        workspaceIndexStates.remove(t)
+        targetSemanticdbFlags.remove(t)
+        targetBestEffortFlags.remove(t)
+      }
     }
   }
 
@@ -149,18 +203,13 @@ final class NavigationIndex extends StrictLogging {
       flagsDetected: Boolean,
       bestEffort: Boolean,
       workspaceSlices: Map[String, SemanticdbFileSlice],
-      dependencySlices: List[SemanticdbFileSlice]
+      dependencySlices: List[SemanticdbFileSlice],
+      workspaceIndexState: SemanticdbIndexing.WorkspaceIndexState
   ): Unit = synchronized {
     targetSemanticdbFlags(targetId) = flagsDetected
     targetBestEffortFlags(targetId) = bestEffort
-    targetStates.update(
-      targetId,
-      TargetState(
-        targetOrder = List(targetId),
-        workspaceSlicesByTarget = Map(targetId -> workspaceSlices),
-        dependencySlicesByTarget = Map(targetId -> dependencySlices)
-      )
-    )
+    workspaceIndexStates.update(targetId, workspaceIndexState)
+    targetStates.update(targetId, TargetState.build(targetId, workspaceSlices, dependencySlices))
   }
 
   def definition(uri: String, position: Position): List[Location] = synchronized {
@@ -184,8 +233,13 @@ final class NavigationIndex extends StrictLogging {
       else
         // Non-local symbols: search all files
         val candidateKeys = NavigationSymbolLookup.candidateSymbolKeys(symbol)
-        val defs = allDefinitions.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allDefinitions.getOrElse(k, Nil))
-        val refs = allReferences.getOrElse(symbol, Nil) ++ candidateKeys.flatMap(k => allReferences.getOrElse(k, Nil))
+        val allKeys = symbol +: candidateKeys
+        val defs = targetStates.values.toList.flatMap { state =>
+          allKeys.flatMap(k => state.mergedDefinitions.getOrElse(k, Nil))
+        }
+        val refs = targetStates.values.toList.flatMap { state =>
+          allKeys.flatMap(k => state.mergedReferences.getOrElse(k, Nil))
+        }
         NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
     }.distinct
   }
@@ -203,43 +257,7 @@ final class NavigationIndex extends StrictLogging {
   }
 
   private def slicesForUri(uri: String): List[SemanticdbFileSlice] =
-    targetStates.values.toList.flatMap { state =>
-      state.targetOrder.flatMap { targetId =>
-        state.workspaceSlicesByTarget.get(targetId).toList.flatMap(_.get(uri))
-      } ++ state.targetOrder.flatMap { targetId =>
-        state.dependencySlicesByTarget.get(targetId).toList.flatten.filter(_.sourceUri == uri)
-      }
-    }
-
-  private def allDefinitions: Map[String, List[Location]] =
-    targetStates.values.toList
-      .flatMap(state =>
-        state.targetOrder.flatMap { targetId =>
-          state.workspaceSlicesByTarget.get(targetId).toList.flatMap(_.values)
-        } ++ state.targetOrder.flatMap { targetId =>
-          state.dependencySlicesByTarget.get(targetId).toList.flatten
-        }
-      )
-      .flatMap(_.symbolDefinitions)
-      .foldLeft(Map.empty[String, List[Location]]) {
-      case (acc, (symbol, locations)) =>
-        acc.updated(symbol, acc.getOrElse(symbol, Nil) ++ locations)
-    }
-
-  private def allReferences: Map[String, List[Location]] =
-    targetStates.values.toList
-      .flatMap(state =>
-        state.targetOrder.flatMap { targetId =>
-          state.workspaceSlicesByTarget.get(targetId).toList.flatMap(_.values)
-        } ++ state.targetOrder.flatMap { targetId =>
-          state.dependencySlicesByTarget.get(targetId).toList.flatten
-        }
-      )
-      .flatMap(_.symbolReferences)
-      .foldLeft(Map.empty[String, List[Location]]) {
-      case (acc, (symbol, locations)) =>
-        acc.updated(symbol, acc.getOrElse(symbol, Nil) ++ locations)
-    }
+    targetStates.values.toList.flatMap(_.slicesByUri.getOrElse(uri, Nil))
 
   private def resolveOutputRoots(
       result: OutputPathsResult
@@ -273,17 +291,9 @@ final class NavigationIndex extends StrictLogging {
       .toMap
 
   private def orderedWorkspaceSlices: List[SemanticdbFileSlice] =
-    targetStates.values.toList.flatMap { state =>
-      state.targetOrder.flatMap { targetId =>
-        state.workspaceSlicesByTarget.get(targetId).toList.flatMap(_.values.toList.sortBy(_.sourceUri))
-      }
-    }
+    targetStates.values.toList.flatMap(_.orderedWorkspace)
 
   private def orderedDependencySlices: List[SemanticdbFileSlice] =
-    targetStates.values.toList.flatMap { state =>
-      state.targetOrder.flatMap { targetId =>
-        state.dependencySlicesByTarget.get(targetId).toList.flatten
-      }
-    }
+    targetStates.values.toList.flatMap(_.orderedDependency)
 
 }

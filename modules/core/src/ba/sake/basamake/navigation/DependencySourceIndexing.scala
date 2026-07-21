@@ -1,34 +1,87 @@
 package ba.sake.basamake.navigation
 
 import java.util.zip.ZipFile
-import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
+import scala.util.control.NonFatal
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{Location, Position, Range, SymbolInformation, SymbolKind}
 import org.eclipse.lsp4j.jsonrpc.messages.Either
 
 object DependencySourceIndexing extends StrictLogging {
 
+  /** Cache key for one dependency source. fingerprint: archives and single files use
+    * mtime+size; directories use fileCount+maxMtime (dir mtime is unreliable). */
+  final case class DepKey(uri: String, fingerprint: String)
+
+  def fingerprint(workspaceRoot: os.Path, uri: String): Option[DepKey] =
+    resolveSourcePath(uri) match {
+      case Some(p) if os.isFile(p) && (isArchiveFile(p.last) || isSourceFile(p.last)) =>
+        Some(DepKey(uri, s"${os.mtime(p)}:${os.size(p)}"))
+      case Some(p) if os.isDir(p) =>
+        val files = os.walk(p).filter(os.isFile(_))
+        val maxMtime = files.map(os.mtime(_)).foldLeft(0L)(math.max)
+        Some(DepKey(uri, s"dir:${files.size}:$maxMtime"))
+      case None if uri.contains("!") =>
+        val archiveUri = uri.take(uri.indexOf('!')).stripPrefix("jar:")
+        resolveSourcePath(archiveUri) match {
+          case Some(p) if os.isFile(p) => Some(DepKey(uri, s"${os.mtime(p)}:${os.size(p)}"))
+          case _                       => None
+        }
+      case _ => None
+    }
+
+  /** Parallel pipeline: one VT task per dep (fingerprint + extract + cache lookup),
+    * parse fanned out per entry on the same executor. Cache misses compute, hits
+    * skip parse entirely. */
   def indexDependencySources(
       workspaceRoot: os.Path,
       dependencySourceUris: List[String],
-      cache: mutable.Map[Set[String], List[SemanticdbFileSlice]]
+      cache: DependencySliceCache
   ): List[SemanticdbFileSlice] = {
-    val depUriSet = dependencySourceUris.toSet
-    val result = if depUriSet.nonEmpty then
-      cache.synchronized {
-        cache.getOrElseUpdate(depUriSet, dependencySourceUris.flatMap(indexDependencySourceUri(workspaceRoot, _)))
+    if dependencySourceUris.isEmpty then return Nil
+    val executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
+    try {
+      val futures = dependencySourceUris.map { uri =>
+        executor.submit[List[SemanticdbFileSlice]] { () =>
+          try {
+            fingerprint(workspaceRoot, uri) match {
+              case Some(key) =>
+                cache.get(key).getOrElse {
+                  val parsed = parseEntries(workspaceRoot, uri, executor)
+                  if parsed.nonEmpty then cache.put(key, parsed)
+                  parsed
+                }
+              case None =>
+                parseEntries(workspaceRoot, uri, executor)
+            }
+          } catch case NonFatal(e) =>
+            logger.warn(s"Failed to index dependency source $uri: ${e.getMessage}")
+            Nil
+        }
       }
-    else Nil
-    ScalaSourceParser.logSummary()
-    result
+      val result = futures.flatMap(_.get())
+      ScalaSourceParser.logSummary()
+      result
+    } finally executor.shutdown()
   }
 
-  private def indexDependencySourceUri(workspaceRoot: os.Path, uri: String): List[SemanticdbFileSlice] =
-    dependencySourceEntries(workspaceRoot, uri).flatMap { case (entryUri, content) =>
-      indexSourceContent(entryUri, content)
+  private def parseEntries(
+      workspaceRoot: os.Path,
+      uri: String,
+      executor: java.util.concurrent.ExecutorService
+  ): List[SemanticdbFileSlice] = {
+    val entries = dependencySourceEntries(workspaceRoot, uri)
+    val futures = entries.map { case (entryUri, content) =>
+      executor.submit[List[SemanticdbFileSlice]] { () =>
+        try indexSourceContent(entryUri, content)
+        catch case NonFatal(e) =>
+          logger.warn(s"Failed to index dependency source $entryUri: ${e.getMessage}")
+          Nil
+      }
     }
+    futures.flatMap(_.get())
+  }
 
   def dependencySourceEntries(workspaceRoot: os.Path, uri: String): List[(String, String)] = {
     resolveSourcePath(uri) match {
