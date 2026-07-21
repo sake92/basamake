@@ -20,6 +20,8 @@ object ConnectionMessage:
   // BSP-originated messages (via BasamakeBuildClient callback)
   final case class BspPublishDiagnostics(params: ch.epfl.scala.bsp4j.PublishDiagnosticsParams)
       extends ConnectionMessage
+  final case class BuildTargetChanged(params: ch.epfl.scala.bsp4j.DidChangeBuildTarget)
+      extends ConnectionMessage
 
   // Internal events
   case object ProcessExited         extends ConnectionMessage  // process.waitFor() returned → crash

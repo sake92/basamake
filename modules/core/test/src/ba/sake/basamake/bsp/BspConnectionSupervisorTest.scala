@@ -55,3 +55,26 @@ class BspConnectionSupervisorTest extends FunSuite:
 
     assertEquals(selected.toSet, Set(sbtMain, sbtTest))
   }
+
+  test("handleBuildTargetChanged classifies CREATED/CHANGED/DELETED events correctly") {
+    val created = new ch.epfl.scala.bsp4j.BuildTargetEvent(new BuildTargetIdentifier("target://a"))
+    created.setKind(ch.epfl.scala.bsp4j.BuildTargetEventKind.CREATED)
+    val changed = new ch.epfl.scala.bsp4j.BuildTargetEvent(new BuildTargetIdentifier("target://b"))
+    changed.setKind(ch.epfl.scala.bsp4j.BuildTargetEventKind.CHANGED)
+    val deleted = new ch.epfl.scala.bsp4j.BuildTargetEvent(new BuildTargetIdentifier("target://c"))
+    deleted.setKind(ch.epfl.scala.bsp4j.BuildTargetEventKind.DELETED)
+
+    val events = List(created, changed, deleted)
+    val (createdChanged, removed) = events.partition { e =>
+      val kind = Option(e.getKind)
+      kind.contains(ch.epfl.scala.bsp4j.BuildTargetEventKind.CREATED) ||
+        kind.contains(ch.epfl.scala.bsp4j.BuildTargetEventKind.CHANGED)
+    }
+    assertEquals(createdChanged.map(_.getTarget.getUri).toSet, Set("target://a", "target://b"))
+    assertEquals(removed.map(_.getTarget.getUri).toSet, Set("target://c"))
+  }
+
+  test("handleBuildTargetChanged empty changes is no-op") {
+    val params = new ch.epfl.scala.bsp4j.DidChangeBuildTarget(java.util.Collections.emptyList())
+    assertEquals(params.getChanges.size, 0)
+  }

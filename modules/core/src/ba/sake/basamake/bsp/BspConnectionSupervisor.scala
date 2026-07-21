@@ -6,6 +6,7 @@ import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.{BuildTarget, BuildTargetIdentifier, DependencySourcesResult, SourceItemKind, SourcesResult}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
+import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
 import ba.sake.basamake.core.*
 import ba.sake.basamake.util.ProcessUtils
@@ -23,7 +24,8 @@ object BspConnectionSupervisor extends StrictLogging {
       queue: BlockingQueue[ConnectionMessage],
       lspClient: LanguageClient,
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
-      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit = (_, _) => ()
+      onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit = (_, _) => (),
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit = (_, _, _, _) => ()
   ): Unit = {
     logger.info(s"Supervisor started for ${durable.bspFile.get().path} (state: Idle)")
 
@@ -40,14 +42,14 @@ object BspConnectionSupervisor extends StrictLogging {
               durable.bspFile.set(newSpec)
             case _ =>
               logger.info(s"Idle -> Spawning (triggered by ${msg.getClass.getSimpleName})")
-              transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, Some(msg))
+              transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, onBuildTargetChanged, Some(msg))
         case BspConnectionState.Reloading =>
-          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, None)
+          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, onBuildTargetChanged, None)
         case BspConnectionState.BackoffWait =>
           backoffSleep(durable, queue)
         case BspConnectionState.Spawning | BspConnectionState.Handshaking =>
           logger.info(s"$durable.currentState at top-level — re-entering transitionToRunning")
-          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, None)
+          transitionToRunning(durable, queue, lspClient, onRoutingReady, onCompileSuccess, onBuildTargetChanged, None)
         case BspConnectionState.Connected =>
           logger.warn(s"Connected state at top level — triggering reload")
           durable.currentState = BspConnectionState.Reloading
@@ -94,6 +96,7 @@ object BspConnectionSupervisor extends StrictLogging {
       lspClient: LanguageClient,
       onRoutingReady: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTarget], SourcesResult, DependencySourcesResult) => Unit,
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit,
       triggerMsg: Option[ConnectionMessage]
   ): Unit = {
     durable.currentState = BspConnectionState.Spawning
@@ -118,13 +121,15 @@ object BspConnectionSupervisor extends StrictLogging {
 
       // compile-in-flight flag: suppress health probes while waiting for buildTargetCompile response
       val compileInFlight = new AtomicBoolean(false)
+      val progressTokenRegistered = new AtomicBoolean(false)
+      val progressSupported = new AtomicBoolean(false)
 
       try onRoutingReady(buildServer, targets, result.sources, result.dependencySources)
       catch case e: Exception => logger.error(s"Failed to announce routing info", e)
 
       triggerMsg.foreach { msg =>
         logger.debug(s"Dispatching trigger message: ${msg.getClass.getSimpleName}")
-        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, compileInFlight)
+        dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, onBuildTargetChanged, compileInFlight, progressTokenRegistered, progressSupported)
       }
 
       try {
@@ -159,7 +164,7 @@ object BspConnectionSupervisor extends StrictLogging {
                     queue.offer(msg)
             else
               try
-                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, compileInFlight)
+                dispatch(msg, durable, lspClient, buildServer, targetSourceRootsById, allTargetIds, onCompileSuccess, onBuildTargetChanged, compileInFlight, progressTokenRegistered, progressSupported)
                 lastSuccessfulResponse = now
                 consecutiveProbeFailures = 0
               catch
@@ -193,7 +198,10 @@ object BspConnectionSupervisor extends StrictLogging {
       targetToSourceRoots: Map[BuildTargetIdentifier, List[String]],
       allTargetIds: List[BuildTargetIdentifier],
       onCompileSuccess: (ch.epfl.scala.bsp4j.BuildServer, List[BuildTargetIdentifier]) => Unit,
-      compileInFlight: AtomicBoolean
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit,
+      compileInFlight: AtomicBoolean,
+      progressTokenRegistered: AtomicBoolean,
+      progressSupported: AtomicBoolean
   ): Unit = 
     msg match {
       case ConnectionMessage.ProcessExited =>
@@ -232,11 +240,98 @@ object BspConnectionSupervisor extends StrictLogging {
         ()
       case ConnectionMessage.RecheckUri(uri) =>
         triggerCompile(uri, buildServer, targetToSourceRoots, allTargetIds, onCompileSuccess, durable, compileInFlight)
+      case ConnectionMessage.BuildTargetChanged(params) =>
+        handleBuildTargetChanged(params, durable, buildServer, lspClient, onBuildTargetChanged, progressTokenRegistered, progressSupported)
       case ConnectionMessage.Shutdown =>
         logger.info("Received shutdown poison pill")
         durable.currentState = BspConnectionState.Detached
       case _ => ()
     }
+
+  private val ReindexProgressToken = "basamake-reindex"
+
+  private def handleBuildTargetChanged(
+      params: ch.epfl.scala.bsp4j.DidChangeBuildTarget,
+      durable: DurableRecord,
+      buildServer: ch.epfl.scala.bsp4j.BuildServer,
+      lspClient: LanguageClient,
+      onBuildTargetChanged: (ch.epfl.scala.bsp4j.BuildServer, DependencySourcesResult, List[BuildTargetIdentifier], List[BuildTargetIdentifier]) => Unit,
+      progressTokenRegistered: AtomicBoolean,
+      progressSupported: AtomicBoolean
+  ): Unit = {
+    if buildServer == null || durable.currentState != BspConnectionState.Connected then return
+
+    val changes = Option(params.getChanges).map(_.asScala.toList).getOrElse(Nil)
+    if changes.isEmpty then return
+
+    val (changedOrCreated, deleted) = changes.partition { e =>
+      val kind = Option(e.getKind)
+      kind.contains(ch.epfl.scala.bsp4j.BuildTargetEventKind.CREATED) ||
+        kind.contains(ch.epfl.scala.bsp4j.BuildTargetEventKind.CHANGED)
+    }
+    val changedOrCreatedIds = changedOrCreated.map(_.getTarget)
+    val deletedIds = deleted.map(_.getTarget)
+
+    if !progressTokenRegistered.getAndSet(true) then {
+      try {
+        val token = Either.forLeft[String, Integer](ReindexProgressToken)
+        lspClient.createProgress(new WorkDoneProgressCreateParams(token))
+          .get(2, java.util.concurrent.TimeUnit.SECONDS)
+        progressSupported.set(true)
+        logger.debug(s"Progress token '$ReindexProgressToken' registered")
+      } catch {
+        case e: Exception =>
+          logger.debug(s"Progress token '$ReindexProgressToken' registration failed: ${e.getMessage}")
+          progressSupported.set(false)
+      }
+    }
+
+    if changedOrCreatedIds.nonEmpty then {
+      sendProgressBegin(lspClient, changedOrCreatedIds.size, progressSupported)
+      try {
+        val depParams = new ch.epfl.scala.bsp4j.DependencySourcesParams(changedOrCreatedIds.asJava)
+        val result = buildServer.buildTargetDependencySources(depParams)
+          .get(durable.bspFile.get().compileTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+        onBuildTargetChanged(buildServer, result, changedOrCreatedIds, Nil)
+      } catch {
+        case e: Exception =>
+          logger.error(s"Failed to fetch dependency sources for changed targets: ${e.getMessage}")
+      } finally {
+        sendProgressEnd(lspClient, progressSupported)
+      }
+    }
+
+    if deletedIds.nonEmpty then {
+      logger.info(s"BSP target(s) deleted: ${deletedIds.map(_.getUri).mkString(", ")}")
+      onBuildTargetChanged(buildServer, null, Nil, deletedIds)
+    }
+  }
+
+  private def sendProgressBegin(lspClient: LanguageClient, targetCount: Int, progressSupported: AtomicBoolean): Unit = {
+    if !progressSupported.get() then return
+    try {
+      val token = Either.forLeft[String, Integer](ReindexProgressToken)
+      val beginNotif = new WorkDoneProgressBegin()
+      beginNotif.setTitle(s"Reindexing $targetCount target(s)…")
+      val begin = Either.forLeft[WorkDoneProgressNotification, Object](beginNotif)
+      lspClient.notifyProgress(new ProgressParams(token, begin))
+    } catch {
+      case e: Exception => logger.debug(s"Failed to send progress begin: ${e.getMessage}")
+    }
+  }
+
+  private def sendProgressEnd(lspClient: LanguageClient, progressSupported: AtomicBoolean): Unit = {
+    if !progressSupported.get() then return
+    try {
+      val token = Either.forLeft[String, Integer](ReindexProgressToken)
+      val end = Either.forLeft[WorkDoneProgressNotification, Object](
+        new WorkDoneProgressEnd()
+      )
+      lspClient.notifyProgress(new ProgressParams(token, end))
+    } catch {
+      case e: Exception => logger.debug(s"Failed to send progress end: ${e.getMessage}")
+    }
+  }
 
   private[bsp] def triggerCompile(
       uri: String,
