@@ -2,6 +2,7 @@ package ba.sake.basamake.core
 
 import ba.sake.tupson.{given, *}
 
+/** A json blob of status, easy to see what the status is at glance */
 final case class BasamakeStatus(
     bspConnections: List[BspConnectionStatus]
 ) derives JsonRW

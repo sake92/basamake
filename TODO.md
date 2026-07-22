@@ -1,11 +1,12 @@
 
-- extract ScalacOptionsUtils, consolidate Url/Paths utils..
-
 - improve nav experience:
     - index target sources as ASTs first, so user can navigate in open files (prioritize open files first!!)
     - after compile, parse semanticdb files, those override initial index entries
     - concurrently index JDK, and dependencies
+    - store deps index in same place as target index
+    - we need to get references in ALL targets from a dep source, e.g. pprint library or JDK
 
+- improve BSP retries, after N-consecutive-fails make a pause 10s, then try on next user interaction?
 
 - optimize parsing deps sources, serialize index?
 - readonly deps files..
