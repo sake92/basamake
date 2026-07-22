@@ -32,11 +32,11 @@ class DependencySourceParsingTest extends FunSuite {
     assert(definitions.exists(d => d.name == "bar" && d.kind == org.eclipse.lsp4j.SymbolKind.Method), clues(definitions))
     assert(definitions.exists(d => d.name == "x" && d.kind == org.eclipse.lsp4j.SymbolKind.Field), clues(definitions))
 
-    // Java symbols still old-style until Task 3
+    // canonical java semanticdb keys
     val barDef = definitions.find(_.name == "bar")
-    assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.symbol == "_empty_/Foo#bar()."), clues(barDef))
     val xDef = definitions.find(_.name == "x")
-    assert(xDef.exists(_.symbol == "Foo.x"), clues(xDef))
+    assert(xDef.exists(_.symbol == "_empty_/Foo#x."), clues(xDef))
   }
 
   test("extractDefinitions returns empty for unsupported file types") {
@@ -137,9 +137,9 @@ class DependencySourceParsingTest extends FunSuite {
     )
 
     val barDef = definitions.find(_.name == "bar")
-    assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.symbol == "_empty_/Foo#bar()."), clues(barDef))
     val xDef = definitions.find(_.name == "x")
-    assert(xDef.exists(_.symbol == "Foo.x"), clues(xDef))
+    assert(xDef.exists(_.symbol == "_empty_/Foo#x."), clues(xDef))
   }
 
   test("Java nested classes track owner chain") {
@@ -149,7 +149,7 @@ class DependencySourceParsingTest extends FunSuite {
     )
 
     val runDef = definitions.find(_.name == "run")
-    assert(runDef.exists(_.symbol == "Outer.Inner.run"), clues(runDef))
+    assert(runDef.exists(_.symbol == "_empty_/Outer#Inner#run()."), clues(runDef))
   }
 
   test("Java enum constants have owner-qualified symbols") {
@@ -159,7 +159,7 @@ class DependencySourceParsingTest extends FunSuite {
     )
 
     val redDef = definitions.find(_.name == "RED")
-    assert(redDef.exists(_.symbol == "Color.RED"), clues(redDef))
+    assert(redDef.exists(_.symbol == "_empty_/Color#RED."), clues(redDef))
     assert(redDef.exists(_.kind == org.eclipse.lsp4j.SymbolKind.EnumMember), clues(redDef))
   }
 
