@@ -1,6 +1,10 @@
 # SemanticDB Reference
 
-Spec: https://github.com/scalameta/scalameta/blob/main/docs/semanticdb/specification.md (~4k lines, v4 schema).
+Authoritative spec: https://github.com/scalameta/scalameta/blob/main/docs/semanticdb/specification.md (SemanticDB v4).
+
+This document follows the Scala symbol grammar from that specification. Do not
+infer descriptor syntax from marker-stripped navigation keys: those are a
+Basamake compatibility layer, not SemanticDB symbols.
 
 ## Data Model
 
@@ -53,11 +57,11 @@ Fully qualified within a SemanticDB universe. Format: `<owner_chain><descriptor>
 | EMPTY PACKAGE | `_empty_/` | — |
 | OBJECT | `.` | `scala/Predef.` |
 | PACKAGE_OBJECT | `.` | `scala/package.` |
-| VAL | `.` | `scala/package.Seq.` |
-| METHOD (non-overloaded) | `.` | `scala/Predef.println.` |
-| METHOD (overloaded) | `(<tag>).` | `scala/Predef.println(+1).` |
-| MACRO | `(<tag>).` | same as method |
-| CONSTRUCTOR | `` `<init>`(). `` | `_empty_/Main$package.`<init>`().` |
+| VAL / FIELD / OBJECT / PACKAGE_OBJECT | `.` | `scala/package.Seq.` |
+| METHOD / MACRO (first or only overload) | `().` | `scala/Predef.println().` |
+| METHOD / MACRO (later overload) | `(+N).` | `scala/Predef.println(+1).` |
+| CONSTRUCTOR (first or only overload) | `` `<init>`().`` | ``_empty_/C#`<init>`().`` |
+| CONSTRUCTOR (later overload) | `` `<init>`(+N).`` | ``_empty_/C#`<init>`(+1).`` |
 | CLASS | `#` | `scala/Int#` |
 | TRAIT | `#` | `upickle/Api#` |
 | TYPE | `#` | `scala/package.Seq#` |
@@ -65,7 +69,17 @@ Fully qualified within a SemanticDB universe. Format: `<owner_chain><descriptor>
 | TYPE_PARAMETER | `[name]` | `scala/Predef.implicitly().[T]` |
 | SELF_PARAMETER | unsupported | — |
 
-**Backtick wrapping**: names that aren't Java identifiers (`???`, `==`, `::`) are wrapped: `` scala/Predef.`???`(). ``.
+**Disambiguators**: functions, macros, and constructors always carry a
+disambiguator: `()` for the first/only declaration and `(+N)` for subsequent
+same-name declarations in source order. The exceptional bare `.` descriptor
+applies to `VAL METHOD` symbols, as well as vals, fields, objects, and package
+objects; it is not the normal encoding for a source `def`.
+
+**Backtick wrapping**: decoded names that are not Java identifiers are wrapped:
+``scala/Predef.`???`().``, ``scala/Any#`==`().``, and
+``scala/collection/immutable/`::`#``. This includes the constructor symbol
+name, so constructors are `` `<init>`().`` / `` `<init>`(+N).``—not
+`<init>().` without backticks.
 
 **Owner rules**:
 - Root package → no owner
@@ -217,13 +231,13 @@ Parses dependency source files (Scala/Java) with `ScalaSourceParser`/`JavaSource
 | Symbol ends with | Kind |
 |-----------------|------|
 | `#` | CLASS, TRAIT, TYPE (type definition) |
-| `.` | OBJECT, PACKAGE_OBJECT, VAL, METHOD, MACRO |
-| `().` | METHOD with no overloads |
-| `(+1).`, `(+2).` | METHOD overloaded, Nth occurrence |
+| `.` | OBJECT, PACKAGE_OBJECT, VAL, FIELD, exceptional VAL METHOD |
+| `().` | first/only METHOD, MACRO, or CONSTRUCTOR |
+| `(+1).`, `(+2).` | later METHOD, MACRO, or CONSTRUCTOR overload |
 | `/` | PACKAGE |
 | `(name)` | PARAMETER |
 | `[name]` | TYPE_PARAMETER |
-| `` `<init>`(). `` | CONSTRUCTOR |
+| `` `<init>`(). ``, `` `<init>`(+N).`` | CONSTRUCTOR |
 
 ## Known Limitations (Spec)
 
