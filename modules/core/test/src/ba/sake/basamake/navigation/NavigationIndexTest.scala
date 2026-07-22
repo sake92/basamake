@@ -461,22 +461,19 @@ class NavigationIndexTest extends FunSuite {
       val workspaceUri = "file:///ws/Main.scala"
       val depUri = "file:///ws/dep/Foo.scala"
 
-      // SemanticDB symbol from workspace: Foo.bar().
-      val semanticdbSymbol = "Foo.bar()."
+      // Canonical SemanticDB symbol: _empty_/Foo.bar().
+      val semanticdbSymbol = "_empty_/Foo.bar()."
       val callRange = new Range(new Position(2, 4), new Position(2, 7))
       val defRange = new Range(new Position(4, 6), new Position(4, 9))
 
-      // Dependency slice uses ownerName as key (e.g. Foo.bar)
+      // Dependency slice uses canonical key
       val depSlice = SemanticdbFileSlice(
         sourceUri = depUri,
         occurrences = List(
-          SemanticdbOccurrence("pkg/Foo.bar", defRange, isDefinition = true),
-          SemanticdbOccurrence("Foo.bar", defRange, isDefinition = true)
+          SemanticdbOccurrence(semanticdbSymbol, defRange, isDefinition = true)
         ),
         symbolDefinitions = Map(
-          "pkg/Foo.bar" -> List(new Location(depUri, defRange)),
-          "Foo.bar" -> List(new Location(depUri, defRange)),
-          "bar" -> List(new Location(depUri, defRange))
+          semanticdbSymbol -> List(new Location(depUri, defRange))
         ),
         symbolReferences = Map.empty,
         documentSymbols = Nil
@@ -494,8 +491,7 @@ class NavigationIndexTest extends FunSuite {
       index.setTargetDependencySlicesForTest(targetId, List(depSlice))
 
       val defs = index.definition(workspaceUri, new Position(2, 5))
-      // candidateSymbolKeys("Foo.bar().") produces ["Foo", "Foo.bar"]
-      // "Foo.bar" matches the ownerName key in the dependency slice
+      // Exact match on canonical key "_empty_/Foo.bar()."
       assertEquals(defs.map(_.getUri), List(depUri))
     finally
       os.remove.all(tmp)
@@ -513,8 +509,8 @@ class NavigationIndexTest extends FunSuite {
       val fooDefRange = new Range(new Position(3, 6), new Position(3, 9))
       val bazDefRange = new Range(new Position(3, 6), new Position(3, 9))
 
-      // Workspace references Foo.bar()
-      val workspaceSymbol = "Foo.bar()."
+      // Workspace references a canonical symbol: default-package Foo.bar()
+      val workspaceSymbol = "_empty_/Foo.bar()."
       val workspaceSlice = SemanticdbFileSlice(
         sourceUri = workspaceUri,
         occurrences = List(SemanticdbOccurrence(workspaceSymbol, callRange, isDefinition = false)),
@@ -523,25 +519,23 @@ class NavigationIndexTest extends FunSuite {
         documentSymbols = Nil
       )
 
-      // Foo.scala has method bar
+      // Foo.scala has method bar under canonical key
       val fooSlice = SemanticdbFileSlice(
         sourceUri = fooUri,
-        occurrences = List(SemanticdbOccurrence("Foo.bar", fooDefRange, isDefinition = true)),
+        occurrences = List(SemanticdbOccurrence("_empty_/Foo.bar().", fooDefRange, isDefinition = true)),
         symbolDefinitions = Map(
-          "Foo.bar" -> List(new Location(fooUri, fooDefRange)),
-          "bar" -> List(new Location(fooUri, fooDefRange))
+          "_empty_/Foo.bar()." -> List(new Location(fooUri, fooDefRange))
         ),
         symbolReferences = Map.empty,
         documentSymbols = Nil
       )
 
-      // Baz.scala also has method bar (should NOT be selected)
+      // Baz.scala also has method bar under DIFFERENT canonical key
       val bazSlice = SemanticdbFileSlice(
         sourceUri = bazUri,
-        occurrences = List(SemanticdbOccurrence("Baz.bar", bazDefRange, isDefinition = true)),
+        occurrences = List(SemanticdbOccurrence("_empty_/Baz.bar().", bazDefRange, isDefinition = true)),
         symbolDefinitions = Map(
-          "Baz.bar" -> List(new Location(bazUri, bazDefRange)),
-          "bar" -> List(new Location(bazUri, bazDefRange))
+          "_empty_/Baz.bar()." -> List(new Location(bazUri, bazDefRange))
         ),
         symbolReferences = Map.empty,
         documentSymbols = Nil
@@ -551,9 +545,7 @@ class NavigationIndexTest extends FunSuite {
       index.setTargetDependencySlicesForTest(targetId, List(fooSlice, bazSlice))
 
       val defs = index.definition(workspaceUri, new Position(2, 5))
-      // candidateSymbolKeys("Foo.bar().") → ["Foo", "Foo.bar"]
-      // "Foo.bar" matches Foo slice EXACTLY, not Baz.bar
-      // Also, firstDefinition picks FIRST match, which is Foo (before Baz)
+      // Exact key match: workspaceSymbol matches Foo's key, not Baz's
       assertEquals(defs.map(_.getUri), List(fooUri))
     finally
       os.remove.all(tmp)

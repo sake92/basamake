@@ -5,46 +5,32 @@ import org.eclipse.lsp4j.{Location, Position, Range}
 
 class NavigationSymbolLookupTest extends FunSuite {
 
-  test("candidateSymbolKeys returns markerless qualified key + dotted inits") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("_empty_/foo.bar.baz().")
-    assertEquals(keys, List("_empty_/foo.bar.baz", "foo.bar.baz", "foo.bar", "baz"))
+  test("isLocalSymbol matches compiler-produced local symbols") {
+    assert(NavigationSymbolLookup.isLocalSymbol("local0"))
+    assert(NavigationSymbolLookup.isLocalSymbol("local1"))
+    assert(NavigationSymbolLookup.isLocalSymbol("local2+1"))
   }
 
-  test("candidateSymbolKeys includes qualified key, excludes bare name in inits") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("com/example/Foo.bar().")
-    assert(!keys.contains("Foo")) // bare name excluded from inits
-    assert(keys.contains("com/example/Foo.bar")) // qualified markerless key
-    assert(keys.contains("Foo.bar")) // owner.name included
+  test("isLocalSymbol rejects global symbols starting with 'local'") {
+    assert(!NavigationSymbolLookup.isLocalSymbol("localDate#"))
+    assert(!NavigationSymbolLookup.isLocalSymbol("localMethod()."))
+    assert(!NavigationSymbolLookup.isLocalSymbol("localVar."))
+    assert(!NavigationSymbolLookup.isLocalSymbol("mylocal"))
   }
 
-  test("candidateSymbolKeys for packageless dotted symbol") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("Foo.bar().")
-    assertEquals(keys, List("Foo.bar", "bar"))
+  test("isLocalSymbol rejects empty and descriptive strings") {
+    assert(!NavigationSymbolLookup.isLocalSymbol(""))
+    assert(!NavigationSymbolLookup.isLocalSymbol("local"))
+    assert(!NavigationSymbolLookup.isLocalSymbol("localabc"))
   }
 
-  test("candidateSymbolKeys for single-segment symbol returns clean key") {
-    // Was: expected Nil (bare name excluded). Now: clean key prepended.
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("Foo")
-    assertEquals(keys, List("Foo"))
-  }
-
-  test("candidateSymbolKeys for scala/Unit# returns qualified markerless key") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Unit#")
-    assertEquals(keys, List("scala/Unit", "Unit"))
-  }
-
-  test("candidateSymbolKeys for scala/Predef.println(). returns qualified + dotted") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Predef.println().")
-    assertEquals(keys, List("scala/Predef.println", "Predef.println", "println"))
-  }
-
-  test("firstDefinitionInSlices matches scala/Unit# against dep slice keyed scala/Unit") {
+  test("firstDefinitionInSlices matches exact symbol") {
     val depUri = "file:///tmp/scala/Unit.scala"
     val depRange = new Range(new Position(0, 0), new Position(0, 4))
     val depSlice = SemanticdbFileSlice(
       sourceUri = depUri,
       occurrences = Nil,
-      symbolDefinitions = Map("scala/Unit" -> List(new Location(depUri, depRange))),
+      symbolDefinitions = Map("scala/Unit#" -> List(new Location(depUri, depRange))),
       symbolReferences = Map.empty,
       documentSymbols = Nil
     )
@@ -58,118 +44,73 @@ class NavigationSymbolLookupTest extends FunSuite {
     assertEquals(defn.get.getUri, depUri)
   }
 
-  test("firstDefinitionInSlices matches scala/Predef.println(). against dep slice keyed scala/Predef.println") {
-    val depUri = "file:///tmp/scala/Predef.scala"
-    val depRange = new Range(new Position(100, 0), new Position(100, 7))
+  test("firstDefinitionInSlices does NOT match via stripped keys") {
+    val depUri = "file:///tmp/dep.scala"
     val depSlice = SemanticdbFileSlice(
       sourceUri = depUri,
       occurrences = Nil,
-      symbolDefinitions = Map("scala/Predef.println" -> List(new Location(depUri, depRange))),
+      symbolDefinitions = Map("upickle/Api#write()." -> List(new Location(depUri, new Range(new Position(0, 0), new Position(0, 5))))),
       symbolReferences = Map.empty,
       documentSymbols = Nil
     )
 
+    // Stripped key should NOT match
     val defn = NavigationSymbolLookup.firstDefinitionInSlices(
-      symbol = "scala/Predef.println().",
+      symbol = "upickle/Api.write",  // not in the index
       slices = List(depSlice)
     )
+    assert(defn.isEmpty)
 
-    assert(defn.nonEmpty)
-    assertEquals(defn.get.getUri, depUri)
-  }
-
-  test("candidateSymbolKeys for class/trait member strips mid-symbol # and replaces with dot") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("upickle/Api#write().")
-    assertEquals(keys, List("upickle/Api.write", "Api.write", "write"))
-  }
-
-  test("candidateSymbolKeys for overloaded method strips (+N) disambiguator") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/Predef.println(+1).")
-    assertEquals(keys, List("scala/Predef.println", "Predef.println", "println"))
-  }
-
-  test("firstDefinitionInSlices matches class member symbol against dep slice") {
-    val depUri = "file:///tmp/upickle/Api.scala"
-    val depRange = new Range(new Position(50, 0), new Position(50, 5))
-    val depSlice = SemanticdbFileSlice(
-      sourceUri = depUri,
-      occurrences = Nil,
-      symbolDefinitions = Map("upickle/Api.write" -> List(new Location(depUri, depRange))),
-      symbolReferences = Map.empty,
-      documentSymbols = Nil
-    )
-
-    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
+    // Exact key should match
+    val exact = NavigationSymbolLookup.firstDefinitionInSlices(
       symbol = "upickle/Api#write().",
       slices = List(depSlice)
     )
-
-    assert(defn.nonEmpty)
-    assertEquals(defn.get.getUri, depUri)
+    assert(exact.nonEmpty)
   }
 
-  test("firstDefinitionInSlices matches overloaded method symbol against dep slice") {
-    val depUri = "file:///tmp/scala/Predef.scala"
-    val depRange = new Range(new Position(466, 0), new Position(466, 7))
-    val depSlice = SemanticdbFileSlice(
+  test("firstDefinitionInSlices matches overloaded method with exact disambiguator") {
+    val depUri = "file:///tmp/pkg/Foo.scala"
+    val exactSlice = SemanticdbFileSlice(
       sourceUri = depUri,
       occurrences = Nil,
-      symbolDefinitions = Map("scala/Predef.println" -> List(new Location(depUri, depRange))),
+      symbolDefinitions = Map(
+        "pkg/Owner#run()." -> List(new Location(depUri, new Range(new Position(5, 0), new Position(5, 3)))),
+        "pkg/Owner#run(+1)." -> List(new Location(depUri, new Range(new Position(6, 0), new Position(6, 3))))
+      ),
       symbolReferences = Map.empty,
       documentSymbols = Nil
     )
 
-    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
-      symbol = "scala/Predef.println(+1).",
-      slices = List(depSlice)
-    )
+    // First overload matches only run().
+    val first = NavigationSymbolLookup.firstDefinitionInSlices("pkg/Owner#run().", List(exactSlice))
+    assert(first.nonEmpty)
 
-    assert(defn.nonEmpty)
-    assertEquals(defn.get.getUri, depUri)
+    // Second overload matches only run(+1).
+    val second = NavigationSymbolLookup.firstDefinitionInSlices("pkg/Owner#run(+1).", List(exactSlice))
+    assert(second.nonEmpty)
+
+    // Stripped key does not match
+    val stripped = NavigationSymbolLookup.firstDefinitionInSlices("pkg/Owner.run", List(exactSlice))
+    assert(stripped.isEmpty)
   }
 
-  test("firstDefinitionInSlices returns first matching location using candidate keys") {
-    val depUri = "file:///tmp/dep.scala"
-    val depRange = new Range(new Position(0, 7), new Position(0, 14))
+  test("firstDefinition returns empty when no exact match found") {
+    val depUri = "file:///tmp/A.scala"
     val depSlice = SemanticdbFileSlice(
       sourceUri = depUri,
       occurrences = Nil,
-      symbolDefinitions = Map("foo.bar" -> List(new Location(depUri, depRange))),
+      symbolDefinitions = Map("pkg/A#" -> List(new Location(depUri, new Range(new Position(0, 0), new Position(0, 1))))),
       symbolReferences = Map.empty,
       documentSymbols = Nil
     )
 
-    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
-      symbol = "_empty_/foo.bar.baz().",
-      slices = List(depSlice)
+    val result = NavigationSymbolLookup.firstDefinition(
+      symbols = List("pkg/A#nonexistent()."),
+      currentFileUri = depUri,
+      workspaceSlices = Nil,
+      dependencySlices = List(depSlice)
     )
-
-    assert(defn.nonEmpty)
-    assertEquals(defn.get.getUri, depUri)
-  }
-
-  test("candidateSymbolKeys for scala/package.Seq. returns qualified + dotted owner key") {
-    val keys = NavigationSymbolLookup.candidateSymbolKeys("scala/package.Seq.")
-    assertEquals(keys, List("scala/package.Seq", "package.Seq", "Seq"))
-  }
-
-  test("firstDefinitionInSlices matches scala/package.Seq. against dep slice keyed scala/package.Seq") {
-    val depUri = "file:///tmp/scala/package.scala"
-    val depRange = new Range(new Position(42, 0), new Position(42, 3))
-    val depSlice = SemanticdbFileSlice(
-      sourceUri = depUri,
-      occurrences = Nil,
-      symbolDefinitions = Map("scala/package.Seq" -> List(new Location(depUri, depRange))),
-      symbolReferences = Map.empty,
-      documentSymbols = Nil
-    )
-
-    val defn = NavigationSymbolLookup.firstDefinitionInSlices(
-      symbol = "scala/package.Seq.",
-      slices = List(depSlice)
-    )
-
-    assert(defn.nonEmpty)
-    assertEquals(defn.get.getUri, depUri)
+    assert(result.isEmpty)
   }
 }

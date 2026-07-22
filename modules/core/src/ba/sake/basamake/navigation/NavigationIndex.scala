@@ -215,14 +215,16 @@ final class NavigationIndex(
   def definition(uri: String, position: Position): List[Location] = synchronized {
     val normalized = NavigationUriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
+    val ownerState = ownerStateForUri(normalized)
     NavigationSymbolLookup
-      .firstDefinition(symbols, normalized, orderedWorkspaceSlices, orderedDependencySlices)
+      .firstDefinition(symbols, normalized, ownerState.map(_.orderedWorkspace).getOrElse(Nil), ownerState.map(_.orderedDependency).getOrElse(Nil))
       .toList
   }
 
   def references(uri: String, position: Position): List[Location] = synchronized {
     val normalized = NavigationUriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
+    val ownerState = ownerStateForUri(normalized)
     symbols.flatMap { symbol =>
       if NavigationSymbolLookup.isLocalSymbol(symbol) then
         // Local symbols: find references only in current file
@@ -231,15 +233,9 @@ final class NavigationIndex(
         val refs = currentFileSlices.flatMap(_.symbolReferences.getOrElse(symbol, Nil))
         NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
       else
-        // Non-local symbols: search all files
-        val candidateKeys = NavigationSymbolLookup.candidateSymbolKeys(symbol)
-        val allKeys = symbol +: candidateKeys
-        val defs = targetStates.values.toList.flatMap { state =>
-          allKeys.flatMap(k => state.mergedDefinitions.getOrElse(k, Nil))
-        }
-        val refs = targetStates.values.toList.flatMap { state =>
-          allKeys.flatMap(k => state.mergedReferences.getOrElse(k, Nil))
-        }
+        // Non-local symbols: exact match in owning target state
+        val defs = ownerState.toList.flatMap(_.mergedDefinitions.getOrElse(symbol, Nil))
+        val refs = ownerState.toList.flatMap(_.mergedReferences.getOrElse(symbol, Nil))
         NavigationLocationUtils.postProcessLocations((defs ++ refs).distinct)
     }.distinct
   }
@@ -258,6 +254,22 @@ final class NavigationIndex(
 
   private def slicesForUri(uri: String): List[SemanticdbFileSlice] =
     targetStates.values.toList.flatMap(_.slicesByUri.getOrElse(uri, Nil))
+
+  /** Selects the owning target state for a source URI. If the URI appears in multiple
+    * target states, the first target in `targetOrder` wins. Returns `None` if the URI
+    * is not known (logged at debug level — no fallback across targets). */
+  private def ownerStateForUri(uri: String): Option[TargetState] = {
+    val ordered = targetStates.values.toList.sortBy { state =>
+      // preserve insertion order: first target with this URI wins
+      targetStates.find(_._2 eq state).map { case (tid, _) =>
+        targetStates.keys.toList.indexOf(tid)
+      }.getOrElse(Int.MaxValue)
+    }
+    val owner = ordered.find(_.slicesByUri.contains(uri))
+    if owner.isEmpty then
+      logger.debug(s"No owning target state for URI $uri")
+    owner
+  }
 
   private def resolveOutputRoots(
       result: OutputPathsResult
