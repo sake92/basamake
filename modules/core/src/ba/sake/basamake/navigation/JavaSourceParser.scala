@@ -7,7 +7,7 @@ import org.eclipse.lsp4j.{Position, Range, SymbolKind}
 
 object JavaSourceParser {
 
-  // No shared instance — JavaCC-generated parser is stateful (token, jj_nt).
+  // No shared JavaParser instance — JavaCC-generated parser is stateful (token, jj_nt).
   // Concurrent extraction corrupts token stream: AssertionError "reference was unexpectedly null".
 
   def extractDefinitions(content: String, fileName: String = ""): List[SourceDefinition] = {
@@ -15,15 +15,15 @@ object JavaSourceParser {
     if !result.isSuccessful || !result.getResult.isPresent then
       return List.empty
 
-    val cu = result.getResult.get
-    val pkgDecl = cu.getPackageDeclaration
+    val compilationUnit = result.getResult.get
+    val pkgDecl = compilationUnit.getPackageDeclaration
     val pkg = if pkgDecl.isPresent then pkgDecl.get.getNameAsString else ""
     val owner = SemanticdbSymbol.packageOwner(
       if pkg.nonEmpty then pkg.split('.').toList else Nil
     )
 
     val builder = List.newBuilder[SourceDefinition]
-    cu.getTypes.forEach { t => extractTypeDecl(t, owner, builder) }
+    compilationUnit.getTypes.forEach { t => extractTypeDecl(t, owner, builder) }
     builder.result()
   }
 

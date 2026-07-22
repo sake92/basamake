@@ -6,6 +6,10 @@ import ch.epfl.scala.bsp4j.*
 import ba.sake.basamake.core.*
 import ba.sake.basamake.util.ProcessUtils
 
+/** Union of BuildServer + ScalaBuildServer. lsp4j discovers all @JsonRequest
+  * methods from both parent interfaces. Single proxy, both casts work. */
+trait BasamakeBspServer extends BuildServer, ScalaBuildServer
+
 final case class HandshakeResult(
     process: java.lang.Process,
     buildServer: BuildServer,

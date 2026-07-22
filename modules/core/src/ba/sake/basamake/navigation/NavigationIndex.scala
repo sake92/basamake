@@ -118,7 +118,7 @@ final class NavigationIndex(
       workspaceRoot: os.Path,
       buildServer: BuildServer,
       targetIds: List[BuildTargetIdentifier],
-      sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]],
+      sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]],
       dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]],
       openUris: Set[String] = Set.empty  // reserved for future two-phase commit
   ): Unit = {
@@ -168,7 +168,7 @@ final class NavigationIndex(
       val flagsDetected = opts.exists { case (options, _) => SemanticdbIndexing.hasSemanticdbFlags(options) }
       val bestEffort = opts.exists { case (options, _) => options.exists(_ == "-Ybest-effort") }
 
-      val sourceRoots = sourceRootsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
+      val sourceRoots = sourceDirsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
       val dependencySourceUris = dependencySourceUrisByTarget.getOrElse(targetId, Nil)
       val dependencySlices =
         DependencySourceIndexing.indexDependencySources(workspaceRoot, dependencySourceUris, depSliceCache)

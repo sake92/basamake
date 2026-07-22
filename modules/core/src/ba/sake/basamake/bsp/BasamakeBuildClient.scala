@@ -16,6 +16,7 @@ class BasamakeBuildClient(queue: BlockingQueue[ConnectionMessage]) extends Build
     )
     queue.offer(ConnectionMessage.BspPublishDiagnostics(params))
 
+  // TODO show messages, progress etc
   override def onBuildShowMessage(params: ShowMessageParams): Unit =
     logger.debug(s"BSP SHOW MSG: ${params.getMessage}")
 

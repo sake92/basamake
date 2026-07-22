@@ -220,7 +220,7 @@ classDiagram
         record: DurableRecord
         queue: BlockingQueue~ConnectionMessage~
         navIndex: NavigationIndex
-        sourceRootsByTarget: Map
+        sourceDirsByTarget: Map
         dependencySourceUrisByTarget: Map
     }
 

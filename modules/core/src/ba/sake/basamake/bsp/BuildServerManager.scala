@@ -121,15 +121,15 @@ class BuildServerManager extends StrictLogging {
         while targets != null && !ctx.shuttingDown do
           try
             if targets.nonEmpty then
-              if ctx.sourceRootsByTarget.isEmpty && ctx.dependencySourceUrisByTarget.isEmpty then
+              if ctx.sourceDirsByTarget.isEmpty && ctx.dependencySourceUrisByTarget.isEmpty then
                 logger.warn(s"Nav refresh pending (${targets.size} targets) but source and dependency maps are both empty — nothing to index. BSP may not have reported sources yet.")
               else
                 ctx.navIndex.refresh(
                   workspaceRoot, ctx.buildServer, targets,
-                  ctx.sourceRootsByTarget, ctx.dependencySourceUrisByTarget,
+                  ctx.sourceDirsByTarget, ctx.dependencySourceUrisByTarget,
                   openUris.asScala.toSet
                 )
-                logger.info(s"SemanticDB refresh conn=$id targets=${targets.size} workspace=${ctx.sourceRootsByTarget.size} dependency=${ctx.dependencySourceUrisByTarget.size}")
+                logger.info(s"SemanticDB refresh conn=$id targets=${targets.size} workspace=${ctx.sourceDirsByTarget.size} dependency=${ctx.dependencySourceUrisByTarget.size}")
           catch case e: Exception =>
             logger.warn(s"Nav refresh failed for $id: ${e.getMessage}", e)
           targets = navRefreshPending.getAndSet(null)
@@ -141,7 +141,7 @@ class BuildServerManager extends StrictLogging {
                            sources: bsp4j.SourcesResult,
                            dependencySources: bsp4j.DependencySourcesResult) => {
       ctx.buildServer = buildServer
-      ctx.sourceRootsByTarget = extractTargetSourceRoots(sources)
+      ctx.sourceDirsByTarget = extractTargetSourceDirs(sources)
       ctx.dependencySourceUrisByTarget = extractTargetDependencySourceUris(dependencySources)
       val dirs = extractSourceDirs(sources)
       router.registerGroundTruth(id, dirs)
@@ -163,7 +163,7 @@ class BuildServerManager extends StrictLogging {
         ctx.dependencySourceUrisByTarget =
           ctx.dependencySourceUrisByTarget ++ extractTargetDependencySourceUris(depSourcesResult)
       for tid <- deletedIds do
-        ctx.sourceRootsByTarget -= tid
+        ctx.sourceDirsByTarget -= tid
         ctx.dependencySourceUrisByTarget -= tid
       val allAffected = changedOrCreatedIds ++ deletedIds
       if allAffected.nonEmpty then
@@ -187,17 +187,16 @@ class BuildServerManager extends StrictLogging {
           si.getUri
       }
 
-  /** Extract source roots per target. Aligned with targetToSourceRoots in
+  /** Extract source dirs per target. Aligned with targetToSourceRoots in
     * BspConnectionSupervisor: accepts both DIRECTORY and FILE kinds, uses .map so
     * ALL targets appear in the map (even those with no source items). The nav
     * refresh guard depends on this map being populated. */
-  private def extractTargetSourceRoots(sources: bsp4j.SourcesResult): Map[BuildTargetIdentifier, List[String]] =
+  private def extractTargetSourceDirs(sources: bsp4j.SourcesResult): Map[BuildTargetIdentifier, List[String]] =
     sources.getItems.asScala.toList.map { item =>
       val roots = Option(item.getSources).map(_.asScala.toList).getOrElse(Nil)
         .filterNot(_.getGenerated)
         .collect {
           case si if si.getKind == bsp4j.SourceItemKind.DIRECTORY => si.getUri
-          case si if si.getKind == bsp4j.SourceItemKind.FILE      => si.getUri
         }
       item.getTarget -> roots
     }.toMap
@@ -304,7 +303,7 @@ class BuildServerManager extends StrictLogging {
         ctx <- Option(connections.get(connId))
         state <- Option(navStates.get(connId))
       do
-        val targets = (ctx.sourceRootsByTarget.keySet ++ ctx.dependencySourceUrisByTarget.keySet).toList
+        val targets = (ctx.sourceDirsByTarget.keySet ++ ctx.dependencySourceUrisByTarget.keySet).toList
         if targets.nonEmpty then
           state.pending.set(targets)
           LockSupport.unpark(state.thread)
@@ -434,7 +433,7 @@ class BuildServerManager extends StrictLogging {
         BspConnectionStatus(
           configPath = relPath,
           state = ctx.record.currentState.toString,
-          targets = ctx.sourceRootsByTarget.keys.toList.sortBy(_.getUri).map { targetId =>
+          targets = ctx.sourceDirsByTarget.keys.toList.sortBy(_.getUri).map { targetId =>
             BspTargetStatus(
               id = targetId.getUri,
               semanticdbEnabled = ctx.navIndex.getTargetSemanticdbFlags.get(targetId),
@@ -503,7 +502,7 @@ private case class ConnectionContext(
     queue: BlockingQueue[ConnectionMessage],
     navIndex: NavigationIndex,
     /** target → list of source directories */
-    var sourceRootsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
+    var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
     /** target → list of source JARs */
     var dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
     @volatile var buildServer: bsp4j.BuildServer = null,
