@@ -3,6 +3,7 @@ package ba.sake.basamake.navigation
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.util.concurrent.CompletableFuture
 import scala.jdk.CollectionConverters.*
+import ba.sake.basamake.util.ScalacOptionsUtils
 import ch.epfl.scala.bsp4j.*
 import munit.FunSuite
 import org.eclipse.lsp4j.{Location, Position, Range}
@@ -120,49 +121,49 @@ class NavigationIndexTest extends FunSuite {
   }
 
   test("semanticdbTargetPaths parses Scala 3 -semanticdb-target") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target:/tmp/custom/output")
     )
     assertEquals(paths, List(os.Path("/tmp/custom/output")))
   }
 
   test("semanticdbTargetPaths parses Scala 2 -P:semanticdb:targetroot:") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-P:semanticdb:targetroot:/tmp/custom-s2")
     )
     assertEquals(paths, List(os.Path("/tmp/custom-s2")))
   }
 
   test("semanticdbTargetPaths returns empty when no target flags present") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-Xsemanticdb", "-deprecation")
     )
     assertEquals(paths, Nil)
   }
 
   test("semanticdbTargetPaths handles multiple target flags") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target:/tmp/out1", "-P:semanticdb:targetroot:/tmp/out2")
     )
     assertEquals(paths, List(os.Path("/tmp/out1"), os.Path("/tmp/out2")))
   }
 
   test("semanticdbTargetPaths handles space-separated -semanticdb-target") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target", "/tmp/custom/space")
     )
     assertEquals(paths, List(os.Path("/tmp/custom/space")))
   }
 
   test("semanticdbTargetPaths handles space-separated -P:semanticdb:targetroot") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-P:semanticdb:targetroot", "/tmp/custom-s2")
     )
     assertEquals(paths, List(os.Path("/tmp/custom-s2")))
   }
 
   test("semanticdbTargetPaths ignores space-separated when next token is another flag") {
-    val paths = SemanticdbIndexing.semanticdbTargetPaths(
+    val paths = ScalacOptionsUtils.semanticdbTargetPaths(
       List("-Xsemanticdb", "-semanticdb-target", "-deprecation")
     )
     assertEquals(paths, Nil)

@@ -1,5 +1,6 @@
 package ba.sake.basamake.navigation
 
+import ba.sake.basamake.util.UriUtils
 import org.eclipse.lsp4j.Location
 
 object NavigationLocationUtils {
@@ -17,14 +18,14 @@ object NavigationLocationUtils {
   private def normalizeLocation(loc: Location): Option[Location] =
     Option(loc).flatMap { l =>
       Option(l.getUri).map { uri =>
-        val normalized = NavigationUriUtils.normalizeUri(uri)
+        val normalized = UriUtils.normalizeUri(uri)
         if normalized == uri then l
         else new Location(normalized, l.getRange)
       }
     }
 
   private def locationExists(loc: Location): Boolean =
-    NavigationUriUtils.uriToPathOption(loc.getUri) match
+    UriUtils.uriToPathOption(loc.getUri) match
       case Some(path) => os.exists(path)
-      case None       => NavigationUriUtils.archivePathOption(loc.getUri).exists(os.exists(_))
+      case None       => UriUtils.archivePathOption(loc.getUri).exists(os.exists(_))
 }

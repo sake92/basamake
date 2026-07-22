@@ -3,6 +3,7 @@ package ba.sake.basamake.navigation
 import java.util.concurrent.TimeUnit
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
+import ba.sake.basamake.util.{ScalacOptionsUtils, UriUtils}
 import ch.epfl.scala.bsp4j.{BuildServer, BuildTargetIdentifier, OutputPathsParams, OutputPathsResult, OutputPathItemKind, ScalacOptionsParams, ScalacOptionsResult, ScalaBuildServer}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{Location, Position, Range, SymbolInformation, SymbolKind}
@@ -170,11 +171,10 @@ final class NavigationIndex(
         outputDirsByTarget.getOrElse(targetId, Nil),
         opts
       )
-      val flagsDetected = opts.exists { case (options, _) => SemanticdbIndexing.hasSemanticdbFlags(options) }
-      // TODO use ScalacOptionUtils.hasBestEffortFlag(options)
-      val bestEffort = opts.exists { case (options, _) => options.exists(_ == "-Ybest-effort") }
+      val flagsDetected = opts.exists { case (options, _) => ScalacOptionsUtils.hasSemanticdbFlags(options) }
+      val bestEffort = opts.exists { case (options, _) => ScalacOptionsUtils.hasBestEffortFlag(options) }
 
-      val sourceDirs = sourceDirsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
+      val sourceDirs = sourceDirsByTarget.getOrElse(targetId, Nil).flatMap(UriUtils.uriToPathOption)
       val dependencySourceUris = dependencySourceUrisByTarget.getOrElse(targetId, Nil)
       val dependencySlices = DependencySourceIndexing.indexDependencySources(workspaceRoot, dependencySourceUris, depSliceCache)
 
@@ -218,7 +218,7 @@ final class NavigationIndex(
   }
 
   def definition(uri: String, position: Position): List[Location] = synchronized {
-    val normalized = NavigationUriUtils.normalizeUri(uri)
+    val normalized = UriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
     val ownerState = ownerStateForUri(normalized)
     NavigationSymbolLookup
@@ -227,7 +227,7 @@ final class NavigationIndex(
   }
 
   def references(uri: String, position: Position): List[Location] = synchronized {
-    val normalized = NavigationUriUtils.normalizeUri(uri)
+    val normalized = UriUtils.normalizeUri(uri)
     val symbols = slicesForUri(normalized).flatMap(_.symbolAt(position)).distinct
     val ownerState = ownerStateForUri(normalized)
     symbols.flatMap { symbol =>
@@ -246,7 +246,7 @@ final class NavigationIndex(
   }
 
   def documentSymbols(uri: String): List[Either[SymbolInformation, org.eclipse.lsp4j.DocumentSymbol]] = synchronized {
-    slicesForUri(NavigationUriUtils.normalizeUri(uri)).flatMap(_.documentSymbols)
+    slicesForUri(UriUtils.normalizeUri(uri)).flatMap(_.documentSymbols)
   }
 
   def getTargetSemanticdbFlags: Map[BuildTargetIdentifier, Boolean] = synchronized {

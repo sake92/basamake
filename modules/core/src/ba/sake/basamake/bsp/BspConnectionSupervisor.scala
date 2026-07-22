@@ -10,7 +10,7 @@ import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.services.LanguageClient
 import ba.sake.basamake.core.*
 import ba.sake.basamake.util.ProcessUtils
-import ba.sake.basamake.navigation.NavigationUriUtils
+import ba.sake.basamake.util.{ScalacOptionsUtils, UriUtils}
 
 object BspConnectionSupervisor extends StrictLogging {
   private val MaxCrashRetries = 5  // retry crashes + handshake failures 5 times
@@ -377,7 +377,7 @@ object BspConnectionSupervisor extends StrictLogging {
           val result = scalaBuild.buildTargetScalacOptions(params)
             .get(2, java.util.concurrent.TimeUnit.SECONDS)
           Option(result.getItems).toList.flatMap(_.asScala).exists { item =>
-            Option(item.getOptions).toList.flatMap(_.asScala).contains("-Ybest-effort")
+            ScalacOptionsUtils.hasBestEffortFlag(Option(item.getOptions).toList.flatMap(_.asScala))
           }
         case _ => false
       }
@@ -432,8 +432,8 @@ object BspConnectionSupervisor extends StrictLogging {
       targetToSourceRoots: Map[BuildTargetIdentifier, List[String]]
   ): List[BuildTargetIdentifier] = {
     def inSourceRoot(uri: String, sourceRoot: String): Boolean = {
-      val normalizedUri = NavigationUriUtils.normalizeUri(uri)
-      val normalizedSourceRoot = NavigationUriUtils.normalizeUri(sourceRoot)
+      val normalizedUri = UriUtils.normalizeUri(uri)
+      val normalizedSourceRoot = UriUtils.normalizeUri(sourceRoot)
       if normalizedSourceRoot.endsWith("/") then normalizedUri.startsWith(normalizedSourceRoot)
       else normalizedUri == normalizedSourceRoot || normalizedUri.startsWith(s"$normalizedSourceRoot/")
     }

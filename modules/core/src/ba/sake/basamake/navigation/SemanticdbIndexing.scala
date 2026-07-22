@@ -1,5 +1,6 @@
 package ba.sake.basamake.navigation
 
+import ba.sake.basamake.util.{ScalacOptionsUtils, UriUtils}
 import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, BuildServer, OutputPathItemKind, OutputPathsParams, ScalacOptionsParams, ScalaBuildServer}
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{Location, Position, Range, SymbolInformation, SymbolKind}
@@ -27,26 +28,20 @@ object SemanticdbIndexing extends StrictLogging {
       scalacOptions: Option[(List[String], Option[String])]
   ): Set[os.Path] = {
     val rootsFromSemanticdbTarget = scalacOptions.toList.flatMap { case (options, _) =>
-      semanticdbTargetPaths(options)
+      ScalacOptionsUtils.semanticdbTargetPaths(options)
     }.toSet
     if rootsFromSemanticdbTarget.nonEmpty then rootsFromSemanticdbTarget
     else {
-      val rootsFromOutputs = outputRoots.flatMap(NavigationUriUtils.uriToPathOption)
-      val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(NavigationUriUtils.uriToPathOption)
+      val rootsFromOutputs = outputRoots.flatMap(UriUtils.uriToPathOption)
+      val rootsFromClassDir = scalacOptions.toList.flatMap(_._2).flatMap(UriUtils.uriToPathOption)
       val roots = (rootsFromOutputs ++ rootsFromClassDir).toSet
       scalacOptions.foreach { case (options, _) =>
-        if roots.nonEmpty && !hasSemanticdbFlags(options) then
+        if roots.nonEmpty && !ScalacOptionsUtils.hasSemanticdbFlags(options) then
           logger.warn(s"SemanticDB flags absent in scalac options [${options.mkString(", ")}]; indexing from discovered output/class directories")
       }
       roots
     }
   }
-
-  def hasSemanticdbFlags(options: List[String]): Boolean =
-    options.exists(_ == "-Xsemanticdb") ||
-      options.exists(s => s == "-semanticdb-target" || s.startsWith("-semanticdb-target:")) ||
-      options.exists(_.startsWith("-P:semanticdb:")) ||
-      options.exists(_ == "-Xplugin:semanticdb")
 
   def indexWorkspaceTarget(
       workspaceRoot: os.Path,
@@ -118,28 +113,6 @@ object SemanticdbIndexing extends StrictLogging {
     (byUri, WorkspaceIndexState(newFiles, sourceDirs))
   }
 
-  // TODO maybe extract to ScalacOptionsUtils or similar, for reuse ?
-  def semanticdbTargetPaths(options: List[String]): List[os.Path] = {
-    // Scala 3: -semanticdb-target:<path> (colon-separated)
-    val scala3 = options.collect {
-      case s if s.startsWith("-semanticdb-target:") =>
-        os.Path(s.stripPrefix("-semanticdb-target:"))
-    }
-    // Scala 2: -P:semanticdb:targetroot:<path> (colon-separated)
-    val scala2 = options.collect {
-      case s if s.startsWith("-P:semanticdb:targetroot:") =>
-        os.Path(s.stripPrefix("-P:semanticdb:targetroot:"))
-    }
-    // Space-separated forms: flag followed by path in next element
-    val space3 = options.sliding(2).collect {
-      case Seq("-semanticdb-target", path) if !path.startsWith("-") => os.Path(path)
-    }.toList
-    val space2 = options.sliding(2).collect {
-      case Seq("-P:semanticdb:targetroot", path) if !path.startsWith("-") => os.Path(path)
-    }.toList
-    scala3 ++ scala2 ++ space3 ++ space2
-  }
-
   def semanticdbFilesUnder(root: os.Path): List[os.Path] =
     if !os.exists(root) then Nil
     else
@@ -156,7 +129,7 @@ object SemanticdbIndexing extends StrictLogging {
       val bytes = os.read.bytes(semanticdbFile)
       val documents = semanticdb.TextDocuments.parseFrom(bytes)
       documents.documents.headOption.map { semDbDoc =>
-        val sourceUri = NavigationUriUtils.normalizeUri(resolveSourceUri(workspaceRoot, semanticdbFile, semDbDoc.uri, sourceDirs))
+        val sourceUri = UriUtils.normalizeUri(resolveSourceUri(workspaceRoot, semanticdbFile, semDbDoc.uri, sourceDirs))
         val symbolInfoById = semDbDoc.symbols.toList.map(si => si.symbol -> si).toMap
 
         val occurrences = semDbDoc.occurrences.toList.flatMap { occ =>
@@ -216,7 +189,7 @@ object SemanticdbIndexing extends StrictLogging {
       docUri: String,
       sourceRoots: List[os.Path]
   ): String =
-    if docUri.startsWith("file:") then NavigationUriUtils.normalizeUri(docUri)
+    if docUri.startsWith("file:") then UriUtils.normalizeUri(docUri)
     else {
       val relativeSource = relativeSourcePath(semanticdbFile).getOrElse(os.RelPath(docUri))
       val candidates = resolveCandidates(workspaceRoot, relativeSource, sourceRoots)

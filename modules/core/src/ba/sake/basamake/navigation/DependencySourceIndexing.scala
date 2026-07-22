@@ -1,5 +1,6 @@
 package ba.sake.basamake.navigation
 
+import ba.sake.basamake.util.UriUtils
 import java.util.zip.ZipFile
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -111,7 +112,7 @@ object DependencySourceIndexing extends StrictLogging {
   private def readArchiveEntries(workspaceRoot: os.Path, path: os.Path, archiveUri: String): List[(String, String)] =
     Using.resource(new ZipFile(path.toNIO.toFile)) { zip =>
       val baseArchiveUri =
-        NavigationUriUtils.canonicalFileUri(
+        UriUtils.canonicalFileUri(
           if archiveUri.startsWith("jar:") then archiveUri.stripPrefix("jar:").takeWhile(_ != '!')
           else archiveUri
         )
@@ -191,7 +192,7 @@ object DependencySourceIndexing extends StrictLogging {
     catch case _: Exception =>
       try
         val stripped = uri.stripPrefix("jar:")
-        val archive = NavigationUriUtils.canonicalFileUri(stripped.takeWhile(_ != '!'))
+        val archive = UriUtils.canonicalFileUri(stripped.takeWhile(_ != '!'))
         Some(os.Path(java.net.URI.create(archive)))
       catch case _: Exception =>
         try Some(os.Path(uri))

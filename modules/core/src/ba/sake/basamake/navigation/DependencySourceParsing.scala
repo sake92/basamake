@@ -1,5 +1,6 @@
 package ba.sake.basamake.navigation
 
+import ba.sake.basamake.util.UriUtils
 import java.security.MessageDigest
 import org.eclipse.lsp4j.{Position, Range, SymbolKind}
 
@@ -34,7 +35,7 @@ object DependencySourceParsing {
     val normalizedArchiveUri =
       if archiveUri.startsWith("jar:") then archiveUri.stripPrefix("jar:").takeWhile(_ != '!')
       else archiveUri
-    val path = try java.net.URI.create(NavigationUriUtils.canonicalFileUri(normalizedArchiveUri)).getPath
+    val path = try java.net.URI.create(UriUtils.canonicalFileUri(normalizedArchiveUri)).getPath
     catch case _: Exception => normalizedArchiveUri
     val segments = path.split('/').toList.filter(_.nonEmpty)
     val maven2Index = segments.lastIndexOf("maven2")
