@@ -208,23 +208,57 @@ Basamake discovers files by walking the target directory with `semanticdbFilesUn
 
 1. `TextDocuments.parseFrom(bytes)` → scala.meta `TextDocuments`
 2. `doc.occurrences` → `SemanticdbOccurrence(symbol, range, isDefinition)`
-3. Group: `symbolDefinitions` = occurrences where `isDefinition=true`, grouped by `symbol`
-4. Group: `symbolReferences` = all occurrences (defs + refs), grouped by `symbol`
-5. Return `SemanticdbFileSlice(sourceUri, occurrences, symbolDefinitions, symbolReferences)`
+3. Filter occurrences with empty symbols (unresolvable SUIDs).
+4. Group: `symbolDefinitions` = occurrences where `isDefinition=true`, grouped by `symbol` (raw, verbatim)
+5. Group: `symbolReferences` = all occurrences (defs + refs), grouped by `symbol` (raw, verbatim)
+6. Return `SemanticdbFileSlice(sourceUri, occurrences, symbolDefinitions, symbolReferences)`
+
+No symbol normalization, descriptor stripping, or candidate key expansion is performed.
+Compiler-produced SemanticDB symbols are preserved byte-for-byte as the authoritative keys.
 
 ### Dependency indexing (`DependencySourceIndexing.indexSourceContent`)
 
-Parses dependency source files (Scala/Java) with `ScalaSourceParser`/`JavaSourceParser`, synthesizes `symbolDefinitions` from parsed definitions:
-- `groupMap(_.symbol)` — fully qualified key
-- `groupMap(_.ownerName)` — owner-qualified key (e.g. `"Predef.println"`)
+Parses dependency source files (Scala/Java) with `ScalaSourceParser`/`JavaSourceParser`,
+synthesizes canonical `symbolDefinitions` using the `SemanticdbSymbol` encoder:
+- One entry per canonical global symbol, no aliases.
+- Symbols match the SemanticDB specification exactly (descriptor suffixes, backtick escaping, overload tagging, `_empty_/` prefix).
 
 ### Lookup (`NavigationSymbolLookup`)
 
-`firstDefinition(symbols, currentFileUri, workspaceSlices, dependencySlices)`:
-- For each symbol, try workspace slices first, then dependency slices
-- Match keys: raw symbol first, then `candidateSymbolKeys(symbol)` (strips markers, generates inits)
+All global-symbol lookups use **exact symbol matching** — no marker stripping,
+candidate key expansion, or fuzzy fallback.
 
-`candidateSymbolKeys` strips `.`/`#`/`(+N)` markers, splits by `/` for package prefix, by `.` for owner chain, generates `owner.name` inits.
+`firstDefinition(symbols, currentFileUri, workspaceSlices, dependencySlices)`:
+- For each symbol: if it's a true local symbol (`^local\d+(\+\d+)?$`), search only in the current file.
+- Otherwise: exact match in workspace slices first, then dependency slices.
+
+`isLocalSymbol` uses the regex `^local\d+(\+\d+)?$` to distinguish true compiler-produced
+local symbols from global symbols that happen to start with "local" (e.g. `localDate#`).
+
+Definition and reference lookups are scoped to the owning build target: the
+`ownerStateForUri` helper selects the first target state containing the source URI,
+and queries are routed only through that target's merged definitions and references.
+
+### Canonical Symbol Contract
+
+Dependency-source parsers (`ScalaSourceParser`, `JavaSourceParser`) synthesize
+symbols that are **byte-for-byte identical** to compiler-produced SemanticDB for
+all supported global declarations.
+
+**Covered:**
+- Packages, classes, traits, interfaces, enums, objects, package objects
+- Methods (with lexical overload disambiguators)
+- Constructors (`` `<init>`(). `` / `` `<init>`(+N).``)
+- Vals, vars, fields, enum constants
+- Named givens, type aliases
+- Scala 3 top-level wrappers (`X$package.`, `package.`)
+- Operator names (backtick-escaped)
+
+**Not covered:**
+- Local symbols, method parameters, type parameters (compiler-produced, document-scoped)
+- Anonymous/compiler-generated givens
+- Unresolvable SUID occurrences (filtered, logged at debug level)
+- Java SemanticDB (the spec marks Java support as incomplete)
 
 ## Key Descriptor Suffix Reference
 
