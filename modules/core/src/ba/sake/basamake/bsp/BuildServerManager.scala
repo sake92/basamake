@@ -24,7 +24,7 @@ import ba.sake.basamake.util.ProcessUtils
 /** Manages BSP connections in a workspace, including lifecycle, message routing, and shutdown. */
 class BuildServerManager extends StrictLogging {
 
-  private val connections = ConcurrentHashMap[BspConnectionId, ConnectionContext]()
+  private val connections = ConcurrentHashMap[BspConnectionId, BspConnectionContext]()
   private val navStates = ConcurrentHashMap[BspConnectionId, NavRefreshState]()
   private var client: LanguageClient = uninitialized
   private var workspaceRoot: os.Path = uninitialized
@@ -39,7 +39,8 @@ class BuildServerManager extends StrictLogging {
   private var pendingBspChanges: Set[os.Path] = Set.empty
   private var pendingDebounceTask: Option[TimerTask] = None
   private val shuttingDown = new AtomicBoolean(false)
-  /** Dep slices live across BSP re-attach/reload; keyed per dep (uri + fingerprint). */
+
+  /** Deps sources slices live across BSP-servers and across BSP re-attach/reload; keyed per dep (uri + fingerprint). */
   private val depSliceCache = new DependencySliceCache()
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, config: BasamakeConfig): Unit = {
@@ -106,7 +107,7 @@ class BuildServerManager extends StrictLogging {
       currentState = BspConnectionState.Idle
     )
     val msgQueue = new LinkedBlockingQueue[ConnectionMessage]()
-    val ctx = ConnectionContext(record, msgQueue, NavigationIndex(depSliceCache))
+    val ctx = BspConnectionContext(record, msgQueue, NavigationIndex(depSliceCache))
     connections.put(id, ctx)
 
     val bspDir = bspSpec.path.toNIO.getParent
@@ -473,7 +474,7 @@ class BuildServerManager extends StrictLogging {
       logger.info(s"Killed $killed descendant process node(s) during shutdown")
   }
 
-  private def connectionForUri(uri: String): Option[ConnectionContext] =
+  private def connectionForUri(uri: String): Option[BspConnectionContext] =
     router.route(uri).flatMap(id => Option(connections.get(id)))
 
 }
@@ -497,13 +498,13 @@ private case class NavRefreshState(
     @volatile var shuttingDown: Boolean = false
 )
 
-private case class ConnectionContext(
+private case class BspConnectionContext(
     record: DurableRecord,
     queue: BlockingQueue[ConnectionMessage],
     navIndex: NavigationIndex,
     /** target → list of source directories */
     var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
-    /** target → list of source JARs */
+    /** target → list of dependency source JARs */
     var dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty,
     @volatile var buildServer: bsp4j.BuildServer = null,
     @volatile var shuttingDown: Boolean = false

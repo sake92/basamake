@@ -1,6 +1,16 @@
 package ba.sake.basamake.bsp
 
-enum BspConnectionState:
+
+import ba.sake.tupson.JsonRW
+
+/** Typed wrapper for a BSP connection identifier (derived from .bsp/_name_.json filename). */
+opaque type BspConnectionId = String
+
+object BspConnectionId:
+  def apply(value: String): BspConnectionId = value
+  extension (id: BspConnectionId) def value: String = id
+
+enum BspConnectionState {
   /** No process alive. Supervisor VT blocks on queue.take().
     * First LSP command (DidOpen/DidSave/DidChange) triggers BSP process spawn. */
   case Idle
@@ -17,3 +27,16 @@ enum BspConnectionState:
   case Failed
   /** Connection removed (`.json` deleted or shutdown). */
   case Detached
+}
+
+/** .bsp JSON file */
+private case class BspDiscoveryFile(name: String, argv: List[String]) derives JsonRW
+
+final case class BspConnectionSpec(
+    content: BspDiscoveryFile,
+    path: os.Path,
+    debounceMs: Long = 500,
+    compileTimeoutSec: Long = 600
+) {
+  val workingDir: os.Path = path / os.up / os.up
+}

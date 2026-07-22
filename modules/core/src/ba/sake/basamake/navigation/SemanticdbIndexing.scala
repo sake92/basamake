@@ -5,7 +5,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.{Location, Position, Range, SymbolInformation, SymbolKind}
 import org.eclipse.lsp4j.jsonrpc.messages.Either
 import java.util.concurrent.{TimeUnit, TimeoutException}
-import scala.meta.internal.semanticdb.{Range as SemanticRange, TextDocument, TextDocuments}
+import scala.meta.internal.semanticdb
 
 object SemanticdbIndexing extends StrictLogging {
 
@@ -16,10 +16,13 @@ object SemanticdbIndexing extends StrictLogging {
     * harmless false-positive re-parse if a tool rewrites identical content. */
   final case class WorkspaceIndexState(
       files: Map[os.Path, IndexedFile],
-      sourceRoots: List[os.Path]
+      sourceDirs: List[os.Path]
   )
 
-  def candidateSemanticdbRoots(
+  /** Resolves directories that contain SemanticDB files for a given target.
+  * Prefers scalac options if available, otherwise falling back to output directories.
+  */
+  def candidateSemanticdbDirs(
       outputRoots: List[String],
       scalacOptions: Option[(List[String], Option[String])]
   ): Set[os.Path] = {
@@ -60,20 +63,20 @@ object SemanticdbIndexing extends StrictLogging {
 
   /** Incremental reindex: stat-walks semanticdbRoots, reuses slices for files whose
     * mtime+size match the previous state, parses only new/changed files, drops
-    * deleted ones. sourceRoots change forces a full re-parse (sourceUri resolution
+    * deleted ones. sourceDirs change forces a full re-parse (sourceUri resolution
     * depends on roots). Parse failures store no fingerprint, so they self-heal on
     * the next round. */
   def indexWorkspaceTargetIncremental(
       workspaceRoot: os.Path,
       semanticdbRoots: Set[os.Path],
-      sourceRoots: List[os.Path],
+      sourceDirs: List[os.Path],
       previous: WorkspaceIndexState
   ): (Map[String, SemanticdbFileSlice], WorkspaceIndexState) = {
     val allFiles = semanticdbRoots.flatMap(semanticdbFilesUnder).toList.distinct
     if allFiles.isEmpty then
-      return (Map.empty, WorkspaceIndexState(Map.empty, sourceRoots))
+      return (Map.empty, WorkspaceIndexState(Map.empty, sourceDirs))
 
-    val fullReindex = previous.sourceRoots != sourceRoots
+    val fullReindex = previous.sourceDirs != sourceDirs
     val (unchanged, toParse) = allFiles.partition { f =>
       !fullReindex && previous.files.get(f).exists { idx =>
         idx.mtime == os.mtime(f) && idx.size == os.stat(f).size
@@ -87,7 +90,7 @@ object SemanticdbIndexing extends StrictLogging {
         try {
           val futures = toParse.map { f =>
             executor.submit[java.util.Map.Entry[os.Path, IndexedFile]] { () =>
-              parseSemanticdbFile(workspaceRoot, f, sourceRoots)
+              parseSemanticdbFile(workspaceRoot, f, sourceDirs)
                 .map(s => java.util.Map.entry(f, IndexedFile(os.mtime(f), os.stat(f).size, s)))
                 .orNull
             }
@@ -101,21 +104,21 @@ object SemanticdbIndexing extends StrictLogging {
         } finally executor.shutdown()
       }
 
-    val kept: Map[os.Path, IndexedFile] =
-      unchanged.flatMap(f => previous.files.get(f).map(f -> _)).toMap
+    val kept: Map[os.Path, IndexedFile] = unchanged.flatMap(f => previous.files.get(f).map(f -> _)).toMap
+    val dropped = previous.files.keySet -- allFiles.toSet
     val newFiles = kept ++ parsed
     // preserve walk order for deterministic last-wins on duplicate sourceUris
     val byUri = allFiles
       .flatMap(newFiles.get)
       .map(idx => idx.slice.sourceUri -> idx.slice)
       .toMap
-    val dropped = previous.files.keySet -- allFiles.toSet
     logger.debug(
       s"Workspace index diff: reused=${kept.size} parsed=${parsed.size} dropped=${dropped.size}"
     )
-    (byUri, WorkspaceIndexState(newFiles, sourceRoots))
+    (byUri, WorkspaceIndexState(newFiles, sourceDirs))
   }
 
+  // TODO maybe extract to ScalacOptionsUtils or similar, for reuse ?
   def semanticdbTargetPaths(options: List[String]): List[os.Path] = {
     // Scala 3: -semanticdb-target:<path> (colon-separated)
     val scala3 = options.collect {
@@ -147,16 +150,16 @@ object SemanticdbIndexing extends StrictLogging {
   def parseSemanticdbFile(
       workspaceRoot: os.Path,
       semanticdbFile: os.Path,
-      sourceRoots: List[os.Path]
+      sourceDirs: List[os.Path]
   ): Option[SemanticdbFileSlice] = {
     try {
       val bytes = os.read.bytes(semanticdbFile)
-      val documents = TextDocuments.parseFrom(bytes)
-      documents.documents.headOption.map { doc =>
-        val sourceUri = NavigationUriUtils.normalizeUri(resolveSourceUri(workspaceRoot, semanticdbFile, doc.uri, sourceRoots))
-        val symbolInfoById = doc.symbols.toList.map(si => si.symbol -> si).toMap
+      val documents = semanticdb.TextDocuments.parseFrom(bytes)
+      documents.documents.headOption.map { semDbDoc =>
+        val sourceUri = NavigationUriUtils.normalizeUri(resolveSourceUri(workspaceRoot, semanticdbFile, semDbDoc.uri, sourceDirs))
+        val symbolInfoById = semDbDoc.symbols.toList.map(si => si.symbol -> si).toMap
 
-        val occurrences = doc.occurrences.toList.flatMap { occ =>
+        val occurrences = semDbDoc.occurrences.toList.flatMap { occ =>
           occ.range.map { range =>
             SemanticdbOccurrence(occ.symbol, toLspRange(range), occ.role.isDefinition)
           }
@@ -256,7 +259,7 @@ object SemanticdbIndexing extends StrictLogging {
       Some(os.RelPath(relSegments.dropRight(1).appended(fileName).mkString("/")))
   }
 
-  private def toLspRange(range: SemanticRange): Range =
+  private def toLspRange(range: semanticdb.Range): Range =
     new Range(
       new Position(range.startLine, range.startCharacter),
       new Position(range.endLine, range.endCharacter)

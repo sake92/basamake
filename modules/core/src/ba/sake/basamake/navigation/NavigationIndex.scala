@@ -10,6 +10,9 @@ import org.eclipse.lsp4j.jsonrpc.messages.Either
 
 final case class SemanticdbOccurrence(symbol: String, range: Range, isDefinition: Boolean)
 
+/** All info we know about a single source file, as extracted from SemanticDB. 
+* This is the unit of indexing and query.
+*/
 final case class SemanticdbFileSlice(
     sourceUri: String,
     occurrences: List[SemanticdbOccurrence],
@@ -119,12 +122,14 @@ final class NavigationIndex(
       buildServer: BuildServer,
       targetIds: List[BuildTargetIdentifier],
       sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]],
+      // TODO put maven GAV too in value
       dependencySourceUrisByTarget: Map[BuildTargetIdentifier, List[String]],
       openUris: Set[String] = Set.empty  // reserved for future two-phase commit
   ): Unit = {
     val buildTargetIds = targetIds.asJava
 
-    // Issue both requests concurrently
+    // TODO make helpers for BSP requests and parallel calls
+    // issue BSP requests concurrently
     val outputPathsFuture = buildServer.buildTargetOutputPaths(new OutputPathsParams(buildTargetIds))
     val scalacOptionsFuture = buildServer match {
       case scalaBuild: ScalaBuildServer =>
@@ -136,8 +141,8 @@ final class NavigationIndex(
     }
 
     var optionRequestsFailed = false
-    val outputRootsByTarget = try {
-      resolveOutputRoots(outputPathsFuture.get(10, TimeUnit.SECONDS))
+    val outputDirsByTarget = try {
+      resolveOutputDirs(outputPathsFuture.get(10, TimeUnit.SECONDS))
     } catch {
       case e: Exception =>
         optionRequestsFailed = true
@@ -161,24 +166,24 @@ final class NavigationIndex(
 
     targetIds.foreach { targetId =>
       val opts = scalaOptionsByTarget.get(targetId)
-      val semanticdbRoots = SemanticdbIndexing.candidateSemanticdbRoots(
-        outputRootsByTarget.getOrElse(targetId, Nil),
+      val semanticdbDirs = SemanticdbIndexing.candidateSemanticdbDirs(
+        outputDirsByTarget.getOrElse(targetId, Nil),
         opts
       )
       val flagsDetected = opts.exists { case (options, _) => SemanticdbIndexing.hasSemanticdbFlags(options) }
+      // TODO use ScalacOptionUtils.hasBestEffortFlag(options)
       val bestEffort = opts.exists { case (options, _) => options.exists(_ == "-Ybest-effort") }
 
-      val sourceRoots = sourceDirsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
+      val sourceDirs = sourceDirsByTarget.getOrElse(targetId, Nil).flatMap(NavigationUriUtils.uriToPathOption)
       val dependencySourceUris = dependencySourceUrisByTarget.getOrElse(targetId, Nil)
-      val dependencySlices =
-        DependencySourceIndexing.indexDependencySources(workspaceRoot, dependencySourceUris, depSliceCache)
+      val dependencySlices = DependencySourceIndexing.indexDependencySources(workspaceRoot, dependencySourceUris, depSliceCache)
 
       val prevWsState = synchronized { workspaceIndexStates.get(targetId) }
-        .getOrElse(SemanticdbIndexing.WorkspaceIndexState(Map.empty, sourceRoots))
+        .getOrElse(SemanticdbIndexing.WorkspaceIndexState(Map.empty, sourceDirs))
       val (workspaceSlices, newWsState) =
-        if semanticdbRoots.nonEmpty then
-          SemanticdbIndexing.indexWorkspaceTargetIncremental(workspaceRoot, semanticdbRoots, sourceRoots, prevWsState)
-        else (Map.empty[String, SemanticdbFileSlice], SemanticdbIndexing.WorkspaceIndexState(Map.empty, sourceRoots))
+        if semanticdbDirs.nonEmpty then
+          SemanticdbIndexing.indexWorkspaceTargetIncremental(workspaceRoot, semanticdbDirs, sourceDirs, prevWsState)
+        else (Map.empty[String, SemanticdbFileSlice], SemanticdbIndexing.WorkspaceIndexState(Map.empty, sourceDirs))
 
       commitRefresh(targetId, flagsDetected, bestEffort, workspaceSlices, dependencySlices, newWsState)
       logger.info(
@@ -271,7 +276,7 @@ final class NavigationIndex(
     owner
   }
 
-  private def resolveOutputRoots(
+  private def resolveOutputDirs(
       result: OutputPathsResult
   ): Map[BuildTargetIdentifier, List[String]] =
     Option(result.getItems)
