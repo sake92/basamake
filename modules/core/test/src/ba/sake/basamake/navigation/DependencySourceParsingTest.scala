@@ -15,10 +15,11 @@ class DependencySourceParsingTest extends FunSuite {
     assert(definitions.exists(d => d.name == "bar" && d.kind == org.eclipse.lsp4j.SymbolKind.Method), clues(definitions))
     assert(definitions.exists(d => d.name == "baz" && d.kind == org.eclipse.lsp4j.SymbolKind.Property), clues(definitions))
 
-    // owner-qualified symbols
+    // canonical semanticdb keys
     val barDef = definitions.find(_.name == "bar")
-    assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
-    assert(barDef.exists(_.ownerName == "Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.symbol == "_empty_/Foo.bar()."), clues(barDef))
+    val bazDef = definitions.find(_.name == "baz")
+    assert(bazDef.exists(_.symbol == "_empty_/Foo.baz."), clues(bazDef))
   }
 
   test("extractDefinitions dispatches to java parser for .java files") {
@@ -31,10 +32,9 @@ class DependencySourceParsingTest extends FunSuite {
     assert(definitions.exists(d => d.name == "bar" && d.kind == org.eclipse.lsp4j.SymbolKind.Method), clues(definitions))
     assert(definitions.exists(d => d.name == "x" && d.kind == org.eclipse.lsp4j.SymbolKind.Field), clues(definitions))
 
-    // Java owner-qualified symbols
+    // Java symbols still old-style until Task 3
     val barDef = definitions.find(_.name == "bar")
     assert(barDef.exists(_.symbol == "Foo.bar"), clues(barDef))
-    assert(barDef.exists(_.ownerName == "Foo.bar"), clues(barDef))
     val xDef = definitions.find(_.name == "x")
     assert(xDef.exists(_.symbol == "Foo.x"), clues(xDef))
   }
@@ -56,11 +56,9 @@ class DependencySourceParsingTest extends FunSuite {
     )
 
     val fooDef = definitions.find(_.name == "Foo")
-    assert(fooDef.exists(_.symbol == "com/example/Foo"), clues(fooDef))
-    assert(fooDef.exists(_.ownerName == "Foo"), clues(fooDef))
+    assert(fooDef.exists(_.symbol == "com/example/Foo#"), clues(fooDef))
     val barDef = definitions.find(_.name == "bar")
-    assert(barDef.exists(_.symbol == "com/example/Foo.bar"), clues(barDef))
-    assert(barDef.exists(_.ownerName == "Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.symbol == "com/example/Foo#bar()."), clues(barDef))
   }
 
   test("symbol is bare name for scala files without package") {
@@ -69,8 +67,8 @@ class DependencySourceParsingTest extends FunSuite {
       "class Foo"
     )
 
-    assertEquals(definitions.map(_.symbol), List("Foo"))
-    assertEquals(definitions.map(_.ownerName), List("Foo"))
+    // class FoFo + primary constructor (constructors always emitted)
+    assertEquals(definitions.map(_.symbol), List("_empty_/Foo#", "_empty_/Foo#`<init>`()."))
   }
 
   test("parses Scala 2.13 syntax via dialect fallback") {
@@ -78,7 +76,7 @@ class DependencySourceParsingTest extends FunSuite {
     val definitions = DependencySourceParsing.extractDefinitions("Foo.scala", scala2Code)
     assert(definitions.nonEmpty, clues(definitions))
     assert(definitions.exists(_.name == "Foo"), clues(definitions))
-    assert(definitions.exists(d => d.name == "foo" && d.symbol == "Foo.foo"), clues(definitions))
+    assert(definitions.exists(d => d.name == "foo" && d.symbol == "_empty_/Foo#foo()."), clues(definitions))
   }
 
   test("parses Scala 3 givens and enums") {
@@ -94,10 +92,9 @@ class DependencySourceParsingTest extends FunSuite {
     assert(definitions.exists(d => d.name == "Blue" && d.kind == org.eclipse.lsp4j.SymbolKind.EnumMember), clues(definitions))
     assert(definitions.exists(d => d.name == "x"), clues(definitions))
 
-    // enum cases have owner-qualified symbols
+    // enum cases have canonical symbols
     val redDef = definitions.find(_.name == "Red")
-    assert(redDef.exists(_.symbol == "pkg/Color.Red"), clues(redDef))
-    assert(redDef.exists(_.ownerName == "Color.Red"), clues(redDef))
+    assert(redDef.exists(_.symbol == "pkg/Color#Red."), clues(redDef))
   }
 
   test("skips local defs inside method bodies") {
@@ -120,8 +117,7 @@ class DependencySourceParsingTest extends FunSuite {
     )
 
     val bazDef = definitions.find(_.name == "baz")
-    assert(bazDef.exists(_.symbol == "com/example/Outer.Inner.baz"), clues(bazDef))
-    assert(bazDef.exists(_.ownerName == "Outer.Inner.baz"), clues(bazDef))
+    assert(bazDef.exists(_.symbol == "com/example/Outer#Inner.baz()."), clues(bazDef))
   }
 
   test("handles brace-delimited nested packages") {
@@ -129,9 +125,9 @@ class DependencySourceParsingTest extends FunSuite {
     val definitions = DependencySourceParsing.extractDefinitions("Foo.scala", code)
 
     val fooDef = definitions.find(_.name == "Foo")
-    assert(fooDef.exists(_.symbol == "com/example/Foo"), clues(fooDef))
+    assert(fooDef.exists(_.symbol == "com/example/Foo#"), clues(fooDef))
     val barDef = definitions.find(_.name == "bar")
-    assert(barDef.exists(_.symbol == "com/example/Foo.bar"), clues(barDef))
+    assert(barDef.exists(_.symbol == "com/example/Foo#bar()."), clues(barDef))
   }
 
   test("Java methods and fields have owner-qualified symbols") {
@@ -154,7 +150,6 @@ class DependencySourceParsingTest extends FunSuite {
 
     val runDef = definitions.find(_.name == "run")
     assert(runDef.exists(_.symbol == "Outer.Inner.run"), clues(runDef))
-    assert(runDef.exists(_.ownerName == "Outer.Inner.run"), clues(runDef))
   }
 
   test("Java enum constants have owner-qualified symbols") {
@@ -165,7 +160,6 @@ class DependencySourceParsingTest extends FunSuite {
 
     val redDef = definitions.find(_.name == "RED")
     assert(redDef.exists(_.symbol == "Color.RED"), clues(redDef))
-    assert(redDef.exists(_.ownerName == "Color.RED"), clues(redDef))
     assert(redDef.exists(_.kind == org.eclipse.lsp4j.SymbolKind.EnumMember), clues(redDef))
   }
 
@@ -186,8 +180,7 @@ class DependencySourceParsingTest extends FunSuite {
 
     val seqDefs = definitions.filter(_.name == "Seq")
     assertEquals(seqDefs.size, 2, clues(definitions))
-    assert(seqDefs.forall(_.symbol == "scala/package.Seq"), clues(seqDefs))
-    assert(seqDefs.forall(_.ownerName == "package.Seq"), clues(seqDefs))
+    assertEquals(seqDefs.map(_.symbol).toSet, Set("scala/package.Seq#", "scala/package.Seq."))
   }
 
   test("top-level defs in package.scala indexed under <pkg>/package.* (Bug B)") {
@@ -198,7 +191,8 @@ class DependencySourceParsingTest extends FunSuite {
 
     val errorDef = definitions.find(_.name == "error")
     assert(errorDef.nonEmpty, clues(definitions))
-    assertEquals(errorDef.get.symbol, "scala/compiletime/package.error", clues(errorDef))
+    // package.scala → top-level defs wrapped under package.
+    assertEquals(errorDef.get.symbol, "scala/compiletime/package.error().", clues(errorDef))
   }
 
   test("top-level defs in X.scala indexed under <pkg>/X$package.*, classes unchanged (Bug C)") {
@@ -209,11 +203,11 @@ class DependencySourceParsingTest extends FunSuite {
 
     val fooDef = definitions.find(_.name == "foo")
     assert(fooDef.nonEmpty, clues(definitions))
-    assertEquals(fooDef.get.symbol, "a/b/Foo$package.foo", clues(fooDef))
+    assertEquals(fooDef.get.symbol, "a/b/Foo$package.foo().", clues(fooDef))
 
     val cDef = definitions.find(_.name == "C")
     assert(cDef.nonEmpty, clues(definitions))
-    assertEquals(cDef.get.symbol, "a/b/C", clues(cDef))
+    assertEquals(cDef.get.symbol, "a/b/C#", clues(cDef))
   }
 
   test("empty fileName → no top-level wrapping (guards test-compat path)") {
@@ -224,7 +218,7 @@ class DependencySourceParsingTest extends FunSuite {
 
     val fooDef = definitions.find(_.name == "foo")
     assert(fooDef.nonEmpty, clues(definitions))
-    assertEquals(fooDef.get.symbol, "a/b/foo", clues(fooDef))
+    assertEquals(fooDef.get.symbol, "a/b/foo().", clues(fooDef))
   }
 
   // ── Canonical SemanticDB key contract tests (will fail until Tasks 2-3) ──
@@ -246,10 +240,12 @@ class DependencySourceParsingTest extends FunSuite {
     val symbols = definitions.map(_.symbol).toSet
     assertEquals(symbols, Set(
       "com/example/Outer#",
+      "com/example/Outer#`<init>`().",
       "com/example/Outer#field.",
       "com/example/Outer#run().",
       "com/example/Outer#run(+1).",
       "com/example/Outer#Inner#",
+      "com/example/Outer#Inner#`<init>`().",
       "com/example/Api.",
       "com/example/Api.apply()."
     ), clues(definitions))
@@ -264,6 +260,7 @@ class DependencySourceParsingTest extends FunSuite {
     val symbols = definitions.map(_.symbol).toSet
     assertEquals(symbols, Set(
       "_empty_/Foo#",
+      "_empty_/Foo#`<init>`().",
       "_empty_/Foo#run()."
     ), clues(definitions))
   }
@@ -303,7 +300,7 @@ class DependencySourceParsingTest extends FunSuite {
 
     val fooDef = definitions.find(_.name == "foo")
     assert(fooDef.nonEmpty, clues(definitions))
-    assertEquals(fooDef.get.symbol, "a/b/Foo$package.foo.", clues(fooDef))
+    assertEquals(fooDef.get.symbol, "a/b/Foo$package.foo().", clues(fooDef))
 
     val cDef = definitions.find(_.name == "C")
     assert(cDef.nonEmpty, clues(definitions))
@@ -318,7 +315,8 @@ class DependencySourceParsingTest extends FunSuite {
 
     val xDef = definitions.find(_.name == "x")
     assert(xDef.nonEmpty, clues(definitions))
-    assertEquals(xDef.get.symbol, "pkg/x.", clues(xDef))
+    // given in Givens.scala → wrapped under Givens$package
+    assertEquals(xDef.get.symbol, "pkg/Givens$package.x.", clues(xDef))
   }
 
   test("scala constructors: primary and overloaded") {
@@ -357,6 +355,7 @@ class DependencySourceParsingTest extends FunSuite {
     val symbols = definitions.map(_.symbol).toSet
     assertEquals(symbols, Set(
       "com/example/Outer#",
+      "com/example/Outer#`<init>`().",
       "com/example/Outer#Inner.",
       "com/example/Outer#Inner.`++`().",
       "com/example/Outer#Inner.`++`(+1)."

@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation
 
 import java.util.concurrent.atomic.AtomicLong
+import scala.collection.mutable
 import scala.meta.*
 import scala.meta.dialects.Scala3Future
 import scala.meta.dialects.Scala213
@@ -38,7 +39,6 @@ object ScalaSourceParser extends StrictLogging {
             parseFailed.incrementAndGet()
             val fileInfo = if fileName.nonEmpty then s" [$fileName]" else ""
             val preview = if content.length > 80 then content.take(80) + "..." else content
-            // Capture checking (^) handled via Scala3Future; debug-level log for genuinely unparsable files
             logger.debug(s"Both Scala3Future and Scala 2.13 parse failed for source$fileInfo: $msg2")
             List.empty
   }
@@ -65,127 +65,223 @@ object ScalaSourceParser extends StrictLogging {
 
   private def extractFromSource(source: Source, fileName: String): List[SourceDefinition] = {
     val wrapper = topLevelOwnerWrapper(fileName)
-    extractFromStats(source.stats, "", Nil, wrapper)
+    extractFromStats(source.stats, SemanticdbSymbol.packageOwner(Nil), None, wrapper)
   }
 
+  /** Like [[extractFromStats]] but for package-scoped definitions where the package
+    * provides the owner prefix. */
   private def extractFromStats(
       stats: List[Stat],
-      pkgPrefix: String,
-      ownerChain: List[String],
+      owner: String,
+      pkgPrefix: Option[String],
       wrapper: Option[String]
   ): List[SourceDefinition] = {
-    stats.flatMap {
+    val result = List.newBuilder[SourceDefinition]
+
+    // Collect all direct-child method and constructor declarations for overload tagging
+    val overloadIndices = computeOverloadIndices(stats)
+
+    stats.foreach {
       case p: Pkg =>
         val relPkg = flattenPackageRef(p.ref)
-        val newPkg =
-          if relPkg.isEmpty then pkgPrefix
-          else if pkgPrefix.nonEmpty then pkgPrefix + relPkg.replace('.', '/') + "/"
-          else relPkg.replace('.', '/') + "/"
-        extractFromStats(p.stats, newPkg, ownerChain, wrapper)
+        val newPkg = pkgPrefix match
+          case Some(prefix) =>
+            if relPkg.isEmpty then prefix
+            else prefix + relPkg.replace('.', '/') + "/"
+          case None =>
+            if relPkg.isEmpty then ""
+            else relPkg.replace('.', '/') + "/"
+        val pkgOwner = if newPkg.isEmpty then SemanticdbSymbol.packageOwner(Nil) else newPkg
+        result ++= extractFromStats(p.stats, pkgOwner, Some(newPkg), wrapper)
 
       case d: Pkg.Object =>
-        val newPkg = pkgPrefix + d.name.value + "/"
-        val childChain = ownerChain :+ "package"
-        extractFromStats(d.templ.stats, newPkg, childChain, wrapper)
+        // Package objects define a new package scope. The object name (e.g. "scala")
+        // determines the package prefix for children. Build the package owner
+        // from the current pkgPrefix + object name, then append "package.".
+        val newPkg = pkgPrefix match
+          case Some(prefix) =>
+            s"$prefix${d.name.value}/"
+          case None =>
+            s"${d.name.value}/"
+        val objOwner = SemanticdbSymbol.termSymbol(newPkg, "package")
+        result ++= extractFromStats(d.templ.stats, objOwner, Some(newPkg), wrapper)
 
       case d: Defn.Class =>
-        val defn = makeDef(SymbolKind.Class, d.name, pkgPrefix, ownerChain)
-        val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
+        val defn = typeDef(SymbolKind.Class, d.name, owner)
+        result += defn
+        // Constructors use the class symbol (type descriptor) as owner
+        val ctors = collectConstructors(d, defn.symbol)
+        ctors.foreach(result += _)
+        // Nested: class children use the class as owner
+        val childOwner = SemanticdbSymbol.typeSymbol(owner, d.name.value)
+        result ++= extractFromStats(d.templ.stats, childOwner, pkgPrefix, wrapper)
 
       case d: Defn.Trait =>
-        val defn = makeDef(SymbolKind.Interface, d.name, pkgPrefix, ownerChain)
-        val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
+        val defn = typeDef(SymbolKind.Interface, d.name, owner)
+        result += defn
+        val childOwner = SemanticdbSymbol.typeSymbol(owner, d.name.value)
+        result ++= extractFromStats(d.templ.stats, childOwner, pkgPrefix, wrapper)
 
       case d: Defn.Object =>
-        val defn = makeDef(SymbolKind.Object, d.name, pkgPrefix, ownerChain)
-        val childChain = ownerChain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
+        val defn = termDef(SymbolKind.Object, d.name, owner)
+        result += defn
+        val childOwner = SemanticdbSymbol.termSymbol(owner, d.name.value)
+        result ++= extractFromStats(d.templ.stats, childOwner, pkgPrefix, wrapper)
 
       case d: Defn.Enum =>
-        val defn = makeDef(SymbolKind.Enum, d.name, pkgPrefix, ownerChain)
-        val childChain = ownerChain :+ d.name.value
-        val inner = extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
-        defn :: inner
+        val defn = typeDef(SymbolKind.Enum, d.name, owner)
+        result += defn
+        val childOwner = SemanticdbSymbol.typeSymbol(owner, d.name.value)
+        result ++= extractFromStats(d.templ.stats, childOwner, pkgPrefix, wrapper)
 
       case d: Defn.EnumCase =>
-        List(makeDef(SymbolKind.EnumMember, d.name, pkgPrefix, ownerChain))
+        result += termDef(SymbolKind.EnumMember, d.name, owner)
 
       case d: Defn.RepeatedEnumCase =>
-        // case Red, Blue — multiple cases in one declaration
-        d.cases.toList.map { name =>
-          makeDef(SymbolKind.EnumMember, name, pkgPrefix, ownerChain)
+        d.cases.toList.foreach { name =>
+          result += termDef(SymbolKind.EnumMember, name, owner)
         }
 
       case d: Defn.Given if hasName(d) =>
-        val chain = wrapOwner(ownerChain, wrapper)
-        val defn = makeDef(SymbolKind.Interface, d.name, pkgPrefix, chain)
-        val childChain = chain :+ d.name.value
-        defn :: extractFromStats(d.templ.stats, pkgPrefix, childChain, wrapper)
+        val chain = wrapOwner(owner, wrapper)
+        val defn = termDef(SymbolKind.Interface, d.name, chain)
+        result += defn
+        val childOwner = SemanticdbSymbol.termSymbol(chain, d.name.value)
+        result ++= extractFromStats(d.templ.stats, childOwner, pkgPrefix, wrapper)
 
       case d: Defn.GivenAlias if hasName(d) =>
-        List(makeDef(SymbolKind.Interface, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        result += termDef(SymbolKind.Interface, d.name, wrapOwner(owner, wrapper))
 
       case d: Defn.Def =>
-        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        val idx = overloadIndices.getOrElse(d, 0)
+        result += methodDef(SymbolKind.Method, d.name, wrapOwner(owner, wrapper), idx)
 
       case d: Defn.Macro =>
-        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        val idx = overloadIndices.getOrElse(d, 0)
+        result += methodDef(SymbolKind.Method, d.name, wrapOwner(owner, wrapper), idx)
 
       case d: Defn.Type =>
-        List(makeDef(SymbolKind.TypeParameter, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        result += typeDef(SymbolKind.TypeParameter, d.name, wrapOwner(owner, wrapper))
 
       case d: Defn.Val =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Property, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
+        d.pats.collect { case Pat.Var(name) =>
+          result += termDef(SymbolKind.Property, name, wrapOwner(owner, wrapper))
+        }
 
       case d: Defn.Var =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Variable, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
+        d.pats.collect { case Pat.Var(name) =>
+          result += termDef(SymbolKind.Variable, name, wrapOwner(owner, wrapper))
+        }
 
       case d: Decl.Val =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Property, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
+        d.pats.collect { case Pat.Var(name) =>
+          result += termDef(SymbolKind.Property, name, wrapOwner(owner, wrapper))
+        }
 
       case d: Decl.Var =>
-        d.pats.collect { case Pat.Var(name) => makeDef(SymbolKind.Variable, name, pkgPrefix, wrapOwner(ownerChain, wrapper)) }
+        d.pats.collect { case Pat.Var(name) =>
+          result += termDef(SymbolKind.Variable, name, wrapOwner(owner, wrapper))
+        }
 
       case d: Decl.Def =>
-        List(makeDef(SymbolKind.Method, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        val idx = overloadIndices.getOrElse(d, 0)
+        result += methodDef(SymbolKind.Method, d.name, wrapOwner(owner, wrapper), idx)
 
       case d: Decl.Type =>
-        List(makeDef(SymbolKind.TypeParameter, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        result += typeDef(SymbolKind.TypeParameter, d.name, wrapOwner(owner, wrapper))
 
       case d: Decl.Given if hasName(d) =>
-        List(makeDef(SymbolKind.Interface, d.name, pkgPrefix, wrapOwner(ownerChain, wrapper)))
+        result += termDef(SymbolKind.Interface, d.name, wrapOwner(owner, wrapper))
 
       case _ =>
-        Nil
+    }
+
+    result.result()
+  }
+
+  /** Compute lexical overload indices for methods within a flat list of stats
+    * under the same owner. Methods are grouped by encoded (escaped) name,
+    * sorted by source position, and assigned a 0-based index.
+    */
+  private def computeOverloadIndices(stats: List[Stat]): Map[Stat, Int] = {
+    case class MethodEntry(name: String, stat: Stat, posStart: Int)
+    val methodEntries = stats.flatMap {
+      case d: Defn.Def   => Some(MethodEntry(d.name.value, d, d.pos.start))
+      case d: Decl.Def   => Some(MethodEntry(d.name.value, d, d.pos.start))
+      case d: Defn.Macro => Some(MethodEntry(d.name.value, d, d.pos.start))
+      case _             => None
+    }
+    methodEntries
+      .groupBy(_.name)
+      .flatMap { case (_, entries) =>
+        val sorted = entries.sortBy(_.posStart)
+        sorted.zipWithIndex.map { case (entry, idx) =>
+          entry.stat -> idx
+        }
+      }
+  }
+
+  /** Collect constructor definitions from a class: primary + secondary,
+    * sorted by position with overload indices assigned. */
+  private def collectConstructors(
+      d: Defn.Class,
+      classOwner: String
+  ): List[SourceDefinition] = {
+    // Primary constructor uses the class name position
+    val primaryProto = ConstructorProto(toLspRange(d.name.pos))
+    val secondaryProtos = d.templ.stats.collect {
+      case c: Ctor.Secondary =>
+        ConstructorProto(toLspRange(c.name.pos))
+    }
+    // Sort by position and assign overload indices
+    val all = (primaryProto :: secondaryProtos).sortBy { p =>
+      p.range.getStart.getLine * 100000L + p.range.getStart.getCharacter
+    }
+    all.zipWithIndex.map { case (proto, idx) =>
+      SourceDefinition(
+        name = "<init>",
+        kind = SymbolKind.Constructor,
+        symbol = SemanticdbSymbol.constructorSymbol(classOwner, idx),
+        range = proto.range
+      )
     }
   }
 
-  private def wrapOwner(ownerChain: List[String], wrapper: Option[String]): List[String] =
-    if ownerChain.isEmpty then wrapper.toList else ownerChain
+  private case class ConstructorProto(range: Range)
 
-  private def makeDef(
-      kind: SymbolKind,
-      name: meta.Name,
-      pkgPrefix: String,
-      ownerChain: List[String]
-  ): SourceDefinition = {
-    val ownerPrefix = ownerChain.mkString(".")
-    val symbol =
-      if ownerPrefix.nonEmpty then s"$pkgPrefix$ownerPrefix.${name.value}"
-      else s"$pkgPrefix${name.value}"
-    val ownerName =
-      if ownerPrefix.nonEmpty then s"$ownerPrefix.${name.value}"
-      else name.value
+  private def wrapOwner(owner: String, wrapper: Option[String]): String =
+    wrapper match
+      case None => owner
+      case Some(w) if owner.endsWith("/") =>
+        // Owner is a package → def is top-level → apply file-level wrapper
+        SemanticdbSymbol.termSymbol(owner, w)
+      case _ =>
+        // Owner is a class/object → def has explicit owner → no wrapping
+        owner
+
+  private def typeDef(kind: SymbolKind, name: meta.Name, owner: String): SourceDefinition =
     SourceDefinition(
       name = name.value,
       kind = kind,
-      symbol = symbol,
-      ownerName = ownerName,
+      symbol = SemanticdbSymbol.typeSymbol(owner, name.value),
       range = toLspRange(name.pos)
     )
-  }
+
+  private def termDef(kind: SymbolKind, name: meta.Name, owner: String): SourceDefinition =
+    SourceDefinition(
+      name = name.value,
+      kind = kind,
+      symbol = SemanticdbSymbol.termSymbol(owner, name.value),
+      range = toLspRange(name.pos)
+    )
+
+  private def methodDef(kind: SymbolKind, name: meta.Name, owner: String, overloadIndex: Int): SourceDefinition =
+    SourceDefinition(
+      name = name.value,
+      kind = kind,
+      symbol = SemanticdbSymbol.methodSymbol(owner, name.value, overloadIndex),
+      range = toLspRange(name.pos)
+    )
 
   private def flattenPackageRef(ref: Term): String = {
     val parts = List.newBuilder[String]

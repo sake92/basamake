@@ -48,7 +48,7 @@ class ScalaSourceParserRealisticTest extends FunSuite {
     val defs = ScalaSourceParser.extractDefinitions(code)
     assert(defs.exists(_.name == "NamedTuple"), clues(defs))
     // NamedTuple object has package scala prefix
-    assert(defs.exists(d => d.name == "NamedTuple" && d.symbol == "scala/NamedTuple"), clues(defs))
+    assert(defs.exists(d => d.name == "NamedTuple" && d.symbol == "scala/NamedTuple."), clues(defs))
   }
 
   test("parses @experimental annotation + class") {
@@ -199,7 +199,7 @@ class ScalaSourceParserRealisticTest extends FunSuite {
         |""".stripMargin
     val defs = ScalaSourceParser.extractDefinitions(code)
     assert(defs.exists(_.name == "Bar"), clues(defs))
-    assert(defs.exists(d => d.name == "copy" && d.symbol == "foo/Bar.copy"), clues(defs))
+    assert(defs.exists(d => d.name == "copy" && d.symbol == "foo/Bar.copy()."), clues(defs))
   }
 
   // ── Graceful degradation for genuinely unparsable input ──

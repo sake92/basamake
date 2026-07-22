@@ -7,7 +7,6 @@ final case class SourceDefinition(
     name: String,
     kind: SymbolKind,
     symbol: String,
-    ownerName: String,
     range: Range
 )
 

@@ -41,11 +41,8 @@ object JavaSourceParser {
     val symbol =
       if ownerPrefix.nonEmpty then s"$pkgPrefix$ownerPrefix.$name"
       else s"$pkgPrefix$name"
-    val ownerName =
-      if ownerPrefix.nonEmpty then s"$ownerPrefix.$name"
-      else name
 
-    builder += SourceDefinition(name, kind, symbol, ownerName, nameRange(t.getName))
+    builder += SourceDefinition(name, kind, symbol, nameRange(t.getName))
 
     val childChain = ownerChain :+ name
 
@@ -55,8 +52,7 @@ object JavaSourceParser {
         enumDecl.getEntries.forEach { entry =>
           val entryName = entry.getNameAsString
           val entrySymbol = s"${symbol}.$entryName"
-          val entryOwnerName = s"${ownerName}.$entryName"
-          builder += SourceDefinition(entryName, SymbolKind.EnumMember, entrySymbol, entryOwnerName, nameRange(entry.getName))
+          builder += SourceDefinition(entryName, SymbolKind.EnumMember, entrySymbol, nameRange(entry.getName))
         }
       case _ =>
     }
@@ -67,15 +63,13 @@ object JavaSourceParser {
         case m: MethodDeclaration =>
           val mName = m.getNameAsString
           val mSymbol = s"${symbol}.$mName"
-          val mOwnerName = s"${ownerName}.$mName"
-          builder += SourceDefinition(mName, SymbolKind.Method, mSymbol, mOwnerName, nameRange(m.getName))
+          builder += SourceDefinition(mName, SymbolKind.Method, mSymbol, nameRange(m.getName))
 
         case f: FieldDeclaration =>
           f.getVariables.forEach { v =>
             val vName = v.getNameAsString
             val vSymbol = s"${symbol}.$vName"
-            val vOwnerName = s"${ownerName}.$vName"
-            builder += SourceDefinition(vName, SymbolKind.Field, vSymbol, vOwnerName, nameRange(v.getName))
+            builder += SourceDefinition(vName, SymbolKind.Field, vSymbol, nameRange(v.getName))
           }
 
         case nested: TypeDeclaration[?] =>
