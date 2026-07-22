@@ -1,0 +1,77 @@
+package ba.sake.basamake.navigation
+
+/** Pure SemanticDB symbol encoder. Produces canonical global symbols as specified by
+  * the SemanticDB v4 specification:
+  *   https://github.com/scalameta/scalameta/blob/main/docs/semanticdb/specification.md
+  *
+  * This encoder is used only by dependency-source parsers (ScalaSourceParser,
+  * JavaSourceParser) to synthesize definition keys that match compiler-produced
+  * SemanticDB symbols byte-for-byte.
+  *
+  * Names that are not valid Java identifiers are backtick-escaped per the spec.
+  * For example `<init>` becomes `` `<init>` `` and operator names like `::` become `` `::` ``.
+  */
+object SemanticdbSymbol {
+
+  /** Returns true if `name` can appear unescaped in a SemanticDB symbol.
+    * SemanticDB only backtick-escapes names containing non-identifier characters
+    * (e.g. `<init>`, `::`). Names made of identifier characters, including Java
+    * keywords like `package`, are NOT escaped — they are valid symbol names.
+    *
+    * Rule: first character must be a Java identifier start (letter, _, $),
+    * remaining characters must be Java identifier parts (letter, digit, _, $).
+    */
+  def isJavaIdentifier(name: String): Boolean =
+    if name.isEmpty then false
+    else
+      Character.isJavaIdentifierStart(name.codePointAt(0))
+      && name.codePoints().allMatch(Character.isJavaIdentifierPart(_))
+
+  /** Escapes a source-level name for use within a SemanticDB descriptor.
+    * If the name is a valid Java identifier, returns it unchanged.
+    * Otherwise wraps it in backticks. Does not double-wrap names that
+    * already start and end with backticks.
+    */
+  def escapedName(name: String): String =
+    if name.nonEmpty && name.head == '`' && name.last == '`' then name
+    else if isJavaIdentifier(name) then name
+    else s"`$name`"
+
+  /** Encodes a package owner prefix from one or more package segments.
+    * Example: `packageOwner(List("com", "example"))` → `"com/example/"`
+    * Example: `packageOwner(Nil)` → `"_empty_/"`
+    */
+  def packageOwner(segments: List[String]): String =
+    if segments.isEmpty then "_empty_/"
+    else segments.mkString("", "/", "/")
+
+  /** Appends a type descriptor (`#`) to an owner.
+    * Example: `typeSymbol("com/example/", "Outer")` → `"com/example/Outer#"`
+    */
+  def typeSymbol(owner: String, name: String): String =
+    s"$owner${escapedName(name)}#"
+
+  /** Appends a term descriptor (`.`) to an owner.
+    * Example: `termSymbol("com/example/Outer#", "field")` → `"com/example/Outer#field."`
+    */
+  def termSymbol(owner: String, name: String): String =
+    s"$owner${escapedName(name)}."
+
+  /** Appends a method descriptor (`().` or `(+N).`) to an owner.
+    * `overloadIndex` 0 → `().`, 1 → `(+1).`, etc.
+    * Example: `methodSymbol("com/example/Outer#", "run", 0)` → `"com/example/Outer#run()."`
+    * Example: `methodSymbol("com/example/Outer#", "run", 1)` → `"com/example/Outer#run(+1)."`
+    */
+  def methodSymbol(owner: String, name: String, overloadIndex: Int): String =
+    val disambiguator = if overloadIndex == 0 then "" else s"+$overloadIndex"
+    s"$owner${escapedName(name)}($disambiguator)."
+
+  /** Appends a constructor descriptor (`` `<init>`().`` or `` `<init>`(+N).``) to an owner.
+    * `overloadIndex` 0 → `` `<init>`().``, 1 → `` `<init>`(+1).``, etc.
+    */
+  def constructorSymbol(owner: String, overloadIndex: Int): String =
+    val disambiguator = if overloadIndex == 0 then "" else s"+$overloadIndex"
+    s"$owner${escapedName("<init>")}($disambiguator)."
+
+
+}

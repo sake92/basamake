@@ -226,4 +226,140 @@ class DependencySourceParsingTest extends FunSuite {
     assert(fooDef.nonEmpty, clues(definitions))
     assertEquals(fooDef.get.symbol, "a/b/foo", clues(fooDef))
   }
+
+  // ── Canonical SemanticDB key contract tests (will fail until Tasks 2-3) ──
+
+  test("scala package-scoped class emits canonical keys") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Outer.scala",
+      """package com.example
+        |class Outer {
+        |  val field = 1
+        |  def run(): Unit = ()
+        |  def run(x: Int): Unit = ()
+        |  class Inner
+        |}
+        |object Api { def apply(): Api = new Api }
+        |""".stripMargin
+    )
+
+    val symbols = definitions.map(_.symbol).toSet
+    assertEquals(symbols, Set(
+      "com/example/Outer#",
+      "com/example/Outer#field.",
+      "com/example/Outer#run().",
+      "com/example/Outer#run(+1).",
+      "com/example/Outer#Inner#",
+      "com/example/Api.",
+      "com/example/Api.apply()."
+    ), clues(definitions))
+  }
+
+  test("scala default-package class emits _empty_/ owner") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.scala",
+      "class Foo { def run = 1 }"
+    )
+
+    val symbols = definitions.map(_.symbol).toSet
+    assertEquals(symbols, Set(
+      "_empty_/Foo#",
+      "_empty_/Foo#run()."
+    ), clues(definitions))
+  }
+
+  test("java default-package class emits _empty_/ owner") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.java",
+      "class Foo { void run() {} }"
+    )
+
+    val symbols = definitions.map(_.symbol).toSet
+    assertEquals(symbols, Set(
+      "_empty_/Foo#",
+      "_empty_/Foo#run()."
+    ), clues(definitions))
+  }
+
+  test("scala package object members emit canonical keys with package. owner") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "package.scala",
+      "package object scala { type Seq[+A] = collection.immutable.Seq[A]; val Seq = collection.immutable.Seq }"
+    )
+
+    val seqDefs = definitions.filter(_.name == "Seq")
+    assertEquals(seqDefs.size, 2, clues(definitions))
+    assertEquals(seqDefs.map(_.symbol).toSet, Set(
+      "scala/package.Seq#",  // type alias → type descriptor
+      "scala/package.Seq."   // val → term descriptor
+    ), clues(seqDefs))
+  }
+
+  test("scala top-level defs under X$package owner emit canonical keys") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.scala",
+      "package a.b\ndef foo = 1\nclass C"
+    )
+
+    val fooDef = definitions.find(_.name == "foo")
+    assert(fooDef.nonEmpty, clues(definitions))
+    assertEquals(fooDef.get.symbol, "a/b/Foo$package.foo.", clues(fooDef))
+
+    val cDef = definitions.find(_.name == "C")
+    assert(cDef.nonEmpty, clues(definitions))
+    assertEquals(cDef.get.symbol, "a/b/C#", clues(cDef))
+  }
+
+  test("scala named given emits term descriptor") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Givens.scala",
+      "package pkg\ngiven x: Int = 1"
+    )
+
+    val xDef = definitions.find(_.name == "x")
+    assert(xDef.nonEmpty, clues(definitions))
+    assertEquals(xDef.get.symbol, "pkg/x.", clues(xDef))
+  }
+
+  test("scala constructors: primary and overloaded") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Foo.scala",
+      """package com.example
+        |class Foo(x: Int) {
+        |  def this() = this(0)
+        |  def this(y: Int, z: Int) = this(y + z)
+        |}
+        |""".stripMargin
+    )
+
+    val symbols = definitions.map(_.symbol).toSet
+    assertEquals(symbols, Set(
+      "com/example/Foo#",
+      "com/example/Foo#`<init>`().",
+      "com/example/Foo#`<init>`(+1).",
+      "com/example/Foo#`<init>`(+2)."
+    ), clues(definitions))
+  }
+
+  test("scala nested and operator symbols") {
+    val definitions = DependencySourceParsing.extractDefinitions(
+      "Ops.scala",
+      """package com.example
+        |class Outer {
+        |  object Inner {
+        |    def ++(x: Int): Int = x
+        |    def ++(x: Int, y: Int): Int = x + y
+        |  }
+        |}
+        |""".stripMargin
+    )
+
+    val symbols = definitions.map(_.symbol).toSet
+    assertEquals(symbols, Set(
+      "com/example/Outer#",
+      "com/example/Outer#Inner.",
+      "com/example/Outer#Inner.`++`().",
+      "com/example/Outer#Inner.`++`(+1)."
+    ), clues(definitions))
+  }
 }
