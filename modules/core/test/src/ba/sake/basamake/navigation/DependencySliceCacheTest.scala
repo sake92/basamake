@@ -78,7 +78,7 @@ class DependencySliceCacheTest extends FunSuite {
       val r = DependencySourceIndexing.indexDependencySources(tmp, List(uri), cache)
 
       val symbols = r.flatMap(_.symbolDefinitions.keys).toSet
-      val missing = (1 to count).map(i => s"Obj$i").filterNot(symbols.contains)
+      val missing = (1 to count).map(i => s"_empty_/Obj$i.").filterNot(symbols.contains)
       assertEquals(missing.toList, Nil)
     } finally os.remove.all(tmp)
   }

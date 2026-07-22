@@ -164,19 +164,19 @@ object SemanticdbIndexing extends StrictLogging {
 
         val definitions = occurrences
           .filter(_.isDefinition)
+          .filter(_.symbol.nonEmpty)
           .flatMap { occ =>
             val loc = new Location(sourceUri, occ.range)
-            val keys = (occ.symbol +: NavigationSymbolLookup.candidateSymbolKeys(occ.symbol)).distinct
-            keys.map(_ -> loc)
+            Some(occ.symbol -> loc)
           }
           .groupMap(_._1)(_._2)
 
         val references = occurrences
           .filterNot(_.isDefinition)
+          .filter(_.symbol.nonEmpty)
           .flatMap { occ =>
             val loc = new Location(sourceUri, occ.range)
-            val keys = (occ.symbol +: NavigationSymbolLookup.candidateSymbolKeys(occ.symbol)).distinct
-            keys.map(_ -> loc)
+            Some(occ.symbol -> loc)
           }
           .groupMap(_._1)(_._2)
 

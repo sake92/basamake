@@ -154,8 +154,7 @@ object DependencySourceIndexing extends StrictLogging {
       val symbolDefinitions =
         definitions.flatMap { defn =>
           val loc = new Location(sourceUri, defn.range)
-          val keys = (defn.symbol +: NavigationSymbolLookup.candidateSymbolKeys(defn.symbol)).distinct
-          keys.map(_ -> loc)
+          Some(defn.symbol -> loc)
         }.groupMap(_._1)(_._2)
       val documentSymbols =
         definitions.flatMap { defn =>
