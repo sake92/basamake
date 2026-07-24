@@ -80,11 +80,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         val line   = params.getPosition.getLine
         val char   = params.getPosition.getCharacter
 
-        val maybeLocation: Option[Location] = for
-            symbol   <- workspaceIndex.findSymbolAt(path, line, char)
-            location <- workspaceIndex.gotoDefinition(symbol)
-        yield toLspLocation(location)
-        val locationsList = maybeLocation.toList.asJava
+        val locationsList = workspaceIndex.findSymbolAt(path, line, char)
+          .flatMap(symbol => workspaceIndex.gotoDefinition(symbol))
+          .map(toLspLocation)
+          .distinct
+          .asJava
         org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locationsList)
   }
 

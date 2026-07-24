@@ -12,25 +12,32 @@ private[navigation] final class OverloadTracker {
 
 /** Stack-based scope tracker for same-file reference resolution.
   * Each scope maps simple names to full SemanticDB symbols.
+  * Term and type namespaces are tracked separately so companions coexist.
   * Imports store base paths for constructing symbols on resolution. */
 private[navigation] final class ScopeTracker(parent: Option[ScopeTracker]) {
-  private val entries = mutable.Map.empty[String, Symbol]
+  private val termEntries = mutable.Map.empty[String, Symbol]
+  private val typeEntries = mutable.Map.empty[String, Symbol]
   private val importPaths = mutable.Map.empty[String, String]
 
-  def define(name: String, symbol: Symbol): Unit =
-    entries(name) = symbol
+  def defineTerm(name: String, symbol: Symbol): Unit =
+    termEntries(name) = symbol
+
+  def defineType(name: String, symbol: Symbol): Unit =
+    typeEntries(name) = symbol
 
   def defineImport(name: String, basePath: String): Unit =
     importPaths(name) = basePath
 
-  /** Resolve a name by searching this scope, then parent scopes.
-    * First checks direct definitions, then import entries. */
-  def resolve(name: String): Option[Symbol] =
-    entries.get(name).orElse {
-      importPaths.get(name).map { path =>
-        SymbolUtils.typeSymbol(Symbol(path), name)
-      }
-    }.orElse(parent.flatMap(_.resolve(name)))
+  /** Resolve a name across both namespaces and imports.
+    * Returns all matching symbols (term + type).
+    * Companions and name shadowing produce multiple results. */
+  def resolve(name: String): Vector[Symbol] =
+    val local = typeEntries.get(name).toVector ++ termEntries.get(name).toVector
+    if local.nonEmpty then local
+    else
+      importPaths.get(name) match
+        case Some(path) => Vector(SymbolUtils.typeSymbol(Symbol(path), name))
+        case None       => parent.map(_.resolve(name)).getOrElse(Vector.empty)
 
   def child(): ScopeTracker = new ScopeTracker(Some(this))
 }

@@ -37,27 +37,36 @@ class WorkspaceIndex extends StrictLogging {
     }
   }
 
-  /** Pretvara (Path, Line, Char) u Symbol koji se nalazi na toj poziciji */
-  def findSymbolAt(path: os.Path, line: Int, char: Int): Option[Symbol] = synchronized {
+  /** Returns ALL symbols at cursor position (companion class+object, val+def candidates). */
+  def findSymbolAt(path: os.Path, line: Int, char: Int): Vector[Symbol] = synchronized {
     logger.debug(s"Finding symbol at: $path:$line:$char")
     val fileDoc = fileDocs.get(path)
     logger.debug(s"fileDoc: $fileDoc")
-    fileDoc.flatMap { doc =>
-      // Prvo tražimo u referencama (najčešći slučaj za goto-def), pa u definicijama
+    fileDoc.map { doc =>
       logger.debug(s"References: ${doc.references.map(r => s"${r.symbol} -> ${r.location.range}")}")
-      val refMatch = doc.references.find(r => isInside(line, char, r.location.range)).map(_.symbol)
-      val defMatch = doc.definitions.find(d => isInside(line, char, d.location.range)).map(_.symbol)
-      val sym = refMatch.orElse(defMatch)
-      logger.debug(s"Found symbol: $sym")
-      sym
-    }
+      val refSyms = doc.references.filter(r => isInside(line, char, r.location.range)).map(_.symbol)
+      val defSyms = doc.definitions.filter(d => isInside(line, char, d.location.range)).map(_.symbol)
+      val syms = (refSyms ++ defSyms).toVector
+      logger.debug(s"Found symbols: $syms")
+      syms
+    }.getOrElse(Vector.empty)
   }
 
-  /** Vraća lokaciju definicije za dati simbol */
-  def gotoDefinition(symbol: Symbol): Option[SymbolLocation] = synchronized {
-    val loc = definitions.get(symbol)
-    logger.debug(s"Goto definition for symbol: $symbol -> $loc")
-    loc
+  /** Returns definition locations for a symbol. Falls back to alternate descriptor. */
+  def gotoDefinition(symbol: Symbol): Vector[SymbolLocation] = synchronized {
+    definitions.get(symbol) match
+      case Some(loc) =>
+        logger.debug(s"Goto definition for symbol: $symbol -> $loc")
+        Vector(loc)
+      case None =>
+        val alt = SymbolUtils.alternateDescriptor(symbol)
+        definitions.get(alt) match
+          case Some(loc) =>
+            logger.debug(s"Goto definition (alt) for symbol: $symbol -> $alt -> $loc")
+            Vector(loc)
+          case None =>
+            logger.debug(s"Goto definition for symbol: $symbol -> (not found)")
+            Vector.empty
   }
 
   // Pomoćna funkcija koja provjerava da li je kursor unutar range-a

@@ -80,5 +80,22 @@ object SymbolUtils {
     val disambiguator = if overloadIndex == 0 then "" else s"+$overloadIndex"
     Symbol(s"${owner.value}${escapedName("<init>")}($disambiguator).")
 
+  /** Produces a document-scoped local symbol per SemanticDB v4 spec.
+    * Format: `local<N>`. Counter resets per file.
+    * Example: `localSymbol(0)` → `"local0"`, `localSymbol(42)` → `"local42"`.
+    */
+  def localSymbol(index: Int): Symbol =
+    Symbol(s"local$index")
+
+  /** Swap val (`.`) and def (`().`) descriptors for lookup fallback.
+    * `_empty_/Foo.bar.` → `_empty_/Foo.bar().`
+    * `_empty_/Foo.bar().` → `_empty_/Foo.bar.`
+    * No-op for other symbol types. */
+  def alternateDescriptor(sym: Symbol): Symbol =
+    val v = sym.value
+    if v.endsWith("().") then Symbol(v.stripSuffix("().") + ".")
+    else if v.endsWith(".") && !v.endsWith("/") then Symbol(v.stripSuffix(".") + "().")
+    else sym
+
 
 }

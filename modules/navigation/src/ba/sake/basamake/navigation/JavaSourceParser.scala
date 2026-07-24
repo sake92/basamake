@@ -80,7 +80,7 @@ class JavaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     }
 
     defs += SourceSymbolDefinition(name, kind, typeOwner, nameRange(t.getName))
-    scope.define(name, typeOwner)
+    scope.defineType(name, typeOwner)
 
     val childScope = scope.child()
     val overloads = new OverloadTracker
@@ -92,7 +92,7 @@ class JavaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
           val entryName = entry.getNameAsString
           defs += SourceSymbolDefinition(entryName, SymbolKind.EnumMember,
             SymbolUtils.termSymbol(typeOwner, entryName), nameRange(entry.getName))
-          scope.define(entryName, SymbolUtils.termSymbol(typeOwner, entryName))
+          scope.defineTerm(entryName, SymbolUtils.termSymbol(typeOwner, entryName))
         }
       case _ =>
     }
@@ -128,7 +128,7 @@ class JavaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
           overloads.methodIdx(mName) = idx + 1
           defs += SourceSymbolDefinition(mName, SymbolKind.Method,
             SymbolUtils.methodSymbol(typeOwner, mName, idx), nameRange(m.getName))
-          scope.define(mName, SymbolUtils.methodSymbol(typeOwner, mName, idx))
+          scope.defineTerm(mName, SymbolUtils.methodSymbol(typeOwner, mName, idx))
           // Extract refs from return type and parameter types
           m.getType match
             case refType: ClassOrInterfaceType => extractTypeRef(refType, childScope)
@@ -173,7 +173,7 @@ class JavaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     else
       // Simple name: resolve against scope (imports or same-file defs)
       val name = tpe.getNameAsString
-      scope.resolve(name).getOrElse {
+      scope.resolve(name).headOption.getOrElse {
         // Unresolved external ref — still emit with best-guess symbol
         SymbolUtils.typeSymbol(Symbol(""), name)
       }

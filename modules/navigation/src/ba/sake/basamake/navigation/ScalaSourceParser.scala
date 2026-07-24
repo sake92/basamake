@@ -29,6 +29,12 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
   // ── Accumulators (class fields, parser is throw-away) ──
   private val defs = Vector.newBuilder[SourceSymbolDefinition]
   private val refs = Vector.newBuilder[SourceSymbolReference]
+  private var localCounter = 0
+
+  private def nextLocalSym(): Symbol =
+    val sym = SymbolUtils.localSymbol(localCounter)
+    localCounter += 1
+    sym
 
   // ── Public API ────────────────────────────────────
 
@@ -45,8 +51,10 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     parseSource(content) match
       case Some(src) =>
         val scope = ScopeTracker.empty
-        val overloads = new OverloadTracker
-        extractFromStats(src.stats, SymbolUtils.packageOwner(Nil), scope, overloads)
+        // Pass 1: collect all definitions (populates scope for forward references)
+        collectDefinitions(src.stats, SymbolUtils.packageOwner(Nil), scope, new OverloadTracker)
+        // Pass 2: extract definitions and references (body traversal now sees all defs)
+        extractFromStats(src.stats, SymbolUtils.packageOwner(Nil), scope, new OverloadTracker)
         SourceSemanticdb(defs.result(), refs.result())
       case None =>
         SourceSemanticdb(Vector.empty, Vector.empty)
@@ -71,6 +79,112 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
           case Parsed.Error(_, _, _) => None
     }
   }
+
+  /** Pass 1: walk stats shallowly to populate scope with all definitions.
+    * No reference extraction, no body traversal. Enables forward references
+    * during pass 2. */
+  private def collectDefinitions(
+      stats: List[Stat],
+      owner: Symbol,
+      scope: ScopeTracker,
+      overloads: OverloadTracker
+  ): Unit =
+    stats.foreach {
+      case p: Pkg =>
+        val newOwner = pkgOwner(p.ref, owner)
+        val childScope = scope.child()
+        collectDefinitions(p.stats, newOwner, childScope, new OverloadTracker)
+
+      case d: Pkg.Object =>
+        val newPkg = pkgPath(owner) + d.name.value + "/"
+        val objOwner = SymbolUtils.termSymbol(Symbol(newPkg), "package")
+        scope.defineTerm(d.name.value, objOwner)
+        val childScope = scope.child()
+        collectDefinitions(d.templ.stats, objOwner, childScope, new OverloadTracker)
+
+      case d: Defn.Class =>
+        val classOwner = SymbolUtils.typeSymbol(owner, d.name.value)
+        scope.defineType(d.name.value, classOwner)
+        val childScope = scope.child()
+        collectDefinitions(d.templ.stats, classOwner, childScope, new OverloadTracker)
+
+      case d: Defn.Trait =>
+        val traitOwner = SymbolUtils.typeSymbol(owner, d.name.value)
+        scope.defineType(d.name.value, traitOwner)
+        val childScope = scope.child()
+        collectDefinitions(d.templ.stats, traitOwner, childScope, new OverloadTracker)
+
+      case d: Defn.Object =>
+        val objOwner = SymbolUtils.termSymbol(owner, d.name.value)
+        scope.defineTerm(d.name.value, objOwner)
+        val childScope = scope.child()
+        collectDefinitions(d.templ.stats, objOwner, childScope, new OverloadTracker)
+
+      case d: Defn.Enum =>
+        val enumOwner = SymbolUtils.typeSymbol(owner, d.name.value)
+        scope.defineType(d.name.value, enumOwner)
+        val childScope = scope.child()
+        collectDefinitions(d.templ.stats, enumOwner, childScope, new OverloadTracker)
+
+      case d: Defn.EnumCase =>
+        val sym = SymbolUtils.termSymbol(owner, d.name.value)
+        scope.defineTerm(d.name.value, sym)
+
+      case d: Defn.RepeatedEnumCase =>
+        d.cases.toList.foreach { name =>
+          val sym = SymbolUtils.termSymbol(owner, name.value)
+          scope.defineTerm(name.value, sym)
+        }
+
+      case d: Defn.Given if hasName(d) =>
+        scope.defineTerm(d.name.value, SymbolUtils.termSymbol(effectiveOwner(owner), d.name.value))
+        val childScope = scope.child()
+        collectDefinitions(d.templ.stats, SymbolUtils.termSymbol(effectiveOwner(owner), d.name.value), childScope, new OverloadTracker)
+
+      case d: Defn.GivenAlias if hasName(d) =>
+        scope.defineTerm(d.name.value, SymbolUtils.termSymbol(effectiveOwner(owner), d.name.value))
+
+      case d: Defn.Def =>
+        scope.defineTerm(d.name.value, SymbolUtils.methodSymbol(effectiveOwner(owner), d.name.value, 0))
+
+      case d: Defn.Macro =>
+        scope.defineTerm(d.name.value, SymbolUtils.methodSymbol(effectiveOwner(owner), d.name.value, 0))
+
+      case d: Defn.Type =>
+        scope.defineType(d.name.value, SymbolUtils.typeSymbol(effectiveOwner(owner), d.name.value))
+
+      case d: Defn.Val =>
+        d.pats.collect { case Pat.Var(name) =>
+          scope.defineTerm(name.value, SymbolUtils.termSymbol(effectiveOwner(owner), name.value))
+        }
+
+      case d: Defn.Var =>
+        d.pats.collect { case Pat.Var(name) =>
+          scope.defineTerm(name.value, SymbolUtils.termSymbol(effectiveOwner(owner), name.value))
+        }
+
+      case d: Decl.Val =>
+        d.pats.collect { case Pat.Var(name) =>
+          scope.defineTerm(name.value, SymbolUtils.termSymbol(effectiveOwner(owner), name.value))
+        }
+
+      case d: Decl.Var =>
+        d.pats.collect { case Pat.Var(name) =>
+          scope.defineTerm(name.value, SymbolUtils.termSymbol(effectiveOwner(owner), name.value))
+        }
+
+      case d: Decl.Def =>
+        scope.defineTerm(d.name.value, SymbolUtils.methodSymbol(effectiveOwner(owner), d.name.value, 0))
+
+      case d: Decl.Type =>
+        scope.defineType(d.name.value, SymbolUtils.typeSymbol(effectiveOwner(owner), d.name.value))
+
+      case d: Decl.Given if hasName(d) =>
+        scope.defineTerm(d.name.value, SymbolUtils.termSymbol(effectiveOwner(owner), d.name.value))
+
+      case _: Import => ()  // imports handled in pass 2
+      case _ => ()
+    }
 
   // ── Core traversal ───────────────────────────────
 
@@ -97,7 +211,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val newPkg = pkgPath(owner) + d.name.value + "/"
         val objOwner = SymbolUtils.termSymbol(Symbol(newPkg), "package")
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Object, objOwner, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, objOwner)
+        scope.defineTerm(d.name.value, objOwner)
         extractRefsFromInits(d.templ.inits, scope)
         val childScope = scope.child()
         extractFromStats(d.templ.stats, objOwner, childScope, new OverloadTracker)
@@ -106,7 +220,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val classOwner = SymbolUtils.typeSymbol(owner, d.name.value)
         // Class definition
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Class, classOwner, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, classOwner)
+        scope.defineType(d.name.value, classOwner)
 
         // Primary constructor (always emitted, idx 0)
         val primaryCtorSym = SymbolUtils.constructorSymbol(classOwner, 0)
@@ -126,7 +240,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
       case d: Defn.Trait =>
         val traitOwner = SymbolUtils.typeSymbol(owner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Interface, traitOwner, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, traitOwner)
+        scope.defineType(d.name.value, traitOwner)
         extractRefsFromInits(d.templ.inits, scope)
         d.templ.self.decltpe.foreach(extractTypeRefs(_, scope))
         val childScope = scope.child()
@@ -135,7 +249,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
       case d: Defn.Object =>
         val objOwner = SymbolUtils.termSymbol(owner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Object, objOwner, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, objOwner)
+        scope.defineTerm(d.name.value, objOwner)
         extractRefsFromInits(d.templ.inits, scope)
         val childScope = scope.child()
         extractFromStats(d.templ.stats, objOwner, childScope, new OverloadTracker)
@@ -143,7 +257,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
       case d: Defn.Enum =>
         val enumOwner = SymbolUtils.typeSymbol(owner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Enum, enumOwner, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, enumOwner)
+        scope.defineType(d.name.value, enumOwner)
         // Primary constructor (always emitted for enum, same as class)
         val primaryCtorSym = SymbolUtils.constructorSymbol(enumOwner, 0)
         defs += SourceSymbolDefinition("<init>", SymbolKind.Constructor, primaryCtorSym, toSymbolLocation(d.name.pos))
@@ -155,21 +269,21 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
       case d: Defn.EnumCase =>
         val sym = SymbolUtils.termSymbol(owner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.EnumMember, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
         extractRefsFromInits(d.inits, scope)
 
       case d: Defn.RepeatedEnumCase =>
         d.cases.toList.foreach { name =>
           val sym = SymbolUtils.termSymbol(owner, name.value)
           defs += SourceSymbolDefinition(name.value, SymbolKind.EnumMember, sym, toSymbolLocation(name.pos))
-          scope.define(name.value, sym)
+          scope.defineTerm(name.value, sym)
         }
 
       case d: Defn.Given if hasName(d) =>
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.termSymbol(effOwner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Interface, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
         d.templ.inits.foreach(init => extractTypeRefs(init.tpe, scope))
         val childScope = scope.child()
         extractFromStats(d.templ.stats, sym, childScope, new OverloadTracker)
@@ -178,7 +292,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.termSymbol(effOwner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Interface, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
 
       case d: Defn.Def =>
         val idx = overloads.methodIdx.getOrElse(d.name.value, 0)
@@ -186,9 +300,18 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.methodSymbol(effOwner, d.name.value, idx)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Method, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
         extractRefsFromTermParams(d.paramClauses, scope)
         d.decltpe.foreach(extractTypeRefs(_, scope))
+        val bodyScope = scope.child()
+        d.paramClauses.foreach { clause =>
+          clause.values.foreach { param =>
+            param.name match
+              case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+              case _ => ()
+          }
+        }
+        extractRefsFromStat(d.body, bodyScope)
 
       case d: Defn.Macro =>
         val idx = overloads.methodIdx.getOrElse(d.name.value, 0)
@@ -196,15 +319,24 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.methodSymbol(effOwner, d.name.value, idx)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Method, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
         extractRefsFromTermParams(d.paramClauses, scope)
         d.decltpe.foreach(extractTypeRefs(_, scope))
+        val bodyScope = scope.child()
+        d.paramClauses.foreach { clause =>
+          clause.values.foreach { param =>
+            param.name match
+              case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+              case _ => ()
+          }
+        }
+        extractRefsFromStat(d.body, bodyScope)
 
       case d: Defn.Type =>
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.typeSymbol(effOwner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.TypeParameter, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineType(d.name.value, sym)
         extractTypeRefs(d.body, scope)
 
       case d: Defn.Val =>
@@ -212,25 +344,27 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
           val effOwner = effectiveOwner(owner)
           val sym = SymbolUtils.termSymbol(effOwner, name.value)
           defs += SourceSymbolDefinition(name.value, SymbolKind.Property, sym, toSymbolLocation(name.pos))
-          scope.define(name.value, sym)
+          scope.defineTerm(name.value, sym)
         }
         d.decltpe.foreach(extractTypeRefs(_, scope))
+        extractTermRefs(d.rhs, scope)
 
       case d: Defn.Var =>
         d.pats.collect { case Pat.Var(name) =>
           val effOwner = effectiveOwner(owner)
           val sym = SymbolUtils.termSymbol(effOwner, name.value)
           defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, sym, toSymbolLocation(name.pos))
-          scope.define(name.value, sym)
+          scope.defineTerm(name.value, sym)
         }
         d.decltpe.foreach(extractTypeRefs(_, scope))
+        d.rhs.foreach(extractTermRefs(_, scope))
 
       case d: Decl.Val =>
         d.pats.collect { case Pat.Var(name) =>
           val effOwner = effectiveOwner(owner)
           val sym = SymbolUtils.termSymbol(effOwner, name.value)
           defs += SourceSymbolDefinition(name.value, SymbolKind.Property, sym, toSymbolLocation(name.pos))
-          scope.define(name.value, sym)
+          scope.defineTerm(name.value, sym)
         }
         extractTypeRefs(d.decltpe, scope)
 
@@ -239,7 +373,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
           val effOwner = effectiveOwner(owner)
           val sym = SymbolUtils.termSymbol(effOwner, name.value)
           defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, sym, toSymbolLocation(name.pos))
-          scope.define(name.value, sym)
+          scope.defineTerm(name.value, sym)
         }
         extractTypeRefs(d.decltpe, scope)
 
@@ -249,7 +383,7 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.methodSymbol(effOwner, d.name.value, idx)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Method, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
         extractRefsFromTermParams(d.paramClauses, scope)
         extractTypeRefs(d.decltpe, scope)
 
@@ -257,13 +391,13 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.typeSymbol(effOwner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.TypeParameter, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
 
       case d: Decl.Given if hasName(d) =>
         val effOwner = effectiveOwner(owner)
         val sym = SymbolUtils.termSymbol(effOwner, d.name.value)
         defs += SourceSymbolDefinition(d.name.value, SymbolKind.Interface, sym, toSymbolLocation(d.name.pos))
-        scope.define(d.name.value, sym)
+        scope.defineTerm(d.name.value, sym)
 
       case c: Ctor.Secondary =>
         val idx = overloads.ctorIdx
@@ -441,6 +575,227 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         case _ => ()
       }
     }
+
+  // ── Body-level reference extraction ──────────────
+
+  /** Extract references (no definitions) from a single stat inside a function body.
+    * Defines local vals/vars/defs in the body scope so later usages resolve. */
+  private def extractRefsFromStat(stat: Stat, scope: ScopeTracker): Unit = stat match
+    case d: Defn.Val =>
+      d.pats.collect { case Pat.Var(name) =>
+        scope.defineTerm(name.value, nextLocalSym())
+      }
+      d.decltpe.foreach(extractTypeRefs(_, scope))
+      extractTermRefs(d.rhs, scope)
+
+    case d: Defn.Var =>
+      d.pats.collect { case Pat.Var(name) =>
+        scope.defineTerm(name.value, nextLocalSym())
+      }
+      d.decltpe.foreach(extractTypeRefs(_, scope))
+      d.rhs.foreach(extractTermRefs(_, scope))
+
+    case d: Defn.Def =>
+      scope.defineTerm(d.name.value, nextLocalSym())
+      extractRefsFromTermParams(d.paramClauses, scope)
+      d.decltpe.foreach(extractTypeRefs(_, scope))
+      val bodyScope = scope.child()
+      d.paramClauses.foreach { clause =>
+        clause.values.foreach { param =>
+          param.name match
+            case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+            case _ => ()
+        }
+      }
+      extractTermRefs(d.body, bodyScope)
+
+    case d: Defn.Macro =>
+      scope.defineTerm(d.name.value, nextLocalSym())
+      extractRefsFromTermParams(d.paramClauses, scope)
+      d.decltpe.foreach(extractTypeRefs(_, scope))
+      val bodyScope = scope.child()
+      d.paramClauses.foreach { clause =>
+        clause.values.foreach { param =>
+          param.name match
+            case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+            case _ => ()
+        }
+      }
+      extractTermRefs(d.body, bodyScope)
+
+    case d: Defn.Type =>
+      scope.defineType(d.name.value, nextLocalSym())
+      extractTypeRefs(d.body, scope)
+
+    case imp: Import =>
+      extractImportRefs(imp, scope)
+
+    case t: Term =>
+      extractTermRefs(t, scope)
+
+    case _ => ()
+
+  /** Walk a Term AST recursively, emitting references for resolved names.
+    * Block expressions create child scopes for their contents. */
+  private def extractTermRefs(term: Term, scope: ScopeTracker): Unit = term match
+    case t: Term.Name =>
+      scope.resolve(t.value).foreach { sym =>
+        refs += SourceSymbolReference(sym, toSymbolLocation(t.pos))
+      }
+
+    case t: Term.Select =>
+      extractTermRefs(t.qual, scope)
+      // Emit member name candidates: both val and def descriptors.
+      // Lookup filters by existence — only real definitions reach LSP.
+      t.qual match
+        case Term.Name(qualName) =>
+          scope.resolve(qualName).foreach { baseSym =>
+            val member = SymbolUtils.escapedName(t.name.value)
+            val valSym = Symbol(s"${baseSym.value}$member.")
+            val defSym = Symbol(s"${baseSym.value}$member().")
+            refs += SourceSymbolReference(valSym, toSymbolLocation(t.name.pos))
+            refs += SourceSymbolReference(defSym, toSymbolLocation(t.name.pos))
+          }
+        case _ => ()
+
+    case t: Term.Apply =>
+      extractTermRefs(t.fun, scope)
+      t.args.foreach(extractTermRefs(_, scope))
+
+    case t: Term.ApplyType =>
+      extractTermRefs(t.fun, scope)
+      t.targs.foreach(extractTypeRefs(_, scope))
+
+    case t: Term.ApplyInfix =>
+      extractTermRefs(t.lhs, scope)
+      extractTermRefs(t.op, scope)
+      t.targs.foreach(extractTypeRefs(_, scope))
+      t.args.foreach(extractTermRefs(_, scope))
+
+    case t: Term.ApplyUnary =>
+      extractTermRefs(t.arg, scope)
+
+    case t: Term.Block =>
+      val blockScope = scope.child()
+      t.stats.foreach(extractRefsFromStat(_, blockScope))
+
+    case t: Term.Assign =>
+      extractTermRefs(t.lhs, scope)
+      extractTermRefs(t.rhs, scope)
+
+    case t: Term.If =>
+      extractTermRefs(t.cond, scope)
+      extractTermRefs(t.thenp, scope)
+      extractTermRefs(t.elsep, scope)
+
+    case t: Term.While =>
+      extractTermRefs(t.expr, scope)
+      extractTermRefs(t.body, scope)
+
+    case t: Term.Do =>
+      extractTermRefs(t.body, scope)
+      extractTermRefs(t.expr, scope)
+
+    case t: Term.For =>
+      t.enums.foreach {
+        case e: Enumerator.Generator =>
+          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          extractTermRefs(e.rhs, scope)
+        case e: Enumerator.Val =>
+          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          extractTermRefs(e.rhs, scope)
+        case _: Enumerator.Guard => ()
+        case _ => ()
+      }
+      extractTermRefs(t.body, scope)
+
+    case t: Term.ForYield =>
+      t.enums.foreach {
+        case e: Enumerator.Generator =>
+          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          extractTermRefs(e.rhs, scope)
+        case e: Enumerator.Val =>
+          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          extractTermRefs(e.rhs, scope)
+        case _: Enumerator.Guard => ()
+        case _ => ()
+      }
+      extractTermRefs(t.body, scope)
+
+    case t: Term.Match =>
+      extractTermRefs(t.expr, scope)
+      t.cases.foreach { c =>
+        val caseScope = scope.child()
+        c.pat.collect { case Pat.Var(name) => caseScope.defineTerm(name.value, nextLocalSym()) }
+        extractTermRefs(c.body, caseScope)
+        c.cond.foreach(extractTermRefs(_, caseScope))
+      }
+
+    case t: Term.New =>
+      extractRefsFromInits(List(t.init), scope)
+
+    case t: Term.NewAnonymous =>
+      extractRefsFromInits(t.templ.inits, scope)
+      val bodyScope = scope.child()
+      t.templ.stats.foreach(extractRefsFromStat(_, bodyScope))
+
+    case t: Term.Function =>
+      val fnScope = scope.child()
+      t.params.foreach { param =>
+        param.name match
+          case meta.Name(value) => fnScope.defineTerm(value, nextLocalSym())
+          case _ => ()
+        param.decltpe.foreach(extractTypeRefs(_, fnScope))
+      }
+      extractTermRefs(t.body, fnScope)
+
+    case t: Term.PartialFunction =>
+      t.cases.foreach { c =>
+        val caseScope = scope.child()
+        c.pat.collect { case Pat.Var(name) => caseScope.defineTerm(name.value, nextLocalSym()) }
+        extractTermRefs(c.body, caseScope)
+        c.cond.foreach(extractTermRefs(_, caseScope))
+      }
+
+    case t: Term.Return =>
+      extractTermRefs(t.expr, scope)
+
+    case t: Term.Throw =>
+      extractTermRefs(t.expr, scope)
+
+    case t: Term.Try =>
+      extractTermRefs(t.expr, scope)
+      t.catchp.foreach { catchBlock =>
+        val caseScope = scope.child()  // exception binding scope
+        catchBlock.pat.collect { case Pat.Var(name) => caseScope.defineTerm(name.value, nextLocalSym()) }
+        extractTermRefs(catchBlock.body, caseScope)
+        catchBlock.cond.foreach(extractTermRefs(_, caseScope))
+      }
+      t.finallyp.foreach(extractTermRefs(_, scope))
+
+    case t: Term.Tuple =>
+      t.args.foreach(extractTermRefs(_, scope))
+
+    case t: Term.Interpolate =>
+      t.args.foreach(extractTermRefs(_, scope))
+
+    case t: Term.Ascribe =>
+      extractTermRefs(t.expr, scope)
+      extractTypeRefs(t.tpe, scope)
+
+    case t: Term.Annotate =>
+      extractTermRefs(t.expr, scope)
+
+    case t: Term.Repeated =>
+      extractTermRefs(t.expr, scope)
+
+    case t: Term.Eta =>
+      extractTermRefs(t.expr, scope)
+
+    // No references to extract
+    case _: Lit | _: Term.This | _: Term.Super | _: Term.Placeholder |
+         _: Term.QuotedMacroExpr | _: Term.SplicedMacroExpr | _: Term.Xml =>
+      ()
 
   /** Try to resolve a name in scope and emit a reference occurrence. */
   private def resolveAndEmit(name: String, scope: ScopeTracker, pos: meta.Position): Unit =

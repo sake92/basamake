@@ -383,4 +383,503 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "com/example/Wrapper$package.show()."
     ), clues(definitions))
   }
+
+  test("references: same-file term ref from method body") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+        |def f = A.g
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A, got: $refSymbols")
+  }
+
+  test("references: toplevel val from method body") {
+    val result = ScalaSourceParser(
+      """def msg = "hi"
+        |def f = msg
+        |""".stripMargin,
+      fileName = "Test.scala"
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/Test$package.msg()."),
+      s"Expected ref to msg(), got: $refSymbols")
+  }
+
+  test("references: local val definition and usage in method body") {
+    val result = ScalaSourceParser(
+      """def f = {
+        |  val x = 1
+        |  x
+        |}
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.exists(_.startsWith("local")),
+      s"Expected local var ref, got: $refSymbols")
+    // Local definitions should NOT appear in definitions vector
+    val defNames = result.definitions.map(_.name).toSet
+    assert(!defNames.contains("x"), s"Local val 'x' should NOT be in definitions, got: $defNames")
+  }
+
+  test("references: param usage inside method body") {
+    val result = ScalaSourceParser(
+      """def f(x: Int) = x
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.exists(_.startsWith("local")),
+      s"Expected local param ref, got: $refSymbols")
+  }
+
+  test("references: method body traverses nested blocks") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+        |def f = {
+        |  val x = {
+        |    A.g
+        |  }
+        |  x
+        |}
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from nested block, got: $refSymbols")
+  }
+
+  test("references: val rhs with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+        |val x = A.g
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from val rhs, got: $refSymbols")
+  }
+
+  test("references: var rhs with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+        |var x = A.g
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from var rhs, got: $refSymbols")
+  }
+
+  // ══════════════════════════════════════════════════════
+  // DEBUG: AST dump for real files
+  // ══════════════════════════════════════════════════════
+
+  test("DEBUG: dump scalameta AST of sbt/Main.scala".ignore) {
+    import scala.meta.Dialect
+    import scala.meta.*
+    import scala.meta.parsers.XtensionParseInputLike
+    given Dialect = scala.meta.dialects.Scala3Future
+    val src = """import upickle.default._
+@main def hello(): Unit =
+  val c = Array(1, 2, 3)
+  println("Hello world!")
+  println(msg)
+  write(Seq(1, 2, 3))
+  
+def msg = 
+  utils.getMsg()
+"""
+    src.parse[scala.meta.Source] match
+      case scala.meta.Parsed.Success(tree) =>
+        println(s"\n=== RAW AST STRUCTURE ===\n${tree.structure}")
+        println(s"\n=== RAW AST SYNTAX ===\n${tree.syntax}")
+      case scala.meta.Parsed.Error(pos, msg, _) =>
+        println(s"PARSE ERROR: $msg at $pos")
+        fail(s"Parse failed: $msg at $pos")
+
+    // Our parser result
+    val result = ScalaSourceParser(src, fileName = "Main.scala").parse()
+    println(s"\n=== DEFINITIONS (${result.definitions.size}) ===")
+    result.definitions.foreach { d =>
+      println(s"  ${d.name} [${d.kind}] ${d.symbol} @ ${d.location.range}")
+    }
+    println(s"\n=== REFERENCES (${result.references.size}) ===")
+    result.references.foreach { r =>
+      println(s"  ${r.symbol} @ ${r.location.range}")
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  // Test pyramid: isolate @main / indentation behavior
+  // ══════════════════════════════════════════════════════
+
+  test("references: indentation-based method body (no braces)") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f =
+  A.g
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from indented body, got: $refSymbols")
+  }
+
+  test("references: @main method body with braces") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+@main def hello(): Unit = { A.g }
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from @main braced body, got: $refSymbols")
+  }
+
+  test("references: @main method body with indentation") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+@main def hello(): Unit =
+  A.g
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from @main indented body, got: $refSymbols")
+  }
+
+  // ══════════════════════════════════════════════════════
+  // Branch coverage: all extractTermRefs cases
+  // ══════════════════════════════════════════════════════
+
+  test("references: forward reference from earlier def to later def") {
+    val result = ScalaSourceParser(
+      """def first = second
+def second = 1
+""".stripMargin,
+      fileName = "Test.scala"
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/Test$package.second()."),
+      s"Expected forward ref to second, got: $refSymbols")
+  }
+
+  test("references: ApplyInfix with same-file refs") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f =
+  val x = A.g
+  x + 1
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A, got: $refSymbols")
+  }
+
+  test("references: ApplyUnary with term ref") {
+    val result = ScalaSourceParser(
+      """def f =
+  val flag = true
+  !flag
+""".stripMargin
+    ).parse()
+    // flag usage inside !flag should produce a local ref
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.exists(_.startsWith("local")),
+      s"Expected local ref for flag, got: $refSymbols")
+  }
+
+  test("references: If condition and branches") {
+    val result = ScalaSourceParser(
+      """object A { def cond = true; def thenP = 1; def elseP = 1 }
+def f = if A.cond then A.thenP else A.elseP
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in if/else, got: $refSymbols")
+  }
+
+  test("references: While body with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def cond = true; def body = () }
+def f = while A.cond do A.body
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in while, got: $refSymbols")
+  }
+
+  test("references: For comprehension with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def xs = List(1); def g = () }
+def f = for x <- A.xs do A.g
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in for, got: $refSymbols")
+  }
+
+  test("references: ForYield with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def xs = List(1) }
+def f = for x <- A.xs yield x
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in for-yield, got: $refSymbols")
+  }
+
+  test("references: Match with term refs in cases") {
+    val result = ScalaSourceParser(
+      """object A { def g = () }
+def f =
+  val x = 1
+  x match
+    case 1 => A.g
+    case _ => ()
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in match case, got: $refSymbols")
+  }
+
+  test("references: New with constructor init") {
+    val result = ScalaSourceParser(
+      """class Foo
+def f = new Foo
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/Foo#"),
+      s"Expected ref to Foo from new, got: $refSymbols")
+  }
+
+  test("references: Function literal with param usage") {
+    val result = ScalaSourceParser(
+      """def f = (x: Int) => x
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.exists(_.startsWith("local")),
+      s"Expected local param ref in lambda, got: $refSymbols")
+  }
+
+  test("references: Return with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f = return A.g
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in return, got: $refSymbols")
+  }
+
+  test("references: Throw with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def ex = new Exception }
+def f = throw A.ex
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in throw, got: $refSymbols")
+  }
+
+  test("references: Try/catch with term refs") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1; def handler = () }
+def f = try A.g catch case _ => A.handler
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in try/catch, got: $refSymbols")
+  }
+
+  test("references: Tuple with term refs") {
+    val result = ScalaSourceParser(
+      """object A { def a = 1; def b = 2 }
+def f = (A.a, A.b)
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in tuple, got: $refSymbols")
+  }
+
+  test("references: Interpolated string with term ref") {
+    val result = ScalaSourceParser(
+      """def f =
+  val name = "world"
+  s"hello $name"
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.exists(_.startsWith("local")),
+      s"Expected local ref in interpolated string, got: $refSymbols")
+  }
+
+  test("references: Assign with term refs on both sides") {
+    val result = ScalaSourceParser(
+      """object A { var x = 1 }
+def f =
+  var y = 0
+  y = A.x
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in assign rhs, got: $refSymbols")
+  }
+
+  test("references: Ascribe with term ref") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f = (A.g: Int)
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in ascribe, got: $refSymbols")
+  }
+
+  test("references: Eta expansion of same-file method") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f = A.g _
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in eta expansion, got: $refSymbols")
+  }
+
+  test("references: Repeated vararg ref".ignore) {
+    val result = ScalaSourceParser(
+      """object A { def xs = List(1) }
+def f(args: Int*) =
+  A.xs ++ args
+  args*
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.exists(_.startsWith("local")),
+      s"Expected local ref for args*, got: $refSymbols")
+  }
+
+  test("references: Nested method in body calls outer scope") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f =
+  def inner = A.g
+  inner
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from nested method, got: $refSymbols")
+  }
+
+  test("references: For-comprehension enumerator with Pat.Var binding") {
+    val result = ScalaSourceParser(
+      """object A { def xs = List((1,2)) }
+def f = for (a, b) <- A.xs yield a
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in for enumerator, got: $refSymbols")
+  }
+
+  test("references: Match case with pattern binding") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f(x: Int) = x match
+  case a => A.g + a
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A in match with pattern binding, got: $refSymbols")
+  }
+
+  // ══════════════════════════════════════════════════════
+  // Namespace split: companion class + object coexist
+  // ══════════════════════════════════════════════════════
+
+  test("references: companion class and object both resolve") {
+    val result = ScalaSourceParser(
+      """class Foo
+object Foo { def apply() = 1 }
+def f = Foo(1)
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/Foo#"),
+      s"Expected ref to class Foo#, got: $refSymbols")
+    assert(refSymbols.contains("_empty_/Foo."),
+      s"Expected ref to companion object Foo., got: $refSymbols")
+  }
+
+  test("references: class after object still coexists") {
+    val result = ScalaSourceParser(
+      """object Foo { def apply() = 1 }
+class Foo
+def f = Foo(1)
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/Foo#"),
+      s"Expected ref to class Foo# after object, got: $refSymbols")
+    assert(refSymbols.contains("_empty_/Foo."),
+      s"Expected ref to companion object Foo., got: $refSymbols")
+  }
+
+  test("references: Term.Select emits both val and def candidates for member") {
+    val result = ScalaSourceParser(
+      """object A { def g = 1 }
+def f = A.g
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A.g()."),
+      s"Expected method candidate A.g(), got: $refSymbols")
+    assert(refSymbols.contains("_empty_/A.g."),
+      s"Expected val candidate A.g., got: $refSymbols")
+  }
+
+  test("references: Term.Select on complex qualifier skips member candidates") {
+    val result = ScalaSourceParser(
+      """object A { object B { def g = 1 } }
+def f = A.B.g
+""".stripMargin
+    ).parse()
+    // A.B is a qualified select, member candidates only emitted for simple qualifiers
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/A."),
+      s"Expected ref to A from A.B.g, got: $refSymbols")
+  }
+
+  test("references: forward reference with companion preserves both") {
+    val result = ScalaSourceParser(
+      """def f = Foo(1)
+class Foo
+object Foo
+""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("_empty_/Foo#"),
+      s"Expected ref to class Foo#, got: $refSymbols")
+    assert(refSymbols.contains("_empty_/Foo."),
+      s"Expected ref to companion object Foo., got: $refSymbols")
+  }
+
 }
