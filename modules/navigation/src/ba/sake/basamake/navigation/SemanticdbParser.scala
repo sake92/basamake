@@ -2,7 +2,9 @@ package ba.sake.basamake.navigation
 
 import java.io.InputStream
 import scala.meta.internal.semanticdb
+import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.SymbolKind
+import scala.util.control.NonFatal
 
 /** Parses compiler-produced `.semanticdb` protobuf files into the same
   * `SourceSemanticdb` format as `ScalaSourceParser` and `JavaSourceParser`.
@@ -10,21 +12,20 @@ import org.eclipse.lsp4j.SymbolKind
   * Constructor takes path (for location metadata) and input stream (protobuf bytes).
   * The parser instance is throw-away — one parse per file.
   */
-class SemanticdbParser(path: os.Path, is: InputStream) {
+class SemanticdbParser(path: os.Path, is: InputStream) extends StrictLogging {
 
   private val defs = Vector.newBuilder[SourceSymbolDefinition]
   private val refs = Vector.newBuilder[SourceSymbolReference]
 
-  def parse(): SourceSemanticdb = {
-    try {
-      val bytes = is.readAllBytes()
-      val documents = semanticdb.TextDocuments.parseFrom(bytes)
-      documents.documents.foreach(extractDocument)
-      SourceSemanticdb(defs.result(), refs.result())
-    } catch {
-      case _: Exception =>
-        SourceSemanticdb(Vector.empty, Vector.empty)
-    }
+  def parse(): SourceSemanticdb = try {
+    val bytes = is.readAllBytes()
+    val documents = semanticdb.TextDocuments.parseFrom(bytes)
+    documents.documents.foreach(extractDocument)
+    SourceSemanticdb(defs.result(), refs.result())
+  } catch {
+    case NonFatal(e) =>
+      logger.warn(s"Failed to parse SemanticDB ${path.last}: ${e.getMessage}")
+      SourceSemanticdb(Vector.empty, Vector.empty)
   }
 
   private def extractDocument(doc: semanticdb.TextDocument): Unit = {

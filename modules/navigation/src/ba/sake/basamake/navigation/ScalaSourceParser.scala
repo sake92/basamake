@@ -4,7 +4,9 @@ import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import scala.meta.*
 import scala.meta.dialects.{Scala3Future, Scala213}
+import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.SymbolKind
+import scala.util.control.NonFatal
 
 /** Parses Scala source files to extract SemanticDB-compatible symbol definitions
   * and same-file references. Single-pass traversal over scalameta AST.
@@ -12,7 +14,7 @@ import org.eclipse.lsp4j.SymbolKind
   * Constructor takes path (for location metadata) and input stream (for content).
   * The parser instance is throw-away — one parse per file.
   */
-class ScalaSourceParser(path: os.Path, is: InputStream) {
+class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
 
   // ── Derived constants ────────────────────────────
   private val fileName: String = path.last
@@ -32,7 +34,13 @@ class ScalaSourceParser(path: os.Path, is: InputStream) {
 
   /** Parse the source and extract definitions + references.
     * Returns empty vectors on parse failure. */
-  def parse(): SourceSemanticdb = {
+  def parse(): SourceSemanticdb = try parseInternal() catch {
+    case NonFatal(e) =>
+      logger.warn(s"Failed to parse Scala source ${path.last}: ${e.getMessage}")
+      SourceSemanticdb(Vector.empty, Vector.empty)
+  }
+
+  private def parseInternal(): SourceSemanticdb = {
     val content = String(is.readAllBytes(), StandardCharsets.UTF_8)
     parseSource(content) match
       case Some(src) =>
@@ -267,10 +275,19 @@ class ScalaSourceParser(path: os.Path, is: InputStream) {
       case imp: Import =>
         extractImportRefs(imp, scope)
 
-      case _: Export | _: Term | _: Defn.Given | _: Defn.GivenAlias | _: Decl.Given =>
-        // Exports: skip for now. Term at stat level: skip (expression statements).
-        // Anonymous givens: skip (no name to resolve).
-        ()
+      case d: Defn.ExtensionGroup =>
+        // Extension group wraps methods; extract param refs, then recurse into body
+        extractRefsFromTermParams(d.paramClauses, scope)
+        d.body match
+          case block: Term.Block => extractFromStats(block.stats, owner, scope, overloads)
+          case stat: Stat        => extractFromStats(List(stat), owner, scope, overloads)
+          case _                 => ()
+
+      case _: Export          => ()
+      case _: Term            => ()
+      case _: Defn.Given      => ()  // anonymous (named matched by guarded case above)
+      case _: Defn.GivenAlias => ()  // anonymous
+      case _: Decl.Given      => ()  // anonymous
     }
 
   // ── Owner helpers ─────────────────────────────────

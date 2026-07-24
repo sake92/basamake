@@ -364,4 +364,23 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       }
     } finally executor.shutdown()
   }
+
+  test("scala extension methods are extracted") {
+    val definitions = ScalaSourceParser(
+      """package com.example
+        |class Wrapper(val x: Int)
+        |extension (w: Wrapper)
+        |  def inc: Int = w.x + 1
+        |  def show: String = w.toString
+        |""".stripMargin,
+      fileName = "Wrapper.scala"
+    ).parse().definitions
+    val symbols = definitions.map(_.symbol.value).toSet
+    assertEquals(symbols, Set(
+      "com/example/Wrapper#",
+      "com/example/Wrapper#`<init>`().",
+      "com/example/Wrapper$package.inc().",
+      "com/example/Wrapper$package.show()."
+    ), clues(definitions))
+  }
 }

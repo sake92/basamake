@@ -1,13 +1,15 @@
 package ba.sake.basamake.navigation
 
 import java.io.InputStream
-import java.nio.charset.StandardCharsets
 import com.github.javaparser.JavaParser
 import com.github.javaparser.ast.body.*
 import com.github.javaparser.ast.Node
+import com.github.javaparser.ast.body.AnnotationDeclaration
 import com.github.javaparser.ast.`type`.{ClassOrInterfaceType, Type}
 import com.github.javaparser.ast.expr.{Name, SimpleName}
+import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.SymbolKind
+import scala.util.control.NonFatal
 
 /** Parses Java source files to extract SemanticDB-compatible symbol definitions
   * and same-file references. Single-pass traversal over JavaParser AST.
@@ -15,7 +17,7 @@ import org.eclipse.lsp4j.SymbolKind
   * Constructor takes path (for location metadata) and input stream (for content).
   * The parser instance is throw-away — one parse per file.
   */
-class JavaSourceParser(path: os.Path, is: InputStream) {
+class JavaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
 
   // No shared JavaParser instance — JavaCC-generated parser is stateful (token, jj_nt).
   // Concurrent extraction corrupts token stream: AssertionError "reference was unexpectedly null".
@@ -26,7 +28,13 @@ class JavaSourceParser(path: os.Path, is: InputStream) {
 
   // ── Public API ────────────────────────────────────
 
-  def parse(): SourceSemanticdb = {
+  def parse(): SourceSemanticdb = try parseInternal() catch {
+    case NonFatal(e) =>
+      logger.warn(s"Failed to parse Java source ${path.last}: ${e.getMessage}")
+      SourceSemanticdb(Vector.empty, Vector.empty)
+  }
+
+  private def parseInternal(): SourceSemanticdb = {
     val result = new JavaParser().parse(is)
     if !result.isSuccessful || !result.getResult.isPresent then
       return SourceSemanticdb(Vector.empty, Vector.empty)
@@ -65,6 +73,10 @@ class JavaSourceParser(path: os.Path, is: InputStream) {
         (kind, SymbolUtils.typeSymbol(owner, name))
       case _: EnumDeclaration =>
         (SymbolKind.Enum, SymbolUtils.typeSymbol(owner, name))
+      case _: AnnotationDeclaration =>
+        (SymbolKind.Interface, SymbolUtils.typeSymbol(owner, name))
+      case _ =>
+        (SymbolKind.Class, SymbolUtils.typeSymbol(owner, name))
     }
 
     defs += SourceSymbolDefinition(name, kind, typeOwner, nameRange(t.getName))

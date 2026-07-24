@@ -208,4 +208,14 @@ class JavaSourceParserSemanticdbTest extends FunSuite {
     val listRefs = result.references.filter(_.symbol.value == "java/util/List#")
     assert(listRefs.size >= 2, s"Expected at least 2 List# refs (import + usage), got ${listRefs.size}")
   }
+
+  test("java annotation declaration emits interface descriptor") {
+    val definitions = JavaSourceParser(
+      "package com.example;\n@interface NonnullByDefault {}"
+    ).parse().definitions
+    val symbols = definitions.map(_.symbol.value).toSet
+    assertEquals(symbols, Set(
+      "com/example/NonnullByDefault#"
+    ), clues(definitions))
+  }
 }
