@@ -42,7 +42,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         Some(parser.parse())
       } else None
     }
-    initIndexFromSources(workspacePath, workspaceIndex, parseSourceFile)
+    initIndexFromSources(workspacePath, parseSourceFile)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
@@ -60,14 +60,15 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   def getTextDocumentService(): TextDocumentService = this
 
   // ----- WorkspaceService
-  def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = ???
-  def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ???
+  def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = ()
+  def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
 
   // ----- TextDocumentService
-  def didChange(params: DidChangeTextDocumentParams): Unit = ???
-  def didClose(params: DidCloseTextDocumentParams): Unit = ???
-  def didOpen(params: DidOpenTextDocumentParams): Unit = ???
-  def didSave(params: DidSaveTextDocumentParams): Unit = ???
+  def didChange(params: DidChangeTextDocumentParams): Unit = ()
+  def didClose(params: DidCloseTextDocumentParams): Unit = ()
+  def didOpen(params: DidOpenTextDocumentParams): Unit = ()
+  def didSave(params: DidSaveTextDocumentParams): Unit = ()
+  
   override def definition(params: DefinitionParams)
       : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
         java.util.List[? <: Location],
@@ -87,23 +88,39 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locationsList)
   }
 
-// Pomoćna funkcija za pretvaranje tvoje SymbolLocation strukture u lsp4j.Location
-  private def toLspLocation(loc: SymbolLocation): Location =
+  override def documentSymbol(params: DocumentSymbolParams)
+      : CompletableFuture[
+        java.util.List[org.eclipse.lsp4j.jsonrpc.messages.Either[SymbolInformation, DocumentSymbol]]
+      ] =
+    CompletableFuture.completedFuture(
+      List.empty.asJava
+    )
+
+  override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
+    CompletableFuture.completedFuture(
+      List.empty.asJava
+    )
+
+  private def toLspLocation(loc: SymbolLocation): Location = {
     val uri = loc.path.toNIO.toUri.toString
     val range = new Range(
         new Position(loc.range.startLine, loc.range.startCharacter),
         new Position(loc.range.endLine, loc.range.endCharacter)
     )
     new Location(uri, range)
+  }
 
-  private def initIndexFromSources(workspaceRoot: os.Path, index: WorkspaceIndex, parseSourceFile: os.Path => Option[SourceSemanticdb]): Unit = {
+  private def initIndexFromSources(workspaceRoot: os.Path, parseSourceFile: os.Path => Option[SourceSemanticdb]): Unit = {
     val scalaAndJavaFiles = os.walk(workspaceRoot).filter { p =>
         os.isFile(p) && (p.ext == "scala" || p.ext == "java")
     }
 
-    for path <- scalaAndJavaFiles do
+    for path <- scalaAndJavaFiles do {
+      logger.debug(s"Parsing source file: $path")
         parseSourceFile(path).foreach { doc =>
-            index.indexFile(path, doc)
+          workspaceIndex.indexFile(path, doc)
         }
     }
+    logger.debug("Index: \n" + workspaceIndex.definitions.map { case (symbol, loc) => s"$symbol -> $loc" }.mkString("\n"))
+  }
 }

@@ -29,12 +29,16 @@ local const mainModules =
     root = "modules/main"
     template = new {
       scalaVersion = "3.7.4"
+      scalacOptions { "-deprecation" }
       mainClass = "ba.sake.basamake.Main"
       moduleDeps {
         navigationModules.main
       }
       deps {
+        "ch.qos.logback:logback-classic:1.5.12"
         "com.lihaoyi::mainargs:0.7.8"
+        "com.lihaoyi::os-lib-watch:0.11.9-M8"
+        "ba.sake::tupson:0.20.0"
       }
     }
     testTemplate = (template.asTest()) {
@@ -47,6 +51,7 @@ local const mainModules =
     }
   }.get
 
+/*
 local const coreModules =
   new CreateScalaModules {
     root = "modules/core"
@@ -76,7 +81,7 @@ local const coreModules =
         enabled = true
       }
     }
-  }.get
+  }.get*/
 
 modules {
   ...navigationModules.all

@@ -1,13 +1,15 @@
 package ba.sake.basamake.lsp.index
 
 import scala.collection.mutable
+import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.navigation.*
 
-class WorkspaceIndex {
+class WorkspaceIndex extends StrictLogging {
   // 1. Symbol -> Location za brzi GotoDef
-  private val definitions = mutable.Map[Symbol, SymbolLocation]()
+  val definitions = mutable.Map[Symbol, SymbolLocation]()
 
   // 2. Path -> SourceSemanticdb (potrebno da nađemo koji je Symbol pod kursorom)
+  // TODO scaffeine last 50??
   private val fileDocs = mutable.Map[os.Path, SourceSemanticdb]()
 
   // 3. Invertovana mapa za O(1) brisanje i re-indeksiranje fajlova
@@ -15,9 +17,8 @@ class WorkspaceIndex {
 
   /** Dodaje ili ažurira indeks za dati fajl */
   def indexFile(path: os.Path, doc: SourceSemanticdb): Unit = synchronized {
-    // Ako fajl već postoji u indeksu, prvo ga obrišemo
+    logger.debug(s"Indexing source file: $path")
     removeFile(path)
-
     fileDocs(path) = doc
     val createdSymbols = mutable.Set[Symbol]()
 
@@ -38,17 +39,25 @@ class WorkspaceIndex {
 
   /** Pretvara (Path, Line, Char) u Symbol koji se nalazi na toj poziciji */
   def findSymbolAt(path: os.Path, line: Int, char: Int): Option[Symbol] = synchronized {
-    fileDocs.get(path).flatMap { doc =>
+    logger.debug(s"Finding symbol at: $path:$line:$char")
+    val fileDoc = fileDocs.get(path)
+    logger.debug(s"fileDoc: $fileDoc")
+    fileDoc.flatMap { doc =>
       // Prvo tražimo u referencama (najčešći slučaj za goto-def), pa u definicijama
+      logger.debug(s"References: ${doc.references.map(r => s"${r.symbol} -> ${r.location.range}")}")
       val refMatch = doc.references.find(r => isInside(line, char, r.location.range)).map(_.symbol)
       val defMatch = doc.definitions.find(d => isInside(line, char, d.location.range)).map(_.symbol)
-      refMatch.orElse(defMatch)
+      val sym = refMatch.orElse(defMatch)
+      logger.debug(s"Found symbol: $sym")
+      sym
     }
   }
 
   /** Vraća lokaciju definicije za dati simbol */
   def gotoDefinition(symbol: Symbol): Option[SymbolLocation] = synchronized {
-    definitions.get(symbol)
+    val loc = definitions.get(symbol)
+    logger.debug(s"Goto definition for symbol: $symbol -> $loc")
+    loc
   }
 
   // Pomoćna funkcija koja provjerava da li je kursor unutar range-a

@@ -5,6 +5,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.launch.LSPLauncher
 import mainargs.*
 import ba.sake.basamake.lsp.BasamakeLanguageServer
+import ba.sake.basamake.util.LoggingUtils
 
 object Main extends StrictLogging {
 
@@ -16,9 +17,14 @@ object Main extends StrictLogging {
           stdio: Flag = Flag(true),
           rest: Leftover[String]
           ) = {
+
     if rest.value.nonEmpty then
       println(s"Unknown arguments: ${rest.value.mkString(" ")}")
-    println(s"Workspace: $workspace")
+
+    LoggingUtils.configureFileLogging(os.Path(workspace))
+    logger.info(s"Basamake LSP server starting in workspace: $workspace")
+    logger.info(s"Java: ${System.getProperty("java.version")}")
+
     val autoFlushOut = PrintStream(System.out, true, "UTF-8")
     val server = BasamakeLanguageServer(os.Path(workspace))
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
