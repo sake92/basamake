@@ -1,5 +1,9 @@
 
 - cache deps/JDK indices GLOBALLY !!!
+ - ~/.basamake/sources/jdk-21-hash/
+   - metadata.json (full_path, defines_packages)
+   - index.bin hashmap of symbol->url+range 
+ - use https://github.com/lmdbjava/lmdbjava for indexes
 
 - remove tupson in favor of upickle, no need for 2 json parsers..
 - improve nav experience:

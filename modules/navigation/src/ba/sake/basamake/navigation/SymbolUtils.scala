@@ -45,6 +45,13 @@ object SymbolUtils {
     Symbol(if segments.isEmpty then "_empty_/"
     else segments.mkString("", "/", "/"))
 
+  /** Encodes a package owner from a dot-separated string.
+    * Example: `packageOwner("com.example")` → `"com/example/"`
+    * Example: `packageOwner("")` → `"_empty_/"`
+    */
+  def packageOwner(dotted: String): Symbol =
+    packageOwner(if dotted.isEmpty then Nil else dotted.split('.').toList)
+
   /** Appends a type descriptor (`#`) to an owner.
     * Example: `typeSymbol("com/example/", "Outer")` → `"com/example/Outer#"`
     */

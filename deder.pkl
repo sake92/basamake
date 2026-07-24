@@ -5,7 +5,6 @@ local const navigationModules =
     root = "modules/navigation"
     template = new {
       scalaVersion = "3.7.4"
-      mainClass = "ba.sake.basamake.Main"
       deps {
         "com.typesafe.scala-logging::scala-logging:3.9.5"
         "org.scalameta::semanticdb-shared:4.17.2"

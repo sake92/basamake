@@ -23,7 +23,7 @@ class GlobalSymbolIndex {
       references(ref.symbol) = current :+ fullLocation*/
 
   // 2. Parsiranje otvorenih/lokalnih fajlova na živo (pri kucanju)
-  def updateLocalFile(fileUri: String, fileDefinitions: Vector[SymbolDefinition], fileReferences: Vector[SymbolReference]): Unit =
+  def updateLocalFile(fileUri: String, fileDefinitions: Vector[SourceSymbolDefinition], fileReferences: Vector[SourceSymbolReference]): Unit =
     ()
     // Osvježi samo podatke za taj lokalni fajl...
 }
