@@ -307,7 +307,10 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         d.paramClauses.foreach { clause =>
           clause.values.foreach { param =>
             param.name match
-              case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+              case meta.Name(value) =>
+                val paramSym = nextLocalSym()
+                bodyScope.defineTerm(value, paramSym)
+                defs += SourceSymbolDefinition(value, SymbolKind.Variable, paramSym, toSymbolLocation(param.name.pos))
               case _ => ()
           }
         }
@@ -326,7 +329,10 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
         d.paramClauses.foreach { clause =>
           clause.values.foreach { param =>
             param.name match
-              case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+              case meta.Name(value) =>
+                val paramSym = nextLocalSym()
+                bodyScope.defineTerm(value, paramSym)
+                defs += SourceSymbolDefinition(value, SymbolKind.Variable, paramSym, toSymbolLocation(param.name.pos))
               case _ => ()
           }
         }
@@ -578,53 +584,70 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
 
   // ── Body-level reference extraction ──────────────
 
-  /** Extract references (no definitions) from a single stat inside a function body.
-    * Defines local vals/vars/defs in the body scope so later usages resolve. */
+  /** Extract references and local definitions from a single stat inside a function body.
+    * Defines local vals/vars/defs in the body scope AND emits local SourceSymbolDefinitions.
+    * Local symbols (local<N>) are document-scoped per SemanticDB v4 spec. */
   private def extractRefsFromStat(stat: Stat, scope: ScopeTracker): Unit = stat match
     case d: Defn.Val =>
       d.pats.collect { case Pat.Var(name) =>
-        scope.defineTerm(name.value, nextLocalSym())
+        val localSym = nextLocalSym()
+        scope.defineTerm(name.value, localSym)
+        defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
       }
       d.decltpe.foreach(extractTypeRefs(_, scope))
       extractTermRefs(d.rhs, scope)
 
     case d: Defn.Var =>
       d.pats.collect { case Pat.Var(name) =>
-        scope.defineTerm(name.value, nextLocalSym())
+        val localSym = nextLocalSym()
+        scope.defineTerm(name.value, localSym)
+        defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
       }
       d.decltpe.foreach(extractTypeRefs(_, scope))
       d.rhs.foreach(extractTermRefs(_, scope))
 
     case d: Defn.Def =>
-      scope.defineTerm(d.name.value, nextLocalSym())
+      val localSym = nextLocalSym()
+      scope.defineTerm(d.name.value, localSym)
+      defs += SourceSymbolDefinition(d.name.value, SymbolKind.Method, localSym, toSymbolLocation(d.name.pos))
       extractRefsFromTermParams(d.paramClauses, scope)
       d.decltpe.foreach(extractTypeRefs(_, scope))
       val bodyScope = scope.child()
       d.paramClauses.foreach { clause =>
         clause.values.foreach { param =>
           param.name match
-            case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+            case meta.Name(value) =>
+              val paramSym = nextLocalSym()
+              bodyScope.defineTerm(value, paramSym)
+              defs += SourceSymbolDefinition(value, SymbolKind.Variable, paramSym, toSymbolLocation(param.name.pos))
             case _ => ()
         }
       }
       extractTermRefs(d.body, bodyScope)
 
     case d: Defn.Macro =>
-      scope.defineTerm(d.name.value, nextLocalSym())
+      val localSym = nextLocalSym()
+      scope.defineTerm(d.name.value, localSym)
+      defs += SourceSymbolDefinition(d.name.value, SymbolKind.Method, localSym, toSymbolLocation(d.name.pos))
       extractRefsFromTermParams(d.paramClauses, scope)
       d.decltpe.foreach(extractTypeRefs(_, scope))
       val bodyScope = scope.child()
       d.paramClauses.foreach { clause =>
         clause.values.foreach { param =>
           param.name match
-            case meta.Name(value) => bodyScope.defineTerm(value, nextLocalSym())
+            case meta.Name(value) =>
+              val paramSym = nextLocalSym()
+              bodyScope.defineTerm(value, paramSym)
+              defs += SourceSymbolDefinition(value, SymbolKind.Variable, paramSym, toSymbolLocation(param.name.pos))
             case _ => ()
         }
       }
       extractTermRefs(d.body, bodyScope)
 
     case d: Defn.Type =>
-      scope.defineType(d.name.value, nextLocalSym())
+      val localSym = nextLocalSym()
+      scope.defineType(d.name.value, localSym)
+      defs += SourceSymbolDefinition(d.name.value, SymbolKind.TypeParameter, localSym, toSymbolLocation(d.name.pos))
       extractTypeRefs(d.body, scope)
 
     case imp: Import =>
@@ -699,10 +722,18 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     case t: Term.For =>
       t.enums.foreach {
         case e: Enumerator.Generator =>
-          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          e.pat.collect { case Pat.Var(name) =>
+            val localSym = nextLocalSym()
+            scope.defineTerm(name.value, localSym)
+            defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+          }
           extractTermRefs(e.rhs, scope)
         case e: Enumerator.Val =>
-          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          e.pat.collect { case Pat.Var(name) =>
+            val localSym = nextLocalSym()
+            scope.defineTerm(name.value, localSym)
+            defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+          }
           extractTermRefs(e.rhs, scope)
         case _: Enumerator.Guard => ()
         case _ => ()
@@ -712,10 +743,18 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     case t: Term.ForYield =>
       t.enums.foreach {
         case e: Enumerator.Generator =>
-          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          e.pat.collect { case Pat.Var(name) =>
+            val localSym = nextLocalSym()
+            scope.defineTerm(name.value, localSym)
+            defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+          }
           extractTermRefs(e.rhs, scope)
         case e: Enumerator.Val =>
-          e.pat.collect { case Pat.Var(name) => scope.defineTerm(name.value, nextLocalSym()) }
+          e.pat.collect { case Pat.Var(name) =>
+            val localSym = nextLocalSym()
+            scope.defineTerm(name.value, localSym)
+            defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+          }
           extractTermRefs(e.rhs, scope)
         case _: Enumerator.Guard => ()
         case _ => ()
@@ -726,7 +765,11 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
       extractTermRefs(t.expr, scope)
       t.cases.foreach { c =>
         val caseScope = scope.child()
-        c.pat.collect { case Pat.Var(name) => caseScope.defineTerm(name.value, nextLocalSym()) }
+        c.pat.collect { case Pat.Var(name) =>
+          val localSym = nextLocalSym()
+          caseScope.defineTerm(name.value, localSym)
+          defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+        }
         extractTermRefs(c.body, caseScope)
         c.cond.foreach(extractTermRefs(_, caseScope))
       }
@@ -743,7 +786,10 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
       val fnScope = scope.child()
       t.params.foreach { param =>
         param.name match
-          case meta.Name(value) => fnScope.defineTerm(value, nextLocalSym())
+          case meta.Name(value) =>
+            val localSym = nextLocalSym()
+            fnScope.defineTerm(value, localSym)
+            defs += SourceSymbolDefinition(value, SymbolKind.Variable, localSym, toSymbolLocation(param.name.pos))
           case _ => ()
         param.decltpe.foreach(extractTypeRefs(_, fnScope))
       }
@@ -752,7 +798,11 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     case t: Term.PartialFunction =>
       t.cases.foreach { c =>
         val caseScope = scope.child()
-        c.pat.collect { case Pat.Var(name) => caseScope.defineTerm(name.value, nextLocalSym()) }
+        c.pat.collect { case Pat.Var(name) =>
+          val localSym = nextLocalSym()
+          caseScope.defineTerm(name.value, localSym)
+          defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+        }
         extractTermRefs(c.body, caseScope)
         c.cond.foreach(extractTermRefs(_, caseScope))
       }
@@ -766,8 +816,12 @@ class ScalaSourceParser(path: os.Path, is: InputStream) extends StrictLogging {
     case t: Term.Try =>
       extractTermRefs(t.expr, scope)
       t.catchp.foreach { catchBlock =>
-        val caseScope = scope.child()  // exception binding scope
-        catchBlock.pat.collect { case Pat.Var(name) => caseScope.defineTerm(name.value, nextLocalSym()) }
+        val caseScope = scope.child()
+        catchBlock.pat.collect { case Pat.Var(name) =>
+          val localSym = nextLocalSym()
+          caseScope.defineTerm(name.value, localSym)
+          defs += SourceSymbolDefinition(name.value, SymbolKind.Variable, localSym, toSymbolLocation(name.pos))
+        }
         extractTermRefs(catchBlock.body, caseScope)
         catchBlock.cond.foreach(extractTermRefs(_, caseScope))
       }

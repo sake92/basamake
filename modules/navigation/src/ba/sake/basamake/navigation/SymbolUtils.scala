@@ -87,6 +87,12 @@ object SymbolUtils {
   def localSymbol(index: Int): Symbol =
     Symbol(s"local$index")
 
+  /** Returns true for compiler-produced local symbols (`local0`, `local2+1`).
+    * Rejects global symbols that happen to start with "local" (e.g. `localDate#`).
+    * Regex: `^local\d+(\+\d+)?$` per SemanticDB v4 spec. */
+  def isLocalSymbol(symbol: String): Boolean =
+    symbol.matches("^local\\d+(\\+\\d+)?$$")
+
   /** Swap val (`.`) and def (`().`) descriptors for lookup fallback.
     * `_empty_/Foo.bar.` → `_empty_/Foo.bar().`
     * `_empty_/Foo.bar().` → `_empty_/Foo.bar.`

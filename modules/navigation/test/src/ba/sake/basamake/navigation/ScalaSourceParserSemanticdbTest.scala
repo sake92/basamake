@@ -37,7 +37,8 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "com/example/Outer#run().",
       "com/example/Outer#run(+1).",
       "com/example/Outer#Inner#",
-      "com/example/Outer#Inner#`<init>`()."
+      "com/example/Outer#Inner#`<init>`().",
+      "local0"   // param `x` of run(x: Int)
     ), clues(definitions))
   }
 
@@ -114,7 +115,10 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "com/example/Ops#",
       "com/example/Ops#`<init>`().",
       "com/example/Ops#`++`().",
-      "com/example/Ops#`++`(+1)."
+      "com/example/Ops#`++`(+1).",
+      "local0",   // param x of first ++
+      "local1",   // param x of second ++
+      "local2"    // param y of second ++
     ), clues(definitions))
   }
 
@@ -241,18 +245,24 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
   }
 
   test("scala no false positives for local values inside method bodies") {
-    val definitions = ScalaSourceParser(
+    val result = ScalaSourceParser(
       """package com.example
         |object Foo {
         |  def bar = { val local = 1; local }
         |}
         |""".stripMargin
-    ).parse().definitions
-    val names = definitions.map(_.name).toSet
-    // local val should NOT be indexed as a definition
-    assert(!names.contains("local"), clues(names))
+    ).parse()
+    val names = result.definitions.map(_.name).toSet
+    // Local val IS indexed as a definition (SemanticDB model: locals in same symbol list)
+    assert(names.contains("local"), clues(names))
     assert(names.contains("Foo"), clues(names))
     assert(names.contains("bar"), clues(names))
+    // Verify local symbol naming follows SemanticDB spec
+    val localSymbols = result.definitions.filter(d => SymbolUtils.isLocalSymbol(d.symbol.value))
+    assert(localSymbols.size >= 1, s"Expected at least 1 local def, got: ${localSymbols.map(_.symbol)}")
+    // Verify reference to local exists
+    val localRefs = result.references.filter(r => SymbolUtils.isLocalSymbol(r.symbol.value))
+    assert(localRefs.nonEmpty, s"Expected local var ref, got: ${result.references}")
   }
 
   test("scala deeply nested package declarations") {
@@ -290,7 +300,8 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "p/Mix#a.",
       "p/Mix#b.",
       "p/Mix#T#",
-      "p/Mix#m()."
+      "p/Mix#m().",
+      "local0"   // param x of m(x: Int)
     ), clues(definitions))
   }
 
@@ -418,9 +429,9 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
     val refSymbols = result.references.map(_.symbol.value).toSet
     assert(refSymbols.exists(_.startsWith("local")),
       s"Expected local var ref, got: $refSymbols")
-    // Local definitions should NOT appear in definitions vector
-    val defNames = result.definitions.map(_.name).toSet
-    assert(!defNames.contains("x"), s"Local val 'x' should NOT be in definitions, got: $defNames")
+    // Local val IS now indexed (SemanticDB model: locals in definitions)
+    val localDefSymbols = result.definitions.filter(d => SymbolUtils.isLocalSymbol(d.symbol.value)).map(_.name).toSet
+    assert(localDefSymbols.contains("x"), s"Expected local def for x, got: ${result.definitions.map(d => s"${d.name}@${d.symbol}")}")
   }
 
   test("references: param usage inside method body") {

@@ -5,17 +5,19 @@ import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.navigation.*
 
 class WorkspaceIndex extends StrictLogging {
-  // 1. Symbol -> Location za brzi GotoDef
+  // Global symbol -> definition location
   val definitions = mutable.Map[Symbol, SymbolLocation]()
 
-  // 2. Path -> SourceSemanticdb (potrebno da nađemo koji je Symbol pod kursorom)
+  // Path -> SourceSemanticdb (cursor position → symbol resolution)
   // TODO scaffeine last 50??
   private val fileDocs = mutable.Map[os.Path, SourceSemanticdb]()
 
-  // 3. Invertovana mapa za O(1) brisanje i re-indeksiranje fajlova
+  // Inverted map for O(1) file removal and re-indexing
   private val fileToSymbols = mutable.Map[os.Path, mutable.Set[Symbol]]()
 
-  /** Dodaje ili ažurira indeks za dati fajl */
+  /** Adds or updates the index for a file.
+    * Local symbols (local<N>) live in SourceSemanticdb.definitions but NOT in the global map.
+    * They are resolved per-file via findLocalDefinition. */
   def indexFile(path: os.Path, doc: SourceSemanticdb): Unit = synchronized {
     logger.debug(s"Indexing source file: $path")
     removeFile(path)
@@ -23,13 +25,14 @@ class WorkspaceIndex extends StrictLogging {
     val createdSymbols = mutable.Set[Symbol]()
 
     for defn <- doc.definitions do
-      definitions(defn.symbol) = defn.location
-      createdSymbols += defn.symbol
+      if !SymbolUtils.isLocalSymbol(defn.symbol.value) then
+        definitions(defn.symbol) = defn.location
+        createdSymbols += defn.symbol
 
     fileToSymbols(path) = createdSymbols
   }
 
-  /** Uklanja sve simbole koji su nastali u danom fajlu */
+  /** Removes all symbols created by a given file. */
   def removeFile(path: os.Path): Unit = synchronized {
     fileDocs.remove(path)
     fileToSymbols.remove(path).foreach { symbols =>
@@ -38,8 +41,8 @@ class WorkspaceIndex extends StrictLogging {
   }
 
   /** Returns ALL symbols at cursor position (companion class+object, val+def candidates). */
-  def findSymbolAt(path: os.Path, line: Int, char: Int): Vector[Symbol] = synchronized {
-    logger.debug(s"Finding symbol at: $path:$line:$char")
+  def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[Symbol] = synchronized {
+    logger.debug(s"Finding symbols at: $path:$line:$char")
     val fileDoc = fileDocs.get(path)
     logger.debug(s"fileDoc: $fileDoc")
     fileDoc.map { doc =>
@@ -52,8 +55,8 @@ class WorkspaceIndex extends StrictLogging {
     }.getOrElse(Vector.empty)
   }
 
-  /** Returns definition locations for a symbol. Falls back to alternate descriptor. */
-  def gotoDefinition(symbol: Symbol): Vector[SymbolLocation] = synchronized {
+  /** Returns global definition locations for a symbol. Falls back to alternate descriptor. */
+  def gotoDefinitions(symbol: Symbol): Vector[SymbolLocation] = synchronized {
     definitions.get(symbol) match
       case Some(loc) =>
         logger.debug(s"Goto definition for symbol: $symbol -> $loc")
@@ -69,7 +72,14 @@ class WorkspaceIndex extends StrictLogging {
             Vector.empty
   }
 
-  // Pomoćna funkcija koja provjerava da li je kursor unutar range-a
+  /** Returns local definition location for a symbol, scoped to a specific file.
+    * Used for local<N> symbols that live in SourceSemanticdb.definitions but not in the global map. */
+  def findLocalDefinition(path: os.Path, symbol: Symbol): Option[SymbolLocation] = synchronized {
+    fileDocs.get(path).flatMap { doc =>
+      doc.definitions.find(d => d.symbol == symbol).map(_.location)
+    }
+  }
+
   private def isInside(line: Int, char: Int, range: SymbolLocationRange): Boolean =
     if line < range.startLine || line > range.endLine then false
     else if line == range.startLine && char < range.startCharacter then false

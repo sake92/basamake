@@ -80,8 +80,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         val line   = params.getPosition.getLine
         val char   = params.getPosition.getCharacter
 
-        val locationsList = workspaceIndex.findSymbolAt(path, line, char)
-          .flatMap(symbol => workspaceIndex.gotoDefinition(symbol))
+        val locationsList = workspaceIndex.findSymbolsAt(path, line, char)
+          .flatMap { symbol =>
+            // Local first — nearest scope wins (compiler scoping rules)
+            workspaceIndex.findLocalDefinition(path, symbol) match
+              case Some(loc) => Vector(loc)
+              case None      => workspaceIndex.gotoDefinitions(symbol)
+          }
           .map(toLspLocation)
           .distinct
           .asJava
