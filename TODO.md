@@ -1,4 +1,7 @@
 
+- cache deps/JDK indices GLOBALLY !!!
+
+- remove tupson in favor of upickle, no need for 2 json parsers..
 - improve nav experience:
     - index target sources as ASTs first, so user can navigate in open files (prioritize open files first!!)
     - after compile, parse semanticdb files, those override initial index entries

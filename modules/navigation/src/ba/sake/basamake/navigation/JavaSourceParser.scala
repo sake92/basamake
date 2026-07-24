@@ -1,47 +1,49 @@
 package ba.sake.basamake.navigation
 
+import java.io.InputStream
 import com.github.javaparser.JavaParser
 import com.github.javaparser.ast.body.*
 import com.github.javaparser.ast.Node
-import org.eclipse.lsp4j.{Position, Range, SymbolKind}
+import org.eclipse.lsp4j.SymbolKind
 
-object JavaSourceParser {
+class JavaSourceParser(path: os.Path, is: InputStream) {
 
   // No shared JavaParser instance — JavaCC-generated parser is stateful (token, jj_nt).
   // Concurrent extraction corrupts token stream: AssertionError "reference was unexpectedly null".
 
-  def extractDefinitions(content: String, fileName: String = ""): List[SourceDefinition] = {
-    val result = new JavaParser().parse(content)
+  def parse(): SourceSemanticdb = {
+    val result = new JavaParser().parse(is)
     if !result.isSuccessful || !result.getResult.isPresent then
-      return List.empty
+      return SourceSemanticdb(Vector.empty, Vector.empty)
 
     val compilationUnit = result.getResult.get
     val pkgDecl = compilationUnit.getPackageDeclaration
     val pkg = if pkgDecl.isPresent then pkgDecl.get.getNameAsString else ""
-    val owner = SemanticdbSymbol.packageOwner(
+    val owner = SymbolUtils.packageOwner(
       if pkg.nonEmpty then pkg.split('.').toList else Nil
     )
 
-    val builder = List.newBuilder[SourceDefinition]
+    val builder = Vector.newBuilder[SourceSymbolDefinition]
     compilationUnit.getTypes.forEach { t => extractTypeDecl(t, owner, builder) }
-    builder.result()
+    // TODO parse references too
+    SourceSemanticdb(builder.result(), Vector.empty)
   }
 
   private def extractTypeDecl(
       t: TypeDeclaration[?],
-      owner: String,
-      builder: scala.collection.mutable.Builder[SourceDefinition, List[SourceDefinition]]
+      owner: Symbol,
+      builder: scala.collection.mutable.Builder[SourceSymbolDefinition, Vector[SourceSymbolDefinition]]
   ): Unit = {
     val name = t.getNameAsString
-    val (kind, typeOwner) = t match
-      case c: ClassOrInterfaceDeclaration if c.isInterface =>
-        (SymbolKind.Interface, SemanticdbSymbol.typeSymbol(owner, name))
+    val (kind, typeOwner) = t match {
+      case c: ClassOrInterfaceDeclaration  =>
+        val kind = if c.isInterface then SymbolKind.Interface else SymbolKind.Class
+        (kind, SymbolUtils.typeSymbol(owner, name))
       case _: EnumDeclaration =>
-        (SymbolKind.Enum, SemanticdbSymbol.typeSymbol(owner, name))
-      case _ =>
-        (SymbolKind.Class, SemanticdbSymbol.typeSymbol(owner, name))
+        (SymbolKind.Enum, SymbolUtils.typeSymbol(owner, name))
+    }
 
-    builder += SourceDefinition(name, kind, typeOwner, nameRange(t.getName))
+    builder += SourceSymbolDefinition(name, kind, typeOwner, nameRange(t.getName))
 
     // Collect members before emitting to assign overload indices
     val members = t.getMembers
@@ -54,10 +56,11 @@ object JavaSourceParser {
     // Enum constants
     t match {
       case enumDecl: EnumDeclaration =>
+        // TODO enter recursively into enum ..
         enumDecl.getEntries.forEach { entry =>
           val entryName = entry.getNameAsString
-          builder += SourceDefinition(entryName, SymbolKind.EnumMember,
-            SemanticdbSymbol.termSymbol(typeOwner, entryName), nameRange(entry.getName))
+          builder += SourceSymbolDefinition(entryName, SymbolKind.EnumMember,
+            SymbolUtils.termSymbol(typeOwner, entryName), nameRange(entry.getName))
         }
       case _ =>
     }
@@ -67,20 +70,20 @@ object JavaSourceParser {
       member match {
         case m: ConstructorDeclaration =>
           val idx = ctorIndices.getOrElse(m, 0)
-          builder += SourceDefinition("<init>", SymbolKind.Constructor,
-            SemanticdbSymbol.constructorSymbol(typeOwner, idx), nameRange(m.getName))
+          builder += SourceSymbolDefinition("<init>", SymbolKind.Constructor,
+            SymbolUtils.constructorSymbol(typeOwner, idx), nameRange(m.getName))
 
         case m: MethodDeclaration =>
           val mName = m.getNameAsString
           val idx = methodIndices.getOrElse(m, 0)
-          builder += SourceDefinition(mName, SymbolKind.Method,
-            SemanticdbSymbol.methodSymbol(typeOwner, mName, idx), nameRange(m.getName))
+          builder += SourceSymbolDefinition(mName, SymbolKind.Method,
+            SymbolUtils.methodSymbol(typeOwner, mName, idx), nameRange(m.getName))
 
         case f: FieldDeclaration =>
           f.getVariables.forEach { v =>
             val vName = v.getNameAsString
-            builder += SourceDefinition(vName, SymbolKind.Field,
-              SemanticdbSymbol.termSymbol(typeOwner, vName), nameRange(v.getName))
+            builder += SourceSymbolDefinition(vName, SymbolKind.Field,
+              SymbolUtils.termSymbol(typeOwner, vName), nameRange(v.getName))
           }
 
         case nested: TypeDeclaration[?] =>
@@ -117,13 +120,23 @@ object JavaSourceParser {
     begin.line * 100000L + begin.column
   }
 
-  private def nameRange(name: Node): Range = {
+  private def nameRange(name: Node): SymbolLocation = {
     val begin = name.getBegin.orElseThrow()
     val end = name.getEnd.orElseThrow()
     // javaparser positions are 1-based, LSP is 0-based
-    new Range(
-      new Position(begin.line - 1, begin.column - 1),
-      new Position(end.line - 1, end.column - 1)
+    SymbolLocation(
+      path = path,
+      SymbolLocationRange(
+        startLine = begin.line - 1,
+        startCharacter = begin.column - 1,
+        endLine = end.line - 1,
+        endCharacter = end.column - 1
+      )
     )
   }
+}
+
+object JavaSourceParser {
+  def apply(str: String): JavaSourceParser = 
+    new JavaSourceParser(os.pwd / "<inmemory>.java", new java.io.ByteArrayInputStream(str.getBytes))
 }

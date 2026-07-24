@@ -2,7 +2,7 @@ package ba.sake.basamake.navigation
 
 import ba.sake.basamake.util.UriUtils
 import java.security.MessageDigest
-import org.eclipse.lsp4j.{Position, Range, SymbolKind}
+import org.eclipse.lsp4j.{ Range, SymbolKind}
 
 final case class SourceDefinition(
     name: String,
