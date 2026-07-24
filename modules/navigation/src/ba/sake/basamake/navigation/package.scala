@@ -1,7 +1,6 @@
 package ba.sake.basamake.navigation
 
 /** Globally unique symbol, e.g. `com/example/Main#` or `com/example/Main#main().`
-  * Even local symbols are encoded as global symbols, e.g. `src/main/scala/Main.scala#local0`
   */
 opaque type Symbol = String
 object Symbol:
