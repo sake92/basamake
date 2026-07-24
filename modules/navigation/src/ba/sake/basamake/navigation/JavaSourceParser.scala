@@ -1,15 +1,30 @@
 package ba.sake.basamake.navigation
 
 import java.io.InputStream
+import java.nio.charset.StandardCharsets
 import com.github.javaparser.JavaParser
 import com.github.javaparser.ast.body.*
 import com.github.javaparser.ast.Node
+import com.github.javaparser.ast.`type`.{ClassOrInterfaceType, Type}
+import com.github.javaparser.ast.expr.{Name, SimpleName}
 import org.eclipse.lsp4j.SymbolKind
 
+/** Parses Java source files to extract SemanticDB-compatible symbol definitions
+  * and same-file references. Single-pass traversal over JavaParser AST.
+  *
+  * Constructor takes path (for location metadata) and input stream (for content).
+  * The parser instance is throw-away — one parse per file.
+  */
 class JavaSourceParser(path: os.Path, is: InputStream) {
 
   // No shared JavaParser instance — JavaCC-generated parser is stateful (token, jj_nt).
   // Concurrent extraction corrupts token stream: AssertionError "reference was unexpectedly null".
+
+  // ── Accumulators (class fields, parser is throw-away) ──
+  private val defs = Vector.newBuilder[SourceSymbolDefinition]
+  private val refs = Vector.newBuilder[SourceSymbolReference]
+
+  // ── Public API ────────────────────────────────────
 
   def parse(): SourceSemanticdb = {
     val result = new JavaParser().parse(is)
@@ -23,102 +38,165 @@ class JavaSourceParser(path: os.Path, is: InputStream) {
       if pkg.nonEmpty then pkg.split('.').toList else Nil
     )
 
-    val builder = Vector.newBuilder[SourceSymbolDefinition]
-    compilationUnit.getTypes.forEach { t => extractTypeDecl(t, owner, builder) }
-    // TODO parse references too
-    SourceSemanticdb(builder.result(), Vector.empty)
+    val scope = ScopeTracker.empty
+
+    // Process imports — extract refs and add to scope
+    compilationUnit.getImports.forEach { imp =>
+      extractImportRefs(imp, scope)
+    }
+
+    // Single-pass: process top-level types
+    compilationUnit.getTypes.forEach { t => extractTypeDecl(t, owner, scope) }
+
+    SourceSemanticdb(defs.result(), refs.result())
   }
+
+  // ── Type declaration extraction ───────────────────
 
   private def extractTypeDecl(
       t: TypeDeclaration[?],
       owner: Symbol,
-      builder: scala.collection.mutable.Builder[SourceSymbolDefinition, Vector[SourceSymbolDefinition]]
+      scope: ScopeTracker
   ): Unit = {
     val name = t.getNameAsString
     val (kind, typeOwner) = t match {
-      case c: ClassOrInterfaceDeclaration  =>
+      case c: ClassOrInterfaceDeclaration =>
         val kind = if c.isInterface then SymbolKind.Interface else SymbolKind.Class
         (kind, SymbolUtils.typeSymbol(owner, name))
       case _: EnumDeclaration =>
         (SymbolKind.Enum, SymbolUtils.typeSymbol(owner, name))
     }
 
-    builder += SourceSymbolDefinition(name, kind, typeOwner, nameRange(t.getName))
+    defs += SourceSymbolDefinition(name, kind, typeOwner, nameRange(t.getName))
+    scope.define(name, typeOwner)
 
-    // Collect members before emitting to assign overload indices
-    val members = t.getMembers
-    val memberList = scala.jdk.CollectionConverters.CollectionHasAsScala(members).asScala.toList
+    val childScope = scope.child()
+    val overloads = new OverloadTracker
 
-    // Compute overload indices for methods and constructors
-    val methodIndices = computeMethodOverloads(memberList)
-    val ctorIndices = computeConstructorOverloads(memberList)
-
-    // Enum constants
+    // Enum constants (processed before members for correct ordering)
     t match {
       case enumDecl: EnumDeclaration =>
-        // TODO enter recursively into enum ..
         enumDecl.getEntries.forEach { entry =>
           val entryName = entry.getNameAsString
-          builder += SourceSymbolDefinition(entryName, SymbolKind.EnumMember,
+          defs += SourceSymbolDefinition(entryName, SymbolKind.EnumMember,
             SymbolUtils.termSymbol(typeOwner, entryName), nameRange(entry.getName))
+          scope.define(entryName, SymbolUtils.termSymbol(typeOwner, entryName))
         }
       case _ =>
     }
 
-    // Members: methods, constructors, fields, nested types
-    memberList.foreach { member =>
+    // Extract refs from extends/implements
+    t match {
+      case c: ClassOrInterfaceDeclaration =>
+        c.getExtendedTypes.forEach(et => extractTypeRef(et, childScope))
+        c.getImplementedTypes.forEach(it => extractTypeRef(it, childScope))
+      case e: EnumDeclaration =>
+        e.getImplementedTypes.forEach(it => extractTypeRef(it, childScope))
+      case _ =>
+    }
+
+    // Single-pass over members: extract definitions and references
+    val members = t.getMembers
+    members.forEach { member =>
       member match {
         case m: ConstructorDeclaration =>
-          val idx = ctorIndices.getOrElse(m, 0)
-          builder += SourceSymbolDefinition("<init>", SymbolKind.Constructor,
+          val idx = overloads.ctorIdx
+          overloads.ctorIdx = idx + 1
+          defs += SourceSymbolDefinition("<init>", SymbolKind.Constructor,
             SymbolUtils.constructorSymbol(typeOwner, idx), nameRange(m.getName))
+          // Extract refs from constructor parameter types
+          m.getParameters.forEach { p => p.getType match
+            case refType: ClassOrInterfaceType => extractTypeRef(refType, childScope)
+            case _ => ()
+          }
 
         case m: MethodDeclaration =>
           val mName = m.getNameAsString
-          val idx = methodIndices.getOrElse(m, 0)
-          builder += SourceSymbolDefinition(mName, SymbolKind.Method,
+          val idx = overloads.methodIdx.getOrElse(mName, 0)
+          overloads.methodIdx(mName) = idx + 1
+          defs += SourceSymbolDefinition(mName, SymbolKind.Method,
             SymbolUtils.methodSymbol(typeOwner, mName, idx), nameRange(m.getName))
+          scope.define(mName, SymbolUtils.methodSymbol(typeOwner, mName, idx))
+          // Extract refs from return type and parameter types
+          m.getType match
+            case refType: ClassOrInterfaceType => extractTypeRef(refType, childScope)
+            case _ => ()
+          m.getParameters.forEach { p => p.getType match
+            case refType: ClassOrInterfaceType => extractTypeRef(refType, childScope)
+            case _ => ()
+          }
 
         case f: FieldDeclaration =>
+          // Extract ref from common field type
+          f.getCommonType match
+            case refType: ClassOrInterfaceType => extractTypeRef(refType, childScope)
+            case _ => ()
           f.getVariables.forEach { v =>
             val vName = v.getNameAsString
-            builder += SourceSymbolDefinition(vName, SymbolKind.Field,
+            defs += SourceSymbolDefinition(vName, SymbolKind.Field,
               SymbolUtils.termSymbol(typeOwner, vName), nameRange(v.getName))
           }
 
         case nested: TypeDeclaration[?] =>
-          extractTypeDecl(nested, typeOwner, builder)
+          extractTypeDecl(nested, typeOwner, childScope)
 
         case _ =>
       }
     }
   }
 
-  /** Compute lexical overload indices for methods within a type declaration.
-    * Methods are grouped by name, sorted by source position, and assigned 0-based indices. */
-  private def computeMethodOverloads(members: List[com.github.javaparser.ast.body.BodyDeclaration[?]]): Map[MethodDeclaration, Int] = {
-    val methods = members.collect { case m: MethodDeclaration => m }
-    val grouped = methods.groupBy(_.getNameAsString)
-    grouped.flatMap { case (_, ms) =>
-      val sorted = ms.sortBy(m => posOf(m))
-      sorted.zipWithIndex.map { case (m, idx) => m -> idx }
+  // ── Reference extraction ──────────────────────────
+
+  /** Extract a type reference from a JavaParser type node.
+    * For simple names like `List`, resolves against scope.
+    * For qualified names like `java.util.List`, constructs symbol from segments. */
+  private def extractTypeRef(tpe: ClassOrInterfaceType, scope: ScopeTracker): Unit = {
+    val scopeOpt = tpe.getScope
+    val symbol = if scopeOpt.isPresent then
+      // Qualified name: build full symbol from scope chain
+      val parts = collectScopeChain(tpe)
+      val name = parts.last
+      val pkg = parts.init
+      SymbolUtils.typeSymbol(SymbolUtils.packageOwner(pkg), name)
+    else
+      // Simple name: resolve against scope (imports or same-file defs)
+      val name = tpe.getNameAsString
+      scope.resolve(name).getOrElse {
+        // Unresolved external ref — still emit with best-guess symbol
+        SymbolUtils.typeSymbol(Symbol(""), name)
+      }
+    refs += SourceSymbolReference(symbol, nameRange(tpe.getName))
+  }
+
+  /** Collect the full qualified name chain from a ClassOrInterfaceType scope chain.
+    * E.g., `java.util.Map.Entry` → List("java", "util", "Map", "Entry") */
+  private def collectScopeChain(tpe: ClassOrInterfaceType): List[String] = {
+    val parts = List.newBuilder[String]
+    def collect(t: ClassOrInterfaceType): Unit = {
+      t.getScope.ifPresent(collect)
+      parts += t.getNameAsString
     }
+    collect(tpe)
+    parts.result()
   }
 
-  /** Compute lexical overload indices for constructors.
-    * Constructors are sorted by declaration start position (NOT name position,
-    * since all constructors share the same class name) and assigned 0-based indices. */
-  private def computeConstructorOverloads(members: List[com.github.javaparser.ast.body.BodyDeclaration[?]]): Map[ConstructorDeclaration, Int] = {
-    val ctors = members.collect { case c: ConstructorDeclaration => c }
-    val sorted = ctors.sortBy(c => posOf(c))
-    sorted.zipWithIndex.map { case (c, idx) => c -> idx }.toMap
+  /** Extract references from import statements.
+    * Explicit imports (not wildcard) provide known fully-qualified symbols.
+    * Adds to scope for future resolution. */
+  private def extractImportRefs(imp: com.github.javaparser.ast.ImportDeclaration, scope: ScopeTracker): Unit = {
+    if imp.isAsterisk then return // wildcard — can't resolve statically
+    val qualifiedName = imp.getNameAsString // e.g., "java.util.List"
+    val parts = qualifiedName.split('.').toList
+    if parts.isEmpty then return
+    val name = parts.last
+    val pkg = parts.init
+    val pkgOwner = SymbolUtils.packageOwner(pkg)
+    val sym = SymbolUtils.typeSymbol(pkgOwner, name)
+    refs += SourceSymbolReference(sym, nameRange(imp.getName))
+    scope.defineImport(name, pkgOwner.value)
   }
 
-  private def posOf(node: com.github.javaparser.ast.Node): Long = {
-    val begin = try node.getBegin.orElseThrow()
-      catch { case _: Exception => return Long.MaxValue }
-    begin.line * 100000L + begin.column
-  }
+  // ── Position helpers ──────────────────────────────
 
   private def nameRange(name: Node): SymbolLocation = {
     val begin = name.getBegin.orElseThrow()
@@ -137,6 +215,6 @@ class JavaSourceParser(path: os.Path, is: InputStream) {
 }
 
 object JavaSourceParser {
-  def apply(str: String): JavaSourceParser = 
-    new JavaSourceParser(os.pwd / "<inmemory>.java", new java.io.ByteArrayInputStream(str.getBytes))
+  def apply(str: String, fileName: String = "<inmemory>.java"): JavaSourceParser =
+    new JavaSourceParser(os.pwd / fileName, new java.io.ByteArrayInputStream(str.getBytes))
 }

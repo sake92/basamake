@@ -133,4 +133,79 @@ class JavaSourceParserSemanticdbTest extends FunSuite {
       }
     } finally executor.shutdown()
   }
+
+  test("javaparser returns members in source order for overload tracking") {
+    val definitions = JavaSourceParser(
+      """class Foo {
+        |  Foo() {}
+        |  void bar(String s) {}
+        |  int x;
+        |  void bar(int i) {}
+        |  Foo(int y) {}
+        |}
+        |""".stripMargin
+    ).parse().definitions
+    // Constructors: first Foo() is idx 0, second Foo(int) is idx 1
+    val ctors = definitions.filter(_.name == "<init>").sortBy(_.location.range.startLine)
+    assertEquals(ctors(0).symbol.value, "_empty_/Foo#`<init>`().", clues(ctors))
+    assertEquals(ctors(1).symbol.value, "_empty_/Foo#`<init>`(+1).", clues(ctors))
+    // Methods: first bar(String) is idx 0, second bar(int) is idx 1
+    val methods = definitions.filter(_.name == "bar").sortBy(_.location.range.startLine)
+    assertEquals(methods(0).symbol.value, "_empty_/Foo#bar().", clues(methods))
+    assertEquals(methods(1).symbol.value, "_empty_/Foo#bar(+1).", clues(methods))
+  }
+
+  test("java references: explicit imports") {
+    val result = JavaSourceParser(
+      """package com.example;
+        |import java.util.List;
+        |import java.util.Map;
+        |class Foo {
+        |  List<String> items;
+        |  Map<String, Integer> lookup;
+        |}
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    assert(refSymbols.contains("java/util/List#"),
+      s"Expected import ref to List#, got: $refSymbols")
+    assert(refSymbols.contains("java/util/Map#"),
+      s"Expected import ref to Map#, got: $refSymbols")
+  }
+
+  test("java references: extends and implements") {
+    val result = JavaSourceParser(
+      """package com.example;
+        |import java.io.Serializable;
+        |class Base {}
+        |class Foo extends Base implements Serializable {
+        |}
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    // Should reference Base (same-file) and Serializable (import)
+    assert(refSymbols.contains("com/example/Base#"),
+      s"Expected extends ref to Base#, got: $refSymbols")
+    assert(refSymbols.contains("java/io/Serializable#"),
+      s"Expected implements ref to Serializable#, got: $refSymbols")
+  }
+
+  test("java references: field and return types") {
+    val result = JavaSourceParser(
+      """package com.example;
+        |import java.util.List;
+        |class Service {
+        |  public List<String> getItems() { return null; }
+        |  public void process(List<String> items) {}
+        |}
+        |""".stripMargin
+    ).parse()
+    val refSymbols = result.references.map(_.symbol.value).toSet
+    // List# should appear from return type, param type, AND import
+    assert(refSymbols.contains("java/util/List#"),
+      s"Expected ref to List#, got: $refSymbols")
+    // Should have multiple occurrences of List# (import + return type + param type)
+    val listRefs = result.references.filter(_.symbol.value == "java/util/List#")
+    assert(listRefs.size >= 2, s"Expected at least 2 List# refs (import + usage), got ${listRefs.size}")
+  }
 }
