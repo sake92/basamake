@@ -2,7 +2,7 @@ package ba.sake.basamake.navigation
 
 import org.eclipse.lsp4j.SymbolKind
 
-// results of parsing source files (Scala, Java) to extract definitions and references
+// results of parsing: source files (Scala, Java) to extract definitions and references
 
 final case class SourceSemanticdb(
     definitions: Vector[SourceSymbolDefinition],
@@ -18,6 +18,5 @@ final case class SourceSymbolDefinition(
 
 final case class SourceSymbolReference(
     symbol: Symbol,
-    // name: String,
     location: SymbolLocation
 )
