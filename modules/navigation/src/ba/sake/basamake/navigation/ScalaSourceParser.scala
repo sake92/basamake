@@ -47,12 +47,12 @@ class ScalaSourceParser(path: os.Path, is: InputStream) {
 
   // ── Source parsing ───────────────────────────────
 
-  private def parseSource(content: String): Option[Source] =
+  private def parseSource(content: String): Option[Source] = {
     val parsed3 = {
       given Dialect = Scala3Future
       content.parse[Source]
     }
-    parsed3 match
+    parsed3 match {
       case Parsed.Success(source) => Some(source)
       case Parsed.Error(_, _, _) =>
         val parsed213 = {
@@ -62,6 +62,8 @@ class ScalaSourceParser(path: os.Path, is: InputStream) {
         parsed213 match
           case Parsed.Success(source) => Some(source)
           case Parsed.Error(_, _, _) => None
+    }
+  }
 
   // ── Core traversal ───────────────────────────────
 
