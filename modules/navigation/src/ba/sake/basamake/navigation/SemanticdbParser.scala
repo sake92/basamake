@@ -96,6 +96,8 @@ class SemanticdbParser(path: os.Path, is: InputStream) {
 }
 
 object SemanticdbParser {
+  def apply(path: os.Path): SemanticdbParser =
+    new SemanticdbParser(path, os.read.inputStream(path))
   def apply(bytes: Array[Byte]): SemanticdbParser =
     new SemanticdbParser(os.pwd / "<inmemory>.semanticdb", new java.io.ByteArrayInputStream(bytes))
 }

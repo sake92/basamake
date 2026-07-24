@@ -215,6 +215,8 @@ class JavaSourceParser(path: os.Path, is: InputStream) {
 }
 
 object JavaSourceParser {
+  def apply(path: os.Path): JavaSourceParser =
+    new JavaSourceParser(path, os.read.inputStream(path))
   def apply(str: String, fileName: String = "<inmemory>.java"): JavaSourceParser =
     new JavaSourceParser(os.pwd / fileName, new java.io.ByteArrayInputStream(str.getBytes))
 }

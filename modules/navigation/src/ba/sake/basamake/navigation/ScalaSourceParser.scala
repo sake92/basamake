@@ -433,6 +433,9 @@ class ScalaSourceParser(path: os.Path, is: InputStream) {
 }
 
 object ScalaSourceParser {
+  def apply(path: os.Path): ScalaSourceParser =
+    new ScalaSourceParser(path, os.read.inputStream(path))
+
   def apply(str: String, fileName: String = "<inmemory>.scala"): ScalaSourceParser =
     new ScalaSourceParser(os.pwd / fileName, new java.io.ByteArrayInputStream(str.getBytes))
 }
