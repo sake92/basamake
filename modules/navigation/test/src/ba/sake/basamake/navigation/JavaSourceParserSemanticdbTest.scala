@@ -167,10 +167,10 @@ class JavaSourceParserSemanticdbTest extends FunSuite {
         |""".stripMargin
     ).parse()
     val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("java/util/List#"),
-      s"Expected import ref to List#, got: $refSymbols")
-    assert(refSymbols.contains("java/util/Map#"),
-      s"Expected import ref to Map#, got: $refSymbols")
+    assert(refSymbols.contains("List"),
+      s"Expected import ref List, got: $refSymbols")
+    assert(refSymbols.contains("Map"),
+      s"Expected import ref Map, got: $refSymbols")
   }
 
   test("java references: extends and implements") {
@@ -183,11 +183,11 @@ class JavaSourceParserSemanticdbTest extends FunSuite {
         |""".stripMargin
     ).parse()
     val refSymbols = result.references.map(_.symbol.value).toSet
-    // Should reference Base (same-file) and Serializable (import)
-    assert(refSymbols.contains("com/example/Base#"),
-      s"Expected extends ref to Base#, got: $refSymbols")
-    assert(refSymbols.contains("java/io/Serializable#"),
-      s"Expected implements ref to Serializable#, got: $refSymbols")
+    // Records bare names from extends/implements
+    assert(refSymbols.contains("Base"),
+      s"Expected extends ref Base, got: $refSymbols")
+    assert(refSymbols.contains("Serializable"),
+      s"Expected implements ref Serializable, got: $refSymbols")
   }
 
   test("java references: field and return types") {
@@ -201,12 +201,12 @@ class JavaSourceParserSemanticdbTest extends FunSuite {
         |""".stripMargin
     ).parse()
     val refSymbols = result.references.map(_.symbol.value).toSet
-    // List# should appear from return type, param type, AND import
-    assert(refSymbols.contains("java/util/List#"),
-      s"Expected ref to List#, got: $refSymbols")
-    // Should have multiple occurrences of List# (import + return type + param type)
-    val listRefs = result.references.filter(_.symbol.value == "java/util/List#")
-    assert(listRefs.size >= 2, s"Expected at least 2 List# refs (import + usage), got ${listRefs.size}")
+    // Records bare name "List" from import, return type, and param type
+    assert(refSymbols.contains("List"),
+      s"Expected bare-name ref List, got: $refSymbols")
+    // Should have multiple occurrences of List
+    val listRefs = result.references.filter(_.symbol.value == "List")
+    assert(listRefs.size >= 2, s"Expected at least 2 List refs (import + usage), got ${listRefs.size}")
   }
 
   test("java annotation declaration emits interface descriptor") {

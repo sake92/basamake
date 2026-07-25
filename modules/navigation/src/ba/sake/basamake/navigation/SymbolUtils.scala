@@ -93,15 +93,5 @@ object SymbolUtils {
   def isLocalSymbol(symbol: String): Boolean =
     symbol.matches("^local\\d+(\\+\\d+)?$$")
 
-  /** Swap val (`.`) and def (`().`) descriptors for lookup fallback.
-    * `_empty_/Foo.bar.` → `_empty_/Foo.bar().`
-    * `_empty_/Foo.bar().` → `_empty_/Foo.bar.`
-    * No-op for other symbol types. */
-  def alternateDescriptor(sym: Symbol): Symbol =
-    val v = sym.value
-    if v.endsWith("().") then Symbol(v.stripSuffix("().") + ".")
-    else if v.endsWith(".") && !v.endsWith("/") then Symbol(v.stripSuffix(".") + "().")
-    else sym
-
 
 }

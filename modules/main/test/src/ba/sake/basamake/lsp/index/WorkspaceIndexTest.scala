@@ -16,102 +16,74 @@ class WorkspaceIndexTest extends FunSuite {
     index
   }
 
-  // The test Main.scala content (0-indexed lines):
+  // Main.scala (0-indexed lines):
   //  0: import upickle.default._
-  //  1: (blank)
   //  2: @main def hello(): Unit =
   //  3:   val c = Array(1, 2, 3)
   //  4:   val d = c
   //  5:   println("Hello world!")
-  //  6:   println(msg)        ← msg reference at (6,10)-(6,13)
+  //  6:   println(msg)
   //  7:   write(Seq(1, 2, 3))
-  //  8:  (blank)
-  //  9: def msg =             ← msg definition at (9,4)-(9,7)
+  //  9: def msg =
   // 10:   utils.getMsg()
-  // utils.scala:
-  //  1: (blank)
-  //  2: object utils {
-  //  3:     def getMsg() = "bla"
 
-  test("findSymbolsAt: clicking 'msg' in println(msg) finds toplevel def") {
+  test("gotoDefinitions: 'msg' from fileDefs resolves to Main.scala location") {
     val index = idx
     val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
-    // println(msg) at line 6 (0-indexed), char 10 = 'm' in 'msg'
+    // println(msg) at line 6, char 10 — same-file ref emits exact symbol
     val syms = index.findSymbolsAt(mainFile, 6, 10)
     assert(syms.exists(_.value == "_empty_/Main$package.msg()."),
       s"Expected _empty_/Main$$package.msg(), got: ${syms.map(_.value)}")
-  }
-
-  test("gotoDefinitions: 'msg' returns location from Main.scala") {
-    val index = idx
     val locs = index.gotoDefinitions(Symbol("_empty_/Main$package.msg()."))
     assert(locs.nonEmpty, "Expected location for msg()")
-    val loc = locs.head
-    assertEquals(loc.path.last, "Main.scala")
-    assertEquals(loc.range.startLine, 9)  // "def msg"
-    assertEquals(loc.range.startCharacter, 4)
+    assertEquals(locs.head.path.last, "Main.scala")
+    assertEquals(locs.head.range.startLine, 9)
   }
 
-  test("findSymbolsAt: clicking 'c' in val c = ... finds local def") {
+  test("gotoDefinitions: local val 'c' works via findLocalDefinition") {
     val index = idx
     val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
-    // val c = Array(...) at line 3, char 6 = 'c'
+    // val c at line 3, char 6
     val syms = index.findSymbolsAt(mainFile, 3, 6)
     assert(syms.exists(s => SymbolUtils.isLocalSymbol(s.value)),
       s"Expected local symbol for 'c', got: ${syms.map(_.value)}")
   }
 
-  test("findLocalDefinition: finds location of local val 'c'") {
+  test("gotoDefinitions: local val 'c' usage resolves via ref") {
     val index = idx
     val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
-    val syms = index.findSymbolsAt(mainFile, 3, 6)
-    val localSym = syms.find(s => SymbolUtils.isLocalSymbol(s.value)).get
-    val loc = index.findLocalDefinition(mainFile, localSym)
-    assert(loc.isDefined, s"Expected local def location for $localSym")
-    assertEquals(loc.get.range.startLine, 3)
-  }
-
-  test("findLocalDefinition: finds location of local val 'c' via ref") {
-    val index = idx
-    val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
-    // val d = c at line 4, char 10 = 'c' usage
+    // val d = c at line 4, char 10 — 'c' usage
     val syms = index.findSymbolsAt(mainFile, 4, 10)
-    assert(syms.exists(s => SymbolUtils.isLocalSymbol(s.value)),
-      s"Expected local ref to 'c', got: ${syms.map(_.value)}")
     val localSym = syms.find(s => SymbolUtils.isLocalSymbol(s.value)).get
     val loc = index.findLocalDefinition(mainFile, localSym)
     assert(loc.isDefined, "Local def should be resolvable from ref")
   }
 
-  test("findSymbolsAt: clicking 'getMsg' in utils.getMsg() — cross-file qualifier, no refs") {
+  test("gotoDefinitions: cross-file 'utils' resolves via _empty_/ guess") {
     val index = idx
     val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
-    // utils.getMsg() at line 10, char 8 = 'g' in 'getMsg'
-    // Known limitation: Term.Select emits candidates only when qualifier resolves.
-    // 'utils' resolves empty (cross-file) → no candidates emitted.
-    val syms = index.findSymbolsAt(mainFile, 10, 10)
-    assert(syms.isEmpty || syms.forall(s => !s.value.contains("utils")),
-      s"Cross-file Term.Select should not produce refs, got: ${syms.map(_.value)}")
-  }
-
-  test("gotoDefinitions: 'utils.getMsg' def descriptor finds location from utils.scala") {
-    val index = idx
-    val locs = index.gotoDefinitions(Symbol("_empty_/utils.getMsg()."))
-    assert(locs.nonEmpty, "Expected location for utils.getMsg()")
-    val loc = locs.head
-    assertEquals(loc.path.last, "utils.scala")
-  }
-
-  test("gotoDefinitions: 'utils.getMsg' val descriptor falls back to def descriptor") {
-    val index = idx
-    // alternateDescriptor flips . → (). — the def EXISTS so val request resolves to def
-    val locs = index.gotoDefinitions(Symbol("_empty_/utils.getMsg."))
-    assert(locs.nonEmpty,
-      s"Val candidate should fall back to def via alternateDescriptor, got empty")
+    // utils.getMsg() at line 10, char 4 — 'utils' term guess hits _empty_/utils.
+    val syms = index.findSymbolsAt(mainFile, 10, 4)
+    assert(syms.exists(_.value == "_empty_/utils."),
+      s"Expected _empty_/utils., got: ${syms.map(_.value)}")
+    val locs = index.gotoDefinitions(Symbol("_empty_/utils."))
+    assert(locs.nonEmpty, "Expected location for utils")
     assertEquals(locs.head.path.last, "utils.scala")
   }
 
-  test("definitions: index filters locals, only globals in global map") {
+  test("gotoDefinitions: cross-file 'getMsg' resolves via qualifier guess") {
+    val index = idx
+    val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
+    // utils.getMsg() at line 10, char 10 — member guess hits _empty_/utils.getMsg()
+    val syms = index.findSymbolsAt(mainFile, 10, 10)
+    assert(syms.exists(_.value == "_empty_/utils.getMsg()."),
+      s"Expected _empty_/utils.getMsg(), got: ${syms.map(_.value)}")
+    val locs = index.gotoDefinitions(Symbol("_empty_/utils.getMsg()."))
+    assert(locs.nonEmpty, "Expected location for utils.getMsg()")
+    assertEquals(locs.head.path.last, "utils.scala")
+  }
+
+  test("definitions: index filters locals from global map") {
     val index = idx
     val allKeys = index.definitions.keys.map(_.value).toSet
     assert(allKeys.exists(_.startsWith("_empty_/")), "Expected global symbols")

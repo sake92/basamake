@@ -10,38 +10,21 @@ private[navigation] final class OverloadTracker {
   var ctorIdx: Int = 0
 }
 
-/** Stack-based scope tracker for same-file reference resolution.
-  * Each scope maps simple names to full SemanticDB symbols.
-  * Term and type namespaces are tracked separately so companions coexist.
-  * Imports store base paths for constructing symbols on resolution. */
-private[navigation] final class ScopeTracker(parent: Option[ScopeTracker]) {
-  private val termEntries = mutable.Map.empty[String, Symbol]
-  private val typeEntries = mutable.Map.empty[String, Symbol]
-  private val importPaths = mutable.Map.empty[String, String]
+/** Body-level scope tracker for local variable/param resolution.
+  * Only used inside method bodies — tracks local val/var/def/param bindings.
+  * No global resolution, no imports, no namespaces. */
+private[navigation] final class LocalScope(parent: Option[LocalScope]) {
+  private val entries = mutable.Map.empty[String, Symbol]
 
-  def defineTerm(name: String, symbol: Symbol): Unit =
-    termEntries(name) = symbol
+  def define(name: String, symbol: Symbol): Unit =
+    entries(name) = symbol
 
-  def defineType(name: String, symbol: Symbol): Unit =
-    typeEntries(name) = symbol
+  def lookup(name: String): Option[Symbol] =
+    entries.get(name).orElse(parent.flatMap(_.lookup(name)))
 
-  def defineImport(name: String, basePath: String): Unit =
-    importPaths(name) = basePath
-
-  /** Resolve a name across both namespaces and imports.
-    * Returns all matching symbols (term + type).
-    * Companions and name shadowing produce multiple results. */
-  def resolve(name: String): Vector[Symbol] =
-    val local = typeEntries.get(name).toVector ++ termEntries.get(name).toVector
-    if local.nonEmpty then local
-    else
-      importPaths.get(name) match
-        case Some(path) => Vector(SymbolUtils.typeSymbol(Symbol(path), name))
-        case None       => parent.map(_.resolve(name)).getOrElse(Vector.empty)
-
-  def child(): ScopeTracker = new ScopeTracker(Some(this))
+  def child(): LocalScope = new LocalScope(Some(this))
 }
 
-private[navigation] object ScopeTracker {
-  def empty: ScopeTracker = new ScopeTracker(None)
+private[navigation] object LocalScope {
+  def empty: LocalScope = new LocalScope(None)
 }

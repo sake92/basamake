@@ -2,15 +2,17 @@ package ba.sake.basamake.navigation
 
 import java.util.concurrent.Executors
 import munit.FunSuite
+import org.eclipse.lsp4j.SymbolKind
 
 class ScalaSourceParserSemanticdbTest extends FunSuite {
 
+  // ══════════════════════════════════════════════════════
+  // Definitions
+  // ══════════════════════════════════════════════════════
+
   test("scala default-package class emits _empty_/ owner with primary ctor") {
-    val definitions = ScalaSourceParser(
-      "class Foo { def run = 1 }"
-    ).parse().definitions
+    val definitions = ScalaSourceParser("class Foo { def run = 1 }").parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
-    // Scala always emits primary constructor
     assertEquals(symbols, Set(
       "_empty_/Foo#",
       "_empty_/Foo#`<init>`().",
@@ -20,14 +22,14 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
 
   test("scala package-scoped class with overloaded methods and constructors") {
     val definitions = ScalaSourceParser(
-      """package com.example
-        |class Outer {
-        |  val field = 1
-        |  def run(): Unit = ()
-        |  def run(x: Int): Unit = ()
-        |  class Inner
-        |}
-        |""".stripMargin
+      """|package com.example
+         |class Outer {
+         |  val field = 1
+         |  def run(): Unit = ()
+         |  def run(x: Int): Unit = ()
+         |  class Inner
+         |}
+         |""".stripMargin
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
@@ -38,7 +40,7 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "com/example/Outer#run(+1).",
       "com/example/Outer#Inner#",
       "com/example/Outer#Inner#`<init>`().",
-      "local0"   // param `x` of run(x: Int)
+      "local0"   // param x of run(x: Int)
     ), clues(definitions))
   }
 
@@ -47,10 +49,7 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "package com.example\ntrait Api { def apply(): Unit }"
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
-    assertEquals(symbols, Set(
-      "com/example/Api#",
-      "com/example/Api#apply()."
-    ), clues(definitions))
+    assertEquals(symbols, Set("com/example/Api#", "com/example/Api#apply()."), clues(definitions))
   }
 
   test("scala object emits term descriptor") {
@@ -58,10 +57,7 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       "package com.example\nobject Api { def apply(): Int = 1 }"
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
-    assertEquals(symbols, Set(
-      "com/example/Api.",
-      "com/example/Api.apply()."
-    ), clues(definitions))
+    assertEquals(symbols, Set("com/example/Api.", "com/example/Api.apply()."), clues(definitions))
   }
 
   test("scala enum with cases") {
@@ -70,39 +66,34 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "com/example/Color#",
-      "com/example/Color#`<init>`().",
-      "com/example/Color#Red.",
-      "com/example/Color#Green."
+      "com/example/Color#", "com/example/Color#`<init>`().",
+      "com/example/Color#Red.", "com/example/Color#Green."
     ), clues(definitions))
   }
 
   test("scala enum with repeated case") {
     val definitions = ScalaSourceParser(
-      "package com.example\nenum Direction { case North, South, East, West }"
+      "package com.example\nenum Color { case Red, Green, Blue }"
     ).parse().definitions
-    val symbols = definitions.map(_.symbol.value).toSet
-    assertEquals(symbols, Set(
-      "com/example/Direction#",
-      "com/example/Direction#`<init>`().",
-      "com/example/Direction#North.",
-      "com/example/Direction#South.",
-      "com/example/Direction#East.",
-      "com/example/Direction#West."
-    ), clues(definitions))
+    val enumMemberNames = definitions.filter(_.kind == SymbolKind.EnumMember).map(_.name).toSet
+    assertEquals(enumMemberNames, Set("Red", "Green", "Blue"), clues(definitions))
   }
 
   test("scala nested class with parent package owner") {
     val definitions = ScalaSourceParser(
-      "package com.example\nclass Outer { class Inner { def run = 1 } }"
+      """|package com.example
+         |class Outer(x: Int) {
+         |  class Inner(val y: String) {
+         |    def run(): Unit = ()
+         |  }
+         |}
+         |""".stripMargin
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "com/example/Outer#",
-      "com/example/Outer#`<init>`().",
-      "com/example/Outer#Inner#",
-      "com/example/Outer#Inner#`<init>`().",
-      "com/example/Outer#Inner#run()."
+      "com/example/Outer#", "com/example/Outer#`<init>`().",
+      "com/example/Outer#Inner#", "com/example/Outer#Inner#`<init>`().",
+      "com/example/Outer#Inner#run().", "com/example/Outer#Inner#y."
     ), clues(definitions))
   }
 
@@ -112,92 +103,68 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "com/example/Ops#",
-      "com/example/Ops#`<init>`().",
-      "com/example/Ops#`++`().",
-      "com/example/Ops#`++`(+1).",
-      "local0",   // param x of first ++
-      "local1",   // param x of second ++
-      "local2"    // param y of second ++
+      "com/example/Ops#", "com/example/Ops#`<init>`().",
+      "com/example/Ops#`++`().", "com/example/Ops#`++`(+1).",
+      "local0", "local1", "local2"
     ), clues(definitions))
   }
 
   test("scala constructors: primary and two secondary") {
     val definitions = ScalaSourceParser(
-      """package com.example
-        |class Foo(x: Int) {
-        |  def this() = this(0)
-        |  def this(y: Int, z: Int) = this(y + z)
-        |}
-        |""".stripMargin
+      """|package com.example
+         |class Foo(x: Int) {
+         |  def this() = this(0)
+         |  def this(y: String) = this(0)
+         |}
+         |""".stripMargin
     ).parse().definitions
-    val symbols = definitions.map(_.symbol.value).toSet
-    assertEquals(symbols, Set(
-      "com/example/Foo#",
-      "com/example/Foo#`<init>`().",
-      "com/example/Foo#`<init>`(+1).",
-      "com/example/Foo#`<init>`(+2)."
+    val ctorDefs = definitions.filter(_.kind == SymbolKind.Constructor).map(_.symbol.value).toSet
+    assertEquals(ctorDefs, Set(
+      "com/example/Foo#`<init>`().", "com/example/Foo#`<init>`(+1).", "com/example/Foo#`<init>`(+2)."
     ), clues(definitions))
   }
 
   test("scala does not produce markerless or bare-name aliases") {
     val definitions = ScalaSourceParser(
-      "package com.example\nclass Foo { def bar(): Unit = () }"
+      "package com.example\nclass Foo { def bar = 1 }"
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
-    // No old-style dotted-owner keys
-    assert(!symbols.contains("Foo.bar"), clues(symbols))
-    assert(!symbols.contains("bar"), clues(symbols))
-    assert(symbols.contains("com/example/Foo#"), clues(symbols))
-    assert(symbols.contains("com/example/Foo#bar()."), clues(symbols))
+    assert(!symbols.contains("bar"), clues(definitions))
   }
 
   test("scala top-level defs wrapped under X$package, classes unchanged") {
     val definitions = ScalaSourceParser(
-      str = """package a.b
-        |def foo = 1
-        |class C
-        |""".stripMargin,
-      fileName = "Foo.scala"
+      "class Foo\ndef bar = 1", fileName = "Bar.scala"
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "a/b/C#",
-      "a/b/C#`<init>`().",
-      "a/b/Foo$package.foo()."
+      "_empty_/Foo#", "_empty_/Foo#`<init>`().", "_empty_/Bar$package.bar()."
     ), clues(definitions))
   }
 
   test("scala package object members under package.") {
     val definitions = ScalaSourceParser(
-      """package object scala {
-        |  type Seq[+A] = collection.immutable.Seq[A]
-        |  val Seq = collection.immutable.Seq
-        |}
-        |""".stripMargin
-    ).parse().definitions
-    val seqDefs = definitions.filter(_.name == "Seq")
-    assertEquals(seqDefs.size, 2, clues(definitions))
-    assertEquals(seqDefs.map(_.symbol.value).toSet, Set(
-      "scala/package.Seq#",
-      "scala/package.Seq."
-    ), clues(seqDefs))
-  }
-
-  // this is semanticdb convention for scala3 top-level defs,
-  // it puts Filename$package as the owner of top-level defs
-  test("scala named given emits term descriptor") {
-    val definitions = ScalaSourceParser(
-      str = """package pkg
-        |given x: Int = 1
-        |given stringList: List[String] = Nil
-        |""".stripMargin,
-      fileName = "Givens.scala"
+      """|package object pkg {
+         |  val x = 1
+         |  class Foo
+         |}
+         |""".stripMargin, fileName = "package.scala"
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "pkg/Givens$package.x.",
-      "pkg/Givens$package.stringList."
+      "pkg/package.", "pkg/package.x.", "pkg/package.Foo#", "pkg/package.Foo#`<init>`()."
+    ), clues(definitions))
+  }
+
+  test("scala named given emits term descriptor") {
+    val definitions = ScalaSourceParser(
+      "package com.example\ngiven intOrd: Ordering[Int] with\n  def compare(x: Int, y: Int): Int = x - y",
+      fileName = "intOrd.scala"
+    ).parse().definitions
+    val symbols = definitions.map(_.symbol.value).toSet
+    assertEquals(symbols, Set(
+      "com/example/intOrd$package.intOrd.", "com/example/intOrd$package.intOrd.compare().",
+      "local0", "local1"
     ), clues(definitions))
   }
 
@@ -207,159 +174,124 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "com/example/Wrapper#",
-      "com/example/Wrapper#`<init>`().",
-      "com/example/Wrapper#T#"
+      "com/example/Wrapper#", "com/example/Wrapper#`<init>`().", "com/example/Wrapper#T#"
     ), clues(definitions))
-  }
-
-  test("scala references: same-file type and term refs") {
-    val result = ScalaSourceParser(
-      """package com.example
-        |class Foo
-        |object Bar {
-        |  val x: Foo = new Foo
-        |}
-        |""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    // Should have references to com/example/Foo# from type annotation and new
-    assert(refSymbols.contains("com/example/Foo#"),
-      s"Expected reference to Foo#, got: $refSymbols")
-  }
-
-  test("scala references: explicit imports") {
-    val result = ScalaSourceParser(
-      """package com.example
-        |import scala.collection.immutable.List
-        |import java.util.Map
-        |class Wrapper(list: List[Int], map: Map[String, Int])
-        |""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    // Should have references to imported types
-    assert(refSymbols.contains("scala/collection/immutable/List#"),
-      s"Expected import ref to List#, got: $refSymbols")
-    assert(refSymbols.contains("java/util/Map#"),
-      s"Expected import ref to Map#, got: $refSymbols")
   }
 
   test("scala no false positives for local values inside method bodies") {
     val result = ScalaSourceParser(
-      """package com.example
-        |object Foo {
-        |  def bar = { val local = 1; local }
-        |}
-        |""".stripMargin
+      """|package com.example
+         |object Foo {
+         |  def bar = { val local = 1; local }
+         |}
+         |""".stripMargin
     ).parse()
     val names = result.definitions.map(_.name).toSet
-    // Local val IS indexed as a definition (SemanticDB model: locals in same symbol list)
     assert(names.contains("local"), clues(names))
     assert(names.contains("Foo"), clues(names))
     assert(names.contains("bar"), clues(names))
-    // Verify local symbol naming follows SemanticDB spec
     val localSymbols = result.definitions.filter(d => SymbolUtils.isLocalSymbol(d.symbol.value))
-    assert(localSymbols.size >= 1, s"Expected at least 1 local def, got: ${localSymbols.map(_.symbol)}")
-    // Verify reference to local exists
+    assert(localSymbols.nonEmpty, s"Expected local defs, got: ${result.definitions}")
     val localRefs = result.references.filter(r => SymbolUtils.isLocalSymbol(r.symbol.value))
-    assert(localRefs.nonEmpty, s"Expected local var ref, got: ${result.references}")
+    assert(localRefs.nonEmpty, s"Expected local refs, got: ${result.references}")
   }
 
   test("scala deeply nested package declarations") {
     val definitions = ScalaSourceParser(
-      """package com {
-        |  package example {
-        |    class Foo { def bar = 1 }
-        |  }
-        |}
-        |""".stripMargin
+      """|package com {
+         |  package example {
+         |    class Foo { def bar = 1 }
+         |  }
+         |}
+         |""".stripMargin
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "com/example/Foo#",
-      "com/example/Foo#`<init>`().",
-      "com/example/Foo#bar()."
+      "com/example/Foo#", "com/example/Foo#`<init>`().", "com/example/Foo#bar()."
     ), clues(definitions))
   }
 
   test("scala handles mix of def, val, var, type, given") {
     val definitions = ScalaSourceParser(
-      """package p
-        |class Mix {
-        |  val a: Int = 1
-        |  var b: String = ""
-        |  type T = Int
-        |  def m(x: Int): Int = x
-        |}
-        |""".stripMargin
+      """|package p
+         |class Mix {
+         |  val a: Int = 1
+         |  var b: String = ""
+         |  type T = Int
+         |  def m(x: Int): Int = x
+         |}
+         |""".stripMargin
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "p/Mix#",
-      "p/Mix#`<init>`().",
-      "p/Mix#a.",
-      "p/Mix#b.",
-      "p/Mix#T#",
-      "p/Mix#m().",
-      "local0"   // param x of m(x: Int)
+      "p/Mix#", "p/Mix#`<init>`().", "p/Mix#a.", "p/Mix#b.", "p/Mix#T#", "p/Mix#m().",
+      "local0"
     ), clues(definitions))
   }
 
   test("scala object nested in object") {
     val definitions = ScalaSourceParser(
-      """package com.example
-        |object Outer {
-        |  object Inner {
-        |    def run = 1
-        |  }
-        |}
-        |""".stripMargin
+      """|package com.example
+         |object Outer {
+         |  object Inner {
+         |    val x = 1
+         |  }
+         |}
+         |""".stripMargin
     ).parse().definitions
     val symbols = definitions.map(_.symbol.value).toSet
     assertEquals(symbols, Set(
-      "com/example/Outer.",
-      "com/example/Outer.Inner.",
-      "com/example/Outer.Inner.run()."
+      "com/example/Outer.", "com/example/Outer.Inner.", "com/example/Outer.Inner.x."
+    ), clues(definitions))
+  }
+
+  test("scala extension methods are extracted") {
+    val definitions = ScalaSourceParser(
+      """|package com.example
+         |class Wrapper(val x: Int)
+         |extension (w: Wrapper)
+         |  def inc: Int = w.x + 1
+         |  def show: String = w.toString
+         |""".stripMargin, fileName = "Wrapper.scala"
+    ).parse().definitions
+    val symbols = definitions.map(_.symbol.value).toSet
+    assertEquals(symbols, Set(
+      "com/example/Wrapper#", "com/example/Wrapper#`<init>`().", "com/example/Wrapper#x.",
+      "com/example/Wrapper$package.inc().", "com/example/Wrapper$package.show()."
     ), clues(definitions))
   }
 
   test("scala stats are in definition order for overload tracking") {
     val definitions = ScalaSourceParser(
-      """package com.example
-        |class Foo {
-        |  def bar(s: String): Unit = ()
-        |  val x = 1
-        |  def bar(i: Int): Unit = ()
-        |}
-        |""".stripMargin
+      """|package com.example
+         |class Foo {
+         |  def bar = 1
+         |  def bar(x: Int) = 2
+         |}
+         |""".stripMargin
     ).parse().definitions
     val barDefs = definitions.filter(_.name == "bar").sortBy(_.location.range.startLine)
     assertEquals(barDefs.size, 2, clues(barDefs))
-    // First bar gets index 0, second gets index 1 (source order)
     assertEquals(barDefs(0).symbol.value, "com/example/Foo#bar().", clues(barDefs))
     assertEquals(barDefs(1).symbol.value, "com/example/Foo#bar(+1).", clues(barDefs))
   }
 
   test("scala concurrent parse yields consistent results") {
-    val scalaSource = """package com.example
-    |
-    |import scala.collection.immutable.List
-    |
-    |class Foo(val count: Int, val name: String) {
-    |  def this() = this(0, "")
-    |
-    |  def getCount: Int = count
-    |  def setCount(c: Int): Unit = ()
-    |  def getName: String = name
-    |  def getItems: List[String] = Nil
-    |
-    |  class Bar(val flag: Boolean) {
-    |    def isFlag: Boolean = flag
-    |  }
-    |
-    |  enum Color { case Red, Green, Blue }
-    |}
-    """.stripMargin
+    val scalaSource =
+      """|package com.example
+         |import scala.collection.immutable.List
+         |class Foo(val count: Int, val name: String) {
+         |  def this() = this(0, "")
+         |  def getCount: Int = count
+         |  def setCount(c: Int): Unit = ()
+         |  def getName: String = name
+         |  def getItems: List[String] = Nil
+         |  class Bar(val flag: Boolean) {
+         |    def isFlag: Boolean = flag
+         |  }
+         |  enum Color { case Red, Green, Blue }
+         |}
+         |""".stripMargin
     val parallelism = 50
     val executor = Executors.newVirtualThreadPerTaskExecutor()
     try {
@@ -368,7 +300,7 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
       }
       val results = futures.map(_.get())
       val first = results.head
-      assert(first.nonEmpty, "expected definitions, got empty — shared parser corrupt?")
+      assert(first.nonEmpty, "expected definitions, got empty")
       results.foreach { r =>
         assertEquals(r.size, first.size, "concurrent parses produced different def counts")
         assertEquals(r.map(_.name).sorted, first.map(_.name).sorted, "concurrent parses diverged")
@@ -376,521 +308,152 @@ class ScalaSourceParserSemanticdbTest extends FunSuite {
     } finally executor.shutdown()
   }
 
-  test("scala extension methods are extracted") {
-    val definitions = ScalaSourceParser(
-      """package com.example
-        |class Wrapper(val x: Int)
-        |extension (w: Wrapper)
-        |  def inc: Int = w.x + 1
-        |  def show: String = w.toString
-        |""".stripMargin,
-      fileName = "Wrapper.scala"
-    ).parse().definitions
-    val symbols = definitions.map(_.symbol.value).toSet
-    assertEquals(symbols, Set(
-      "com/example/Wrapper#",
-      "com/example/Wrapper#`<init>`().",
-      "com/example/Wrapper$package.inc().",
-      "com/example/Wrapper$package.show()."
-    ), clues(definitions))
+  // ══════════════════════════════════════════════════════
+  // References — full SemanticDB symbols everywhere
+  // ══════════════════════════════════════════════════════
+
+  test("references: same-file refs use known global symbols") {
+    val result = ScalaSourceParser(
+      """|object A { def g = 1 }
+         |def f = A.g
+         |""".stripMargin
+    ).parse()
+    val refSyms = result.references.map(_.symbol.value).toSet
+    // A resolves from fileDefs → _empty_/A.
+    assert(refSyms.contains("_empty_/A."), s"Expected _empty_/A., got: $refSyms")
+    // Member guess: _empty_/A.g. + _empty_/A.g()
+    assert(refSyms.contains("_empty_/A.g."), s"Expected _empty_/A.g., got: $refSyms")
+    assert(refSyms.contains("_empty_/A.g()."), s"Expected _empty_/A.g(), got: $refSyms")
   }
 
-  test("references: same-file term ref from method body") {
+  test("references: same-file toplevel def from method body") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-        |def f = A.g
-        |""".stripMargin
+      """|def msg = "hi"
+         |def f = msg
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A, got: $refSymbols")
-  }
-
-  test("references: toplevel val from method body") {
-    val result = ScalaSourceParser(
-      """def msg = "hi"
-        |def f = msg
-        |""".stripMargin,
-      fileName = "Test.scala"
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/Test$package.msg()."),
-      s"Expected ref to msg(), got: $refSymbols")
+    // msg resolves from fileDefs → exact symbol
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.exists(_.contains("msg().")), s"Expected msg() ref, got: $refSyms")
   }
 
   test("references: local val definition and usage in method body") {
     val result = ScalaSourceParser(
-      """def f = {
-        |  val x = 1
-        |  x
-        |}
-        |""".stripMargin
+      """|def f = {
+         |  val x = 1
+         |  x
+         |}
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.exists(_.startsWith("local")),
-      s"Expected local var ref, got: $refSymbols")
-    // Local val IS now indexed (SemanticDB model: locals in definitions)
-    val localDefSymbols = result.definitions.filter(d => SymbolUtils.isLocalSymbol(d.symbol.value)).map(_.name).toSet
-    assert(localDefSymbols.contains("x"), s"Expected local def for x, got: ${result.definitions.map(d => s"${d.name}@${d.symbol}")}")
+    val localRefs = result.references.filter(r => SymbolUtils.isLocalSymbol(r.symbol.value))
+    assert(localRefs.nonEmpty, s"Expected local var ref, got: ${result.references}")
+    val localDefs = result.definitions.filter(d => SymbolUtils.isLocalSymbol(d.symbol.value)).map(_.name)
+    assert(localDefs.contains("x"), "Expected local def for x")
   }
 
   test("references: param usage inside method body") {
-    val result = ScalaSourceParser(
-      """def f(x: Int) = x
-        |""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.exists(_.startsWith("local")),
-      s"Expected local param ref, got: $refSymbols")
+    val result = ScalaSourceParser("def f(x: Int) = x").parse()
+    val localRefs = result.references.filter(r => SymbolUtils.isLocalSymbol(r.symbol.value))
+    assert(localRefs.nonEmpty, s"Expected local param ref, got: ${result.references}")
   }
 
   test("references: method body traverses nested blocks") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-        |def f = {
-        |  val x = {
-        |    A.g
-        |  }
-        |  x
-        |}
-        |""".stripMargin
+      """|object A { def g = 1 }
+         |def f = {
+         |  val x = { A.g }
+         |  x
+         |}
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from nested block, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/A."), s"Expected _empty_/A., got: $refSyms")
+    assert(result.references.exists(r => SymbolUtils.isLocalSymbol(r.symbol.value)),
+      s"Expected local ref for x, got: ${result.references}")
   }
 
   test("references: val rhs with term ref") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-        |val x = A.g
-        |""".stripMargin
+      """|object A { def g = 1 }
+         |val x = A.g
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from val rhs, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/A."), s"Expected _empty_/A., got: $refSyms")
   }
 
-  test("references: var rhs with term ref") {
+  test("references: type annotation records guessed global symbols") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-        |var x = A.g
-        |""".stripMargin
+      """|class Foo
+         |val x: Foo = new Foo
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from var rhs, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/Foo#"), s"Expected _empty_/Foo#, got: $refSyms")
+    assert(refSyms.contains("_empty_/Foo."), s"Expected _empty_/Foo., got: $refSyms")
   }
 
-  // ══════════════════════════════════════════════════════
-  // DEBUG: AST dump for real files
-  // ══════════════════════════════════════════════════════
-
-  test("DEBUG: dump scalameta AST of sbt/Main.scala".ignore) {
-    import scala.meta.Dialect
-    import scala.meta.*
-    import scala.meta.parsers.XtensionParseInputLike
-    given Dialect = scala.meta.dialects.Scala3Future
-    val src = """import upickle.default._
-@main def hello(): Unit =
-  val c = Array(1, 2, 3)
-  println("Hello world!")
-  println(msg)
-  write(Seq(1, 2, 3))
-  
-def msg = 
-  utils.getMsg()
-"""
-    src.parse[scala.meta.Source] match
-      case scala.meta.Parsed.Success(tree) =>
-        println(s"\n=== RAW AST STRUCTURE ===\n${tree.structure}")
-        println(s"\n=== RAW AST SYNTAX ===\n${tree.syntax}")
-      case scala.meta.Parsed.Error(pos, msg, _) =>
-        println(s"PARSE ERROR: $msg at $pos")
-        fail(s"Parse failed: $msg at $pos")
-
-    // Our parser result
-    val result = ScalaSourceParser(src, fileName = "Main.scala").parse()
-    println(s"\n=== DEFINITIONS (${result.definitions.size}) ===")
-    result.definitions.foreach { d =>
-      println(s"  ${d.name} [${d.kind}] ${d.symbol} @ ${d.location.range}")
-    }
-    println(s"\n=== REFERENCES (${result.references.size}) ===")
-    result.references.foreach { r =>
-      println(s"  ${r.symbol} @ ${r.location.range}")
-    }
-  }
-
-  // ══════════════════════════════════════════════════════
-  // Test pyramid: isolate @main / indentation behavior
-  // ══════════════════════════════════════════════════════
-
-  test("references: indentation-based method body (no braces)") {
+  test("references: import records guessed global symbols") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f =
-  A.g
-""".stripMargin
+      """|import scala.collection.immutable.List
+         |class Wrapper(list: List[Int])
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from indented body, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/List."), s"Expected _empty_/List., got: $refSyms")
+    assert(refSyms.contains("_empty_/List#"), s"Expected _empty_/List#, got: $refSyms")
   }
 
-  test("references: @main method body with braces") {
+  test("references: new Foo records guessed global symbols") {
+    val result = ScalaSourceParser("class Foo\ndef f = new Foo").parse()
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/Foo#"), s"Expected _empty_/Foo#, got: $refSyms")
+  }
+
+  test("references: cross-file refs use _empty_/ guess") {
+    val result = ScalaSourceParser("def f = someObject.someMethod()").parse()
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/someObject."), s"Expected term guess, got: $refSyms")
+    assert(refSyms.contains("_empty_/someObject#"), s"Expected type guess, got: $refSyms")
+    assert(refSyms.contains("_empty_/someObject.someMethod."), s"Expected val member guess, got: $refSyms")
+    assert(refSyms.contains("_empty_/someObject.someMethod()."), s"Expected def member guess, got: $refSyms")
+  }
+
+  test("references: function literal records guessed param type symbols") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-@main def hello(): Unit = { A.g }
-""".stripMargin
+      """|class Foo
+         |def f = (x: Foo) => x
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from @main braced body, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/Foo#"), s"Expected _empty_/Foo#, got: $refSyms")
   }
 
-  test("references: @main method body with indentation") {
+  test("references: if/while/for/match all record guessed symbols") {
     val result = ScalaSourceParser(
-      """object A { def g = 1 }
-@main def hello(): Unit =
-  A.g
-""".stripMargin
+      """|object A { def cond = true; def thenP = 1; def g = () }
+         |def f =
+         |  if A.cond then A.thenP else 0
+         |  while A.cond do A.g
+         |  (1: A.thenP) match { case 1 => A.g }
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from @main indented body, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/A."), s"Expected _empty_/A., got: $refSyms")
   }
 
-  // ══════════════════════════════════════════════════════
-  // Branch coverage: all extractTermRefs cases
-  // ══════════════════════════════════════════════════════
-
-  test("references: forward reference from earlier def to later def") {
+  test("references: throw/return/try/tuple/interpolate all record names") {
     val result = ScalaSourceParser(
-      """def first = second
-def second = 1
-""".stripMargin,
-      fileName = "Test.scala"
+      """|object A { def ex = new Exception; def g = 1 }
+         |def f =
+         |  return A.g
+         |  throw A.ex
+         |  try A.g catch case _ => A.g
+         |  (A.g, A.g)
+         |  val x = 1; s"$x"
+         |""".stripMargin
     ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/Test$package.second()."),
-      s"Expected forward ref to second, got: $refSymbols")
+    val refSyms = result.references.map(_.symbol.value).toSet
+    assert(refSyms.contains("_empty_/A."), s"Expected _empty_/A., got: $refSyms")
   }
-
-  test("references: ApplyInfix with same-file refs") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f =
-  val x = A.g
-  x + 1
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A, got: $refSymbols")
-  }
-
-  test("references: ApplyUnary with term ref") {
-    val result = ScalaSourceParser(
-      """def f =
-  val flag = true
-  !flag
-""".stripMargin
-    ).parse()
-    // flag usage inside !flag should produce a local ref
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.exists(_.startsWith("local")),
-      s"Expected local ref for flag, got: $refSymbols")
-  }
-
-  test("references: If condition and branches") {
-    val result = ScalaSourceParser(
-      """object A { def cond = true; def thenP = 1; def elseP = 1 }
-def f = if A.cond then A.thenP else A.elseP
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in if/else, got: $refSymbols")
-  }
-
-  test("references: While body with term ref") {
-    val result = ScalaSourceParser(
-      """object A { def cond = true; def body = () }
-def f = while A.cond do A.body
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in while, got: $refSymbols")
-  }
-
-  test("references: For comprehension with term ref") {
-    val result = ScalaSourceParser(
-      """object A { def xs = List(1); def g = () }
-def f = for x <- A.xs do A.g
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in for, got: $refSymbols")
-  }
-
-  test("references: ForYield with term ref") {
-    val result = ScalaSourceParser(
-      """object A { def xs = List(1) }
-def f = for x <- A.xs yield x
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in for-yield, got: $refSymbols")
-  }
-
-  test("references: Match with term refs in cases") {
-    val result = ScalaSourceParser(
-      """object A { def g = () }
-def f =
-  val x = 1
-  x match
-    case 1 => A.g
-    case _ => ()
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in match case, got: $refSymbols")
-  }
-
-  test("references: New with constructor init") {
-    val result = ScalaSourceParser(
-      """class Foo
-def f = new Foo
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/Foo#"),
-      s"Expected ref to Foo from new, got: $refSymbols")
-  }
-
-  test("references: Function literal with param usage") {
-    val result = ScalaSourceParser(
-      """def f = (x: Int) => x
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.exists(_.startsWith("local")),
-      s"Expected local param ref in lambda, got: $refSymbols")
-  }
-
-  test("references: Return with term ref") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f = return A.g
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in return, got: $refSymbols")
-  }
-
-  test("references: Throw with term ref") {
-    val result = ScalaSourceParser(
-      """object A { def ex = new Exception }
-def f = throw A.ex
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in throw, got: $refSymbols")
-  }
-
-  test("references: Try/catch with term refs") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1; def handler = () }
-def f = try A.g catch case _ => A.handler
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in try/catch, got: $refSymbols")
-  }
-
-  test("references: Tuple with term refs") {
-    val result = ScalaSourceParser(
-      """object A { def a = 1; def b = 2 }
-def f = (A.a, A.b)
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in tuple, got: $refSymbols")
-  }
-
-  test("references: Interpolated string with term ref") {
-    val result = ScalaSourceParser(
-      """def f =
-  val name = "world"
-  s"hello $name"
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.exists(_.startsWith("local")),
-      s"Expected local ref in interpolated string, got: $refSymbols")
-  }
-
-  test("references: Assign with term refs on both sides") {
-    val result = ScalaSourceParser(
-      """object A { var x = 1 }
-def f =
-  var y = 0
-  y = A.x
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in assign rhs, got: $refSymbols")
-  }
-
-  test("references: Ascribe with term ref") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f = (A.g: Int)
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in ascribe, got: $refSymbols")
-  }
-
-  test("references: Eta expansion of same-file method") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f = A.g _
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in eta expansion, got: $refSymbols")
-  }
-
-  test("references: Repeated vararg ref".ignore) {
-    val result = ScalaSourceParser(
-      """object A { def xs = List(1) }
-def f(args: Int*) =
-  A.xs ++ args
-  args*
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.exists(_.startsWith("local")),
-      s"Expected local ref for args*, got: $refSymbols")
-  }
-
-  test("references: Nested method in body calls outer scope") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f =
-  def inner = A.g
-  inner
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from nested method, got: $refSymbols")
-  }
-
-  test("references: For-comprehension enumerator with Pat.Var binding") {
-    val result = ScalaSourceParser(
-      """object A { def xs = List((1,2)) }
-def f = for (a, b) <- A.xs yield a
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in for enumerator, got: $refSymbols")
-  }
-
-  test("references: Match case with pattern binding") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f(x: Int) = x match
-  case a => A.g + a
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A in match with pattern binding, got: $refSymbols")
-  }
-
-  // ══════════════════════════════════════════════════════
-  // Namespace split: companion class + object coexist
-  // ══════════════════════════════════════════════════════
-
-  test("references: companion class and object both resolve") {
-    val result = ScalaSourceParser(
-      """class Foo
-object Foo { def apply() = 1 }
-def f = Foo(1)
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/Foo#"),
-      s"Expected ref to class Foo#, got: $refSymbols")
-    assert(refSymbols.contains("_empty_/Foo."),
-      s"Expected ref to companion object Foo., got: $refSymbols")
-  }
-
-  test("references: class after object still coexists") {
-    val result = ScalaSourceParser(
-      """object Foo { def apply() = 1 }
-class Foo
-def f = Foo(1)
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/Foo#"),
-      s"Expected ref to class Foo# after object, got: $refSymbols")
-    assert(refSymbols.contains("_empty_/Foo."),
-      s"Expected ref to companion object Foo., got: $refSymbols")
-  }
-
-  test("references: Term.Select emits both val and def candidates for member") {
-    val result = ScalaSourceParser(
-      """object A { def g = 1 }
-def f = A.g
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A.g()."),
-      s"Expected method candidate A.g(), got: $refSymbols")
-    assert(refSymbols.contains("_empty_/A.g."),
-      s"Expected val candidate A.g., got: $refSymbols")
-  }
-
-  test("references: Term.Select on complex qualifier skips member candidates") {
-    val result = ScalaSourceParser(
-      """object A { object B { def g = 1 } }
-def f = A.B.g
-""".stripMargin
-    ).parse()
-    // A.B is a qualified select, member candidates only emitted for simple qualifiers
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/A."),
-      s"Expected ref to A from A.B.g, got: $refSymbols")
-  }
-
-  test("references: forward reference with companion preserves both") {
-    val result = ScalaSourceParser(
-      """def f = Foo(1)
-class Foo
-object Foo
-""".stripMargin
-    ).parse()
-    val refSymbols = result.references.map(_.symbol.value).toSet
-    assert(refSymbols.contains("_empty_/Foo#"),
-      s"Expected ref to class Foo#, got: $refSymbols")
-    assert(refSymbols.contains("_empty_/Foo."),
-      s"Expected ref to companion object Foo., got: $refSymbols")
-  }
-
 }

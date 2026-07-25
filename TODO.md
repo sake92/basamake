@@ -1,4 +1,6 @@
 
+- only keep last 10 open parsed ASTs/semanticdbs
+
 - cache deps/JDK indices GLOBALLY !!!
  - ~/.basamake/sources/jdk-21-hash/
    - metadata.json (full_path, defines_packages)
