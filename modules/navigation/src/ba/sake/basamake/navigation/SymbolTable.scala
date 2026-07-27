@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation
 
 import java.util.concurrent.ConcurrentHashMap
+import scala.jdk.CollectionConverters.*
 import scala.meta.internal.semanticdb.Range
 
 // IMPORTANT: Do NOT store Scalameta Tree objects here. Only Strings and Range.
@@ -23,4 +24,6 @@ class SymbolTable {
   def get(symbol: String): Option[SymbolDefinition] = {
     Option(definitions.get(symbol))
   }
+
+  def all: Set[SymbolDefinition] = definitions.values().asScala.toSet
 }
