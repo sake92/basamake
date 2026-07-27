@@ -8,10 +8,6 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 import ba.sake.basamake.lsp.index.WorkspaceIndex
-import ba.sake.basamake.navigation.SourceSemanticdb
-import ba.sake.basamake.navigation.ScalaSourceParser
-import ba.sake.basamake.navigation.JavaSourceParser
-import ba.sake.basamake.navigation.SymbolLocation
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
 
@@ -33,16 +29,19 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setReferencesProvider(true)
     capabilities.setDocumentSymbolProvider(true)
     
+    // TODO 1: build symbol table from: semanticsdb files (if available) + parsed source files
+    /*
     val parseSourceFile: os.Path => Option[SourceSemanticdb] = path => {
       if path.ext == "scala" then {
         val parser = ScalaSourceParser(path)
-        Some(parser.parse())
-      } else if path.ext == "java" then {
+        Some(parser.extract(path.last, os.stream.inputStream(path)))
+      } /*else if path.ext == "java" then {
         val parser = JavaSourceParser(path)
         Some(parser.parse())
-      } else None
+      }*/ else None
     }
     initIndexFromSources(workspacePath, parseSourceFile)
+    */
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
@@ -64,6 +63,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
 
   // ----- TextDocumentService
+  // TODO reparse files on change
   def didChange(params: DidChangeTextDocumentParams): Unit = ()
   def didClose(params: DidCloseTextDocumentParams): Unit = ()
   def didOpen(params: DidOpenTextDocumentParams): Unit = ()

@@ -10,7 +10,6 @@ local const navigationModules =
         "org.scalameta::semanticdb-shared:4.17.2"
         "org.scalameta::parsers:4.17.2"
         "com.github.javaparser:javaparser-core:3.28.2"
-        "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0" // just for some basic types like SymbolKind, etc.
         "com.lihaoyi::os-lib:0.11.9-M8"
       }
     }
@@ -39,6 +38,7 @@ local const mainModules =
         "com.lihaoyi::mainargs:0.7.8"
         "com.lihaoyi::os-lib-watch:0.11.9-M8"
         "ba.sake::tupson:0.20.0"
+        "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0" // just for some basic types like SymbolKind, etc.
       }
     }
     testTemplate = (template.asTest()) {
@@ -85,6 +85,6 @@ local const coreModules =
 
 modules {
   ...navigationModules.all
-  ...mainModules.all
+  //...mainModules.all
   //...coreModules.all
 }
