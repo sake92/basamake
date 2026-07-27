@@ -11,6 +11,7 @@ case class SymbolDefinition(
   range: Option[Range]
 )
 
+// TODO trait ?
 class SymbolTable {
 
   private val definitions = new ConcurrentHashMap[String, SymbolDefinition]()
