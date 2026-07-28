@@ -33,17 +33,17 @@ object SymbolUtils {
     * already start and end with backticks.
     */
   def escapedName(name: String): String =
-    String(if name.nonEmpty && name.head == '`' && name.last == '`' then name
+    if name.nonEmpty && name.head == '`' && name.last == '`' then name
     else if isJavaIdentifier(name) then name
-    else s"`$name`")
+    else s"`$name`"
 
   /** Encodes a package owner prefix from one or more package segments.
     * Example: `packageOwner(List("com", "example"))` → `"com/example/"`
     * Example: `packageOwner(Nil)` → `"_empty_/"`
     */
   def packageOwner(segments: List[String]): String =
-    String(if segments.isEmpty then "_empty_/"
-    else segments.mkString("", "/", "/"))
+    if segments.isEmpty then "_empty_/"
+    else segments.mkString("", "/", "/")
 
   /** Encodes a package owner from a dot-separated string.
     * Example: `packageOwner("com.example")` → `"com/example/"`
@@ -56,13 +56,13 @@ object SymbolUtils {
     * Example: `typeSymbol("com/example/", "Outer")` → `"com/example/Outer#"`
     */
   def typeSymbol(owner: String, name: String): String =
-    String(s"${owner}${escapedName(name)}#")
+    s"${owner}${escapedName(name)}#"
 
   /** Appends a term descriptor (`.`) to an owner.
     * Example: `termSymbol("com/example/Outer#", "field")` → `"com/example/Outer#field."`
     */
   def termSymbol(owner: String, name: String): String =
-    String(s"${owner}${escapedName(name)}.")
+    s"${owner}${escapedName(name)}."
 
   /** Appends a method descriptor (`().` or `(+N).`) to an owner.
     * `overloadIndex` 0 → `().`, 1 → `(+1).`, etc.
@@ -71,35 +71,35 @@ object SymbolUtils {
     */
   def methodSymbol(owner: String, name: String, overloadIndex: Int): String =
     val disambiguator = if overloadIndex == 0 then "" else s"+$overloadIndex"
-    String(s"${owner}${escapedName(name)}($disambiguator).")
+    s"${owner}${escapedName(name)}($disambiguator)."
 
   /** Appends a constructor descriptor (`` `<init>`().`` or `` `<init>`(+N).``) to an owner.
     * `overloadIndex` 0 → `` `<init>`().``, 1 → `` `<init>`(+1).``, etc.
     */
   def constructorSymbol(owner: String, overloadIndex: Int): String =
     val disambiguator = if overloadIndex == 0 then "" else s"+$overloadIndex"
-    String(s"${owner}${escapedName("<init>")}($disambiguator).")
+    s"${owner}${escapedName("<init>")}($disambiguator)."
 
   /** Produces a document-scoped local symbol per SemanticDB v4 spec.
     * Format: `local<N>`. Counter resets per file.
     * Example: `localSymbol(0)` → `"local0"`, `localSymbol(42)` → `"local42"`.
     */
   def localSymbol(index: Int): String =
-    String(s"local$index")
+    s"local$index"
 
   /** Method/constructor parameter symbol. Format: `<methodSymbol>(<name>)`.
     * Example: `parameterSymbol("p/O#f(+1).", "x")` → `"p/O#f(+1).(x)"`.
     * The method symbol already ends with `.`; we just append `(<paramName>)`.
     */
   def parameterSymbol(methodSymbol: String, paramName: String): String =
-    String(s"${methodSymbol}(${escapedName(paramName)})")
+    s"${methodSymbol}(${escapedName(paramName)})"
 
   /** Type-parameter symbol. Format: `<ownerTypeSymbol>[<name>]`.
     * Example: `typeParamSymbol("com/example/Show#", "T")` → `"com/example/Show#[T]"`.
     * The owner must be a TYPE symbol (ending with `#`).
     */
   def typeParamSymbol(ownerTypeSymbol: String, name: String): String =
-    String(s"${ownerTypeSymbol}[${escapedName(name)}]")
+    s"${ownerTypeSymbol}[${escapedName(name)}]"
 
   /** Returns true for compiler-produced local symbols (`local0`, `local2+1`).
     * Rejects global symbols that happen to start with "local" (e.g. `localDate#`).
