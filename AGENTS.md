@@ -20,10 +20,10 @@ deder exec -t assembly -m core
 deder clean && deder exec
 ```
 
-**Zombie killer** — stale `deder bsp` processes block new connections. Before relaunching:
+Shutdown stale `deder bsp` processes block new connections. Before relaunching:
 
 ```bash
-pkill -9 -f "deder bsp"; pkill -9 -f "basamake.*jar"; sleep 1
+"deder shutdown" && sleep 1
 ```
 
 The code now performs ownership-bounded cleanup during shutdown fallback (`BuildServerManager.killBspProcesses`) by terminating tracked BSP roots and this JVM's descendant process tree.

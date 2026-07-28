@@ -1,4 +1,4 @@
-package ba.sake.basamake.navigation
+package ba.sake.basamake.navigation.scalasrc
 
 /** Static map of names available via Scala's implicit `Predef` + default imports
   * (`scala.*`, `scala.Predef.*`) to their canonical SemanticDB symbol strings.
@@ -19,6 +19,7 @@ object PredefSymbols {
     */
   private val map: Map[String, String] = Map(
     // ── scala.collection.immutable ─────────────────────────────────
+    // TODO types too
     "List"   -> "scala/collection/immutable/List.",     // companion object (call site)
     "Map"    -> "scala/collection/immutable/Map.",
     "Set"    -> "scala/collection/immutable/Set.",

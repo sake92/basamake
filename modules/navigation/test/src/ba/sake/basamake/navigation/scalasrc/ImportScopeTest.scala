@@ -1,9 +1,10 @@
-package ba.sake.basamake.navigation
+package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
 import scala.meta.*
 import scala.meta.dialects.Scala3Future
 import scala.meta.inputs.Input
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
 
 class ImportScopeTest extends FunSuite {
 

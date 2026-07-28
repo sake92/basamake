@@ -1,6 +1,7 @@
-package ba.sake.basamake.navigation
+package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
 
 class ScalaDefinitionsExtractorTest extends FunSuite {
 

@@ -1,6 +1,7 @@
-package ba.sake.basamake.navigation
+package ba.sake.basamake.navigation.scalasrc
 
 import scala.meta.*
+import ba.sake.basamake.navigation.SymbolUtils
 
 /** Duplicated helpers from `ScalaDefinitionsExtractor` so the resolver can
   * compute the SAME owner keys as the extractor without modifying the extractor.
