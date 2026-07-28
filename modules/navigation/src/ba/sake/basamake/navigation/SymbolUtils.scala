@@ -87,6 +87,20 @@ object SymbolUtils {
   def localSymbol(index: Int): String =
     String(s"local$index")
 
+  /** Method/constructor parameter symbol. Format: `<methodSymbol>(<name>)`.
+    * Example: `parameterSymbol("p/O#f(+1).", "x")` → `"p/O#f(+1).(x)"`.
+    * The method symbol already ends with `.`; we just append `(<paramName>)`.
+    */
+  def parameterSymbol(methodSymbol: String, paramName: String): String =
+    String(s"${methodSymbol}(${escapedName(paramName)})")
+
+  /** Type-parameter symbol. Format: `<ownerTypeSymbol>[<name>]`.
+    * Example: `typeParamSymbol("com/example/Show#", "T")` → `"com/example/Show#[T]"`.
+    * The owner must be a TYPE symbol (ending with `#`).
+    */
+  def typeParamSymbol(ownerTypeSymbol: String, name: String): String =
+    String(s"${ownerTypeSymbol}[${escapedName(name)}]")
+
   /** Returns true for compiler-produced local symbols (`local0`, `local2+1`).
     * Rejects global symbols that happen to start with "local" (e.g. `localDate#`).
     * Regex: `^local\d+(\+\d+)?$` per SemanticDB v4 spec. */

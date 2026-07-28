@@ -22,6 +22,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
   /** Test-friendly entry point: filename + source string. */
   def extractFromContent(fileName: String, content: String): Unit = {
+    require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 always wraps top-level defs under `<basename>$package.` and needs the filename to compute it")
     parseSource(content) match {
       case Some(src) =>
         extractInternal(fileName, src)
@@ -48,7 +49,12 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     val ovl = mutable.Map.empty[(String, String), Int]
     topLevelPkgOwner = extractPackageOwner(src.stats)
     val wrapper = computeWrapper(fileName, topLevelPkgOwner)
+    wrapperUsed = false
     extractStats(src.stats, "_empty_/", ovl, wrapper)
+    if (wrapperUsed) wrapper.foreach { w =>
+      val shortName = w.split('/').last.stripSuffix(".")
+      addSymbol(w, shortName, isType = false)
+    }
   }
 
   // ── package owner extraction ─────────────────────────────────
@@ -62,11 +68,10 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     }.getOrElse(SymbolUtils.packageOwner(Nil))
   }
 
-  // ── top-level wrapper for Scala 3 X$package. / package. ──────
+  // ── top-level wrapper for Scala 3 X$package. / package$package. ──
 
   private def computeWrapper(fileName: String, pkgOwner: String): Option[String] = {
-    if (fileName.isEmpty) None
-    else if (fileName == "package.scala") Some(SymbolUtils.termSymbol(pkgOwner, "package"))
+    if (fileName == "package.scala") Some(SymbolUtils.termSymbol(pkgOwner, "package$package"))
     else {
       val baseName = fileName.stripSuffix(".scala")
       Some(SymbolUtils.termSymbol(pkgOwner, s"${baseName}$$package"))
@@ -108,16 +113,34 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       case c: Defn.Class =>
         val sym = SymbolUtils.typeSymbol(owner, c.name.value)
         addSymbol(sym, c.name.value, isType = true)
-        val ctorIdx = bumpOvl(ovl, sym, "<init>")
-        addSymbol(SymbolUtils.constructorSymbol(sym, ctorIdx), "<init>", isType = false)
-        if (c.mods.exists(_.isInstanceOf[Mod.Case]))
-          emitCaseClassSynthetics(owner, c.name.value, ovl)
-        extractCaseClassBody(c.templ.stats, sym, owner, c.name.value, ovl)
+        emitTypeParams(sym, c.tparams)
+        val ctorSym = SymbolUtils.constructorSymbol(sym, bumpOvl(ovl, sym, "<init>"))
+        addSymbol(ctorSym, "<init>", isType = false)
+        emitCtorParams(ctorSym, c.ctor.paramss)
+        emitCtorFieldAccessors(sym, c.ctor.paramss)
+        val isCaseClass = c.mods.exists(_.isInstanceOf[Mod.Case])
+        if (isCaseClass)
+          emitCaseClassSynthetics(owner, c.name.value, c.ctor.paramss,
+            hasUserCopy = c.templ.stats.exists {
+              case d: Defn.Def => d.name.value == "copy"
+              case d: Decl.Def => d.name.value == "copy"
+              case _ => false
+            },
+            hasUserApply = c.templ.stats.exists {
+              case d: Defn.Def => d.name.value == "apply"
+              case d: Decl.Def => d.name.value == "apply"
+              case _ => false
+            },
+            ovl)
+        extractStats(c.templ.stats, sym, ovl, None)
 
       // ── trait ─────────────────────────────────────────────────
       case t: Defn.Trait =>
         val sym = SymbolUtils.typeSymbol(owner, t.name.value)
         addSymbol(sym, t.name.value, isType = true)
+        val ctorIdx = bumpOvl(ovl, sym, "<init>")
+        addSymbol(SymbolUtils.constructorSymbol(sym, ctorIdx), "<init>", isType = false)
+        emitTypeParams(sym, t.tparams)
         extractStats(t.templ.stats, sym, ovl, None)
 
       // ── object ────────────────────────────────────────────────
@@ -134,6 +157,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         addSymbol(termSym, e.name.value, isType = false)
         val ctorIdx = bumpOvl(ovl, typeSym, "<init>")
         addSymbol(SymbolUtils.constructorSymbol(typeSym, ctorIdx), "<init>", isType = false)
+        emitTypeParams(typeSym, e.tparams)
         extractStats(e.templ.stats, termSym, ovl, None)
 
       // ── enum case (single) ────────────────────────────────────
@@ -152,7 +176,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
         val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
         addSymbol(methodSym, d.name.value, isType = false)
-        extractBlockStats(d.body, methodSym, ovl)
+        emitParams(methodSym, d.paramss)
 
       // ── abstract decl def ─────────────────────────────────────
       case dd: Decl.Def =>
@@ -160,6 +184,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         val idx = bumpOvl(ovl, effectiveOwner, dd.name.value)
         val methodSym = SymbolUtils.methodSymbol(effectiveOwner, dd.name.value, idx)
         addSymbol(methodSym, dd.name.value, isType = false)
+        emitParams(methodSym, dd.paramss)
 
       // ── abstract decl val ─────────────────────────────────────
       case dv: Decl.Val =>
@@ -184,7 +209,9 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       // ── secondary constructor ─────────────────────────────────
       case cs: Ctor.Secondary =>
         val idx = bumpOvl(ovl, owner, "<init>")
-        addSymbol(SymbolUtils.constructorSymbol(owner, idx), "<init>", isType = false)
+        val ctorSym = SymbolUtils.constructorSymbol(owner, idx)
+        addSymbol(ctorSym, "<init>", isType = false)
+        emitParams(ctorSym, cs.paramss)
 
       // ── val ───────────────────────────────────────────────────
       case v: Defn.Val =>
@@ -195,7 +222,6 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
               addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false)
             case _ => ()
           }
-        extractBlockStats(v.rhs, effectiveOwner, ovl)
 
       // ── var ───────────────────────────────────────────────────
       case vr: Defn.Var =>
@@ -206,30 +232,49 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
               addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false)
             case _ => ()
           }
-        vr.rhs.foreach(rhs => extractBlockStats(rhs, effectiveOwner, ovl))
 
       // ── type alias (includes opaque type) ─────────────────────
       case dt: Defn.Type =>
-        addSymbol(SymbolUtils.typeSymbol(owner, dt.name.value), dt.name.value, isType = true)
+        val effectiveOwner = ifWrapperOwner(owner, wrapper)
+        addSymbol(SymbolUtils.typeSymbol(effectiveOwner, dt.name.value), dt.name.value, isType = true)
 
       // ── named given ───────────────────────────────────────────
       case g: Defn.Given =>
         if (g.name.value.nonEmpty) {
-          val sym = SymbolUtils.termSymbol(owner, g.name.value)
+          val effectiveOwner = ifWrapperOwner(owner, wrapper)
+          val sym = SymbolUtils.termSymbol(effectiveOwner, g.name.value)
           addSymbol(sym, g.name.value, isType = false)
           extractStats(g.templ.stats, sym, ovl, None)
         }
 
       // ── named given alias ─────────────────────────────────────
       case ga: Defn.GivenAlias =>
-        if (ga.name.value.nonEmpty)
-          addSymbol(SymbolUtils.termSymbol(owner, ga.name.value), ga.name.value, isType = false)
+        if (ga.name.value.nonEmpty) {
+          val effectiveOwner = ifWrapperOwner(owner, wrapper)
+          addSymbol(SymbolUtils.termSymbol(effectiveOwner, ga.name.value), ga.name.value, isType = false)
+        }
 
       // ── extension group ───────────────────────────────────────
       case eg: Defn.ExtensionGroup =>
+        val effectiveOwner = ifWrapperOwner(owner, wrapper)
         eg.body match {
-          case b: Term.Block => extractStats(b.stats, owner, ovl, None)
-          case s: Stat => extractStat(s, owner, ovl, None)
+          case b: Term.Block =>
+            b.stats.foreach {
+              case d: Defn.Def =>
+                val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
+                val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
+                addSymbol(methodSym, d.name.value, isType = false)
+                emitParams(methodSym, eg.paramss)   // extension params
+                emitParams(methodSym, d.paramss)    // method's own params
+              case s => extractStat(s, effectiveOwner, ovl, None)
+            }
+          case d: Defn.Def =>
+            val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
+            val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
+            addSymbol(methodSym, d.name.value, isType = false)
+            emitParams(methodSym, eg.paramss)
+            emitParams(methodSym, d.paramss)
+          case s: Stat => extractStat(s, effectiveOwner, ovl, None)
         }
 
       // ── expression blocks that may contain nested definitions ─
@@ -251,38 +296,6 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     SymbolUtils.packageOwner(base :+ pkgObjName)
   }
 
-  private def extractCaseClassBody(
-    stats: List[Stat],
-    classSym: String,
-    classOwner: String,
-    className: String,
-    ovl: mutable.Map[(String, String), Int]
-  ): Unit = {
-    val companion = SymbolUtils.termSymbol(classOwner, className)
-    stats.foreach {
-      case d: Defn.Def if d.name.value == "apply" =>
-        val idx = bumpOvl(ovl, companion, "apply")
-        addSymbol(SymbolUtils.methodSymbol(companion, "apply", idx), "apply", isType = false)
-      case d: Defn.Def if d.name.value == "copy" =>
-        val idx = bumpOvl(ovl, classSym, "copy")
-        addSymbol(SymbolUtils.methodSymbol(classSym, "copy", idx), "copy", isType = false)
-      case dd: Decl.Def if dd.name.value == "apply" =>
-        val idx = bumpOvl(ovl, companion, "apply")
-        addSymbol(SymbolUtils.methodSymbol(companion, "apply", idx), "apply", isType = false)
-      case dd: Decl.Def if dd.name.value == "copy" =>
-        val idx = bumpOvl(ovl, classSym, "copy")
-        addSymbol(SymbolUtils.methodSymbol(classSym, "copy", idx), "copy", isType = false)
-      case other => extractStat(other, classSym, ovl, None)
-    }
-  }
-
-  private def extractBlockStats(body: Term, owner: String, ovl: mutable.Map[(String, String), Int]): Unit = {
-    body match {
-      case b: Term.Block => extractStats(b.stats, owner, ovl, None)
-      case _ => ()
-    }
-  }
-
   private def addSymbol(symbol: String, shortName: String, isType: Boolean): Unit = {
     symbolTable.add(SymbolDefinition(symbol, shortName, isType, None))
   }
@@ -300,7 +313,9 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
   private def ifWrapperOwner(owner: String, wrapper: Option[String]): String = {
     wrapper match {
-      case Some(w) if isTopLevelPackageOwner(owner) => w
+      case Some(w) if isTopLevelPackageOwner(owner) =>
+        wrapperUsed = true
+        w
       case _ => owner
     }
   }
@@ -308,24 +323,88 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
   // track top-level package owner for accurate wrapper scoping
   private var topLevelPkgOwner: String = "_empty_/"
 
+  private var wrapperUsed: Boolean = false
+
   private def isTopLevelPackageOwner(owner: String): Boolean = {
     owner == topLevelPkgOwner
   }
 
+  // ── type parameter emission ──────────────────────────────────
+
+  private def emitTypeParams(ownerTypeSym: String, tparams: List[Type.Param]): Unit = {
+    tparams.foreach { tp =>
+      val n = tp.name.value
+      if (n.nonEmpty)
+        addSymbol(SymbolUtils.typeParamSymbol(ownerTypeSym, n), n, isType = false)
+    }
+  }
+
+  // ── parameter emission helpers ───────────────────────────────
+
+  /** Emits `<methodSym>(<paramName>)` for each Term.Param in the paramss. */
+  private def emitParams(methodSym: String, paramss: List[List[Term.Param]]): Unit =
+    paramss.foreach { clause => clause.foreach { p =>
+      val n = p.name.value
+      if (n.nonEmpty) addSymbol(SymbolUtils.parameterSymbol(methodSym, n), n, isType = false)
+    }}
+
+  /** Primary-constructor params double as init parameters. */
+  private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]]): Unit =
+    emitParams(ctorSym, paramss)
+
+  /** Emits `<classSym>.<paramName>.` for each primary-ctor param. */
+  private def emitCtorFieldAccessors(classSym: String, paramss: List[List[Term.Param]]): Unit =
+    paramss.foreach { clause => clause.foreach { p =>
+      val n = p.name.value
+      if (n.nonEmpty) addSymbol(SymbolUtils.termSymbol(classSym, n), n, isType = false)
+    }}
+
   // ── case class synthetics ────────────────────────────────────
 
+  /**
+    * Emits: companion object, apply() + params, unapply() + param, copy() + params,
+    * and toString(). Skips copy() if the user defines their own `def copy` in the
+    * class body. Synthetic apply always goes in the companion; user-defined apply
+    * stays in the class body.
+    *
+    * Skip: `copy$default$N`, `_N`, `productElement`, `$values`, etc. (internal).
+    */
   private def emitCaseClassSynthetics(
-    classOwner: String,
-    className: String,
-    ovl: mutable.Map[(String, String), Int]
+      classOwner: String,
+      className: String,
+      primaryCtorParamss: List[List[Term.Param]],
+      hasUserCopy: Boolean,
+      hasUserApply: Boolean,
+      ovl: mutable.Map[(String, String), Int]
   ): Unit = {
     val companion = SymbolUtils.termSymbol(classOwner, className)
     addSymbol(companion, className, isType = false)
+
+    // Synthetic apply in companion — always emitted.
     val applyIdx = bumpOvl(ovl, companion, "apply")
-    addSymbol(SymbolUtils.methodSymbol(companion, "apply", applyIdx), "apply", isType = false)
-    val classSym = SymbolUtils.typeSymbol(classOwner, className)
-    val copyIdx = bumpOvl(ovl, classSym, "copy")
-    addSymbol(SymbolUtils.methodSymbol(classSym, "copy", copyIdx), "copy", isType = false)
+    val applySym = SymbolUtils.methodSymbol(companion, "apply", applyIdx)
+    addSymbol(applySym, "apply", isType = false)
+    emitParams(applySym, primaryCtorParamss)
+
+    // Synthetic unapply in companion.
+    val unapplyIdx = bumpOvl(ovl, companion, "unapply")
+    val unapplySym = SymbolUtils.methodSymbol(companion, "unapply", unapplyIdx)
+    addSymbol(unapplySym, "unapply", isType = false)
+    // unapply has one synthetic param `x$1`
+    addSymbol(SymbolUtils.parameterSymbol(unapplySym, "x$1"), "x$1", isType = false)
+
+    // Synthetic toString in companion.
+    val toStringIdx = bumpOvl(ovl, companion, "toString")
+    addSymbol(SymbolUtils.methodSymbol(companion, "toString", toStringIdx), "toString", isType = false)
+
+    // Synthetic copy in class — skip if user defines their own `def copy`.
+    if (!hasUserCopy) {
+      val classSym = SymbolUtils.typeSymbol(classOwner, className)
+      val copyIdx = bumpOvl(ovl, classSym, "copy")
+      val copySym = SymbolUtils.methodSymbol(classSym, "copy", copyIdx)
+      addSymbol(copySym, "copy", isType = false)
+      emitParams(copySym, primaryCtorParamss)
+    }
   }
 
 }
