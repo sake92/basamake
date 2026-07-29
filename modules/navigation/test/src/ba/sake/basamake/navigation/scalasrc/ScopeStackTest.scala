@@ -9,7 +9,7 @@ class ScopeStackTest extends FunSuite {
 
   test("local shadows owner") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, None))
+    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     // Push owner first, then local (local is later = top of stack = checked first)
     s.push(OwnerScope("pkg/"))
@@ -19,8 +19,8 @@ class ScopeStackTest extends FunSuite {
 
   test("owner shadows import") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, None))
-    st.add(SymbolDefinition("pkg/other/Bar#", "Bar", isType = true, None))
+    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/other/Bar#", "Bar", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(Map("Foo" -> "pkg/other/Foo#"), Nil, Set.empty))
     s.push(OwnerScope("pkg/"))
@@ -31,8 +31,8 @@ class ScopeStackTest extends FunSuite {
 
   test("explicit import shadows wildcard") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/other/Foo#", "Foo", isType = true, None))
-    st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, None))
+    st.add(SymbolDefinition("pkg/other/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
       explicit = Map("Foo" -> "pkg/other/Foo#"),
@@ -45,7 +45,7 @@ class ScopeStackTest extends FunSuite {
 
   test("wildcard resolves via symbolTable") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, None))
+    st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
       explicit = Map.empty,
@@ -58,7 +58,7 @@ class ScopeStackTest extends FunSuite {
 
   test("import shadows predef") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("my/custom/List#", "List", isType = true, None))
+    st.add(SymbolDefinition("my/custom/List#", "List", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
       explicit = Map("List" -> "my/custom/List#"),
@@ -74,8 +74,8 @@ class ScopeStackTest extends FunSuite {
 
   test("inner wildcard shadows outer wildcard") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("inner/Foo#", "Foo", isType = true, None))
-    st.add(SymbolDefinition("outer/Foo#", "Foo", isType = true, None))
+    st.add(SymbolDefinition("inner/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("outer/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
       explicit = Map.empty,
@@ -93,8 +93,8 @@ class ScopeStackTest extends FunSuite {
 
   test("unimport excludes from wildcard resolution") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, None))
-    st.add(SymbolDefinition("pkg/wild/Bar#", "Bar", isType = true, None))
+    st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/wild/Bar#", "Bar", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
       explicit = Map.empty,

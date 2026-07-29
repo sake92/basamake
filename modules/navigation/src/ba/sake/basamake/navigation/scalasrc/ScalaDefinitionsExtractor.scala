@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import java.io.InputStream
+import scala.compiletime.uninitialized
 import scala.meta.*
 import scala.meta.dialects.{Scala3Future, Scala213}
 import scala.meta.inputs.Input
@@ -12,17 +13,19 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils, 
 class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 
   /** Entry point from file-system scan: filename + InputStream. */
-  def extract(name: String, is: InputStream): Unit =
+  def extract(name: String, is: InputStream, path: os.Path): Unit = {
     try {
       val content = new String(is.readAllBytes(), "UTF-8")
-      extractFromContent(name, content)
+      extractFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
         logger.warn(s"Failed to parse Scala source ${name}: ${e.getMessage}")
     }
+  }
 
   /** Test-friendly entry point: filename + source string. */
-  def extractFromContent(fileName: String, content: String): Unit = {
+  def extractFromContent(fileName: String, content: String, path: os.Path): Unit = {
+    currentPath = path
     require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 always wraps top-level defs under `<basename>$package.` and needs the filename to compute it")
     parseSource(content) match {
       case Some(src) =>
@@ -46,6 +49,8 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
   // ── main traversal ───────────────────────────────────────────
 
+  private var currentPath: os.Path = uninitialized
+
   private def extractInternal(fileName: String, src: Source): Unit = {
     val ovl = mutable.Map.empty[(String, String), Int]
     topLevelPkgOwner = extractPackageOwner(src.stats)
@@ -54,7 +59,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     extractStats(src.stats, "_empty_/", ovl, wrapper)
     if (wrapperUsed) wrapper.foreach { w =>
       val shortName = w.split('/').last.stripSuffix(".")
-      addSymbol(w, shortName, isType = false)
+      addSymbol(w, shortName, isType = false, Position.None)
     }
   }
 
@@ -107,18 +112,18 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       case po: Pkg.Object =>
         val pkgOwner = mkPackageOwnerForPkgObj(owner, po.name.value)
         val pkgObjOwner = SymbolUtils.termSymbol(pkgOwner, "package")
-        addSymbol(pkgObjOwner, "package", isType = false)
+        addSymbol(pkgObjOwner, "package", isType = false, po.name.pos)
         extractStats(po.templ.stats, pkgObjOwner, ovl, None)
 
       // ── class ─────────────────────────────────────────────────
       case c: Defn.Class =>
         val sym = SymbolUtils.typeSymbol(owner, c.name.value)
-        addSymbol(sym, c.name.value, isType = true)
-        emitTypeParams(sym, c.tparams)
+        addSymbol(sym, c.name.value, isType = true, c.name.pos)
+        emitTypeParams(sym, c.tparams, c.name.pos)
         val ctorSym = SymbolUtils.constructorSymbol(sym, bumpOvl(ovl, sym, "<init>"))
-        addSymbol(ctorSym, "<init>", isType = false)
-        emitCtorParams(ctorSym, c.ctor.paramss)
-        emitCtorFieldAccessors(sym, c.ctor.paramss)
+        addSymbol(ctorSym, "<init>", isType = false, c.name.pos) // stand-in: class name position
+        emitCtorParams(ctorSym, c.ctor.paramss, c.name.pos)
+        emitCtorFieldAccessors(sym, c.ctor.paramss, c.name.pos)
         val isCaseClass = c.mods.exists(_.isInstanceOf[Mod.Case])
         if (isCaseClass)
           emitCaseClassSynthetics(owner, c.name.value, c.ctor.paramss,
@@ -132,43 +137,43 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
               case d: Decl.Def => d.name.value == "apply"
               case _ => false
             },
-            ovl)
+            ovl, c.name.pos)
         extractStats(c.templ.stats, sym, ovl, None)
 
       // ── trait ─────────────────────────────────────────────────
       case t: Defn.Trait =>
         val sym = SymbolUtils.typeSymbol(owner, t.name.value)
-        addSymbol(sym, t.name.value, isType = true)
+        addSymbol(sym, t.name.value, isType = true, t.name.pos)
         val ctorIdx = bumpOvl(ovl, sym, "<init>")
-        addSymbol(SymbolUtils.constructorSymbol(sym, ctorIdx), "<init>", isType = false)
-        emitTypeParams(sym, t.tparams)
+        addSymbol(SymbolUtils.constructorSymbol(sym, ctorIdx), "<init>", isType = false, t.name.pos)
+        emitTypeParams(sym, t.tparams, t.name.pos)
         extractStats(t.templ.stats, sym, ovl, None)
 
       // ── object ────────────────────────────────────────────────
       case o: Defn.Object =>
         val sym = SymbolUtils.termSymbol(owner, o.name.value)
-        addSymbol(sym, o.name.value, isType = false)
+        addSymbol(sym, o.name.value, isType = false, o.name.pos)
         extractStats(o.templ.stats, sym, ovl, None)
 
       // ── enum ──────────────────────────────────────────────────
       case e: Defn.Enum =>
         val typeSym = SymbolUtils.typeSymbol(owner, e.name.value)
         val termSym = SymbolUtils.termSymbol(owner, e.name.value)
-        addSymbol(typeSym, e.name.value, isType = true)
-        addSymbol(termSym, e.name.value, isType = false)
+        addSymbol(typeSym, e.name.value, isType = true, e.name.pos)
+        addSymbol(termSym, e.name.value, isType = false, e.name.pos)
         val ctorIdx = bumpOvl(ovl, typeSym, "<init>")
-        addSymbol(SymbolUtils.constructorSymbol(typeSym, ctorIdx), "<init>", isType = false)
-        emitTypeParams(typeSym, e.tparams)
+        addSymbol(SymbolUtils.constructorSymbol(typeSym, ctorIdx), "<init>", isType = false, e.name.pos)
+        emitTypeParams(typeSym, e.tparams, e.name.pos)
         extractStats(e.templ.stats, termSym, ovl, None)
 
       // ── enum case (single) ────────────────────────────────────
       case ec: Defn.EnumCase =>
-        addSymbol(SymbolUtils.termSymbol(owner, ec.name.value), ec.name.value, isType = false)
+        addSymbol(SymbolUtils.termSymbol(owner, ec.name.value), ec.name.value, isType = false, ec.name.pos)
 
       // ── repeated enum case ────────────────────────────────────
       case rec: Defn.RepeatedEnumCase =>
         rec.cases.foreach { c =>
-          addSymbol(SymbolUtils.termSymbol(owner, c.value), c.value, isType = false)
+          addSymbol(SymbolUtils.termSymbol(owner, c.value), c.value, isType = false, c.pos)
         }
 
       // ── def ───────────────────────────────────────────────────
@@ -176,16 +181,16 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         val effectiveOwner = ifWrapperOwner(owner, wrapper)
         val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
         val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
-        addSymbol(methodSym, d.name.value, isType = false)
-        emitParams(methodSym, d.paramss)
+        addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
+        emitParams(methodSym, d.paramss, d.name.pos)
 
       // ── abstract decl def ─────────────────────────────────────
       case dd: Decl.Def =>
         val effectiveOwner = ifWrapperOwner(owner, wrapper)
         val idx = bumpOvl(ovl, effectiveOwner, dd.name.value)
         val methodSym = SymbolUtils.methodSymbol(effectiveOwner, dd.name.value, idx)
-        addSymbol(methodSym, dd.name.value, isType = false)
-        emitParams(methodSym, dd.paramss)
+        addSymbol(methodSym, dd.name.value, isType = false, dd.name.pos)
+        emitParams(methodSym, dd.paramss, dd.name.pos)
 
       // ── abstract decl val ─────────────────────────────────────
       case dv: Decl.Val =>
@@ -193,7 +198,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         if (!effectiveOwner.endsWith(")."))
           dv.pats.foreach {
             case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false)
+              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
             case _ => ()
           }
 
@@ -203,7 +208,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         if (!effectiveOwner.endsWith(")."))
           dvr.pats.foreach {
             case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false)
+              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
             case _ => ()
           }
 
@@ -211,8 +216,8 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       case cs: Ctor.Secondary =>
         val idx = bumpOvl(ovl, owner, "<init>")
         val ctorSym = SymbolUtils.constructorSymbol(owner, idx)
-        addSymbol(ctorSym, "<init>", isType = false)
-        emitParams(ctorSym, cs.paramss)
+        addSymbol(ctorSym, "<init>", isType = false, cs.name.pos)
+        emitParams(ctorSym, cs.paramss, cs.name.pos)
 
       // ── val ───────────────────────────────────────────────────
       case v: Defn.Val =>
@@ -220,7 +225,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         if (!effectiveOwner.endsWith(")."))
           v.pats.foreach {
             case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false)
+              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
             case _ => ()
           }
 
@@ -230,21 +235,21 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         if (!effectiveOwner.endsWith(")."))
           vr.pats.foreach {
             case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false)
+              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
             case _ => ()
           }
 
       // ── type alias (includes opaque type) ─────────────────────
       case dt: Defn.Type =>
         val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        addSymbol(SymbolUtils.typeSymbol(effectiveOwner, dt.name.value), dt.name.value, isType = true)
+        addSymbol(SymbolUtils.typeSymbol(effectiveOwner, dt.name.value), dt.name.value, isType = true, dt.name.pos)
 
       // ── named given ───────────────────────────────────────────
       case g: Defn.Given =>
         if (g.name.value.nonEmpty) {
           val effectiveOwner = ifWrapperOwner(owner, wrapper)
           val sym = SymbolUtils.termSymbol(effectiveOwner, g.name.value)
-          addSymbol(sym, g.name.value, isType = false)
+          addSymbol(sym, g.name.value, isType = false, g.name.pos)
           extractStats(g.templ.stats, sym, ovl, None)
         }
 
@@ -252,7 +257,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       case ga: Defn.GivenAlias =>
         if (ga.name.value.nonEmpty) {
           val effectiveOwner = ifWrapperOwner(owner, wrapper)
-          addSymbol(SymbolUtils.termSymbol(effectiveOwner, ga.name.value), ga.name.value, isType = false)
+          addSymbol(SymbolUtils.termSymbol(effectiveOwner, ga.name.value), ga.name.value, isType = false, ga.name.pos)
         }
 
       // ── extension group ───────────────────────────────────────
@@ -264,17 +269,17 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
               case d: Defn.Def =>
                 val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
                 val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
-                addSymbol(methodSym, d.name.value, isType = false)
-                emitParams(methodSym, eg.paramss)   // extension params
-                emitParams(methodSym, d.paramss)    // method's own params
+                addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
+                emitParams(methodSym, eg.paramss, d.name.pos)   // extension params
+                emitParams(methodSym, d.paramss, d.name.pos)    // method's own params
               case s => extractStat(s, effectiveOwner, ovl, None)
             }
           case d: Defn.Def =>
             val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
             val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
-            addSymbol(methodSym, d.name.value, isType = false)
-            emitParams(methodSym, eg.paramss)
-            emitParams(methodSym, d.paramss)
+            addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
+            emitParams(methodSym, eg.paramss, d.name.pos)
+            emitParams(methodSym, d.paramss, d.name.pos)
           case s: Stat => extractStat(s, effectiveOwner, ovl, None)
         }
 
@@ -297,8 +302,9 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     SymbolUtils.packageOwner(base :+ pkgObjName)
   }
 
-  private def addSymbol(symbol: String, shortName: String, isType: Boolean): Unit = {
-    symbolTable.add(SymbolDefinition(symbol, shortName, isType, None))
+  private def addSymbol(symbol: String, shortName: String, isType: Boolean, pos: Position): Unit = {
+    val range = if (pos == Position.None) new scala.meta.internal.semanticdb.Range(0, 0, 0, 0) else PositionUtils.toRange(pos)
+    symbolTable.add(SymbolDefinition(symbol, shortName, isType, range, currentPath))
   }
 
   private def bumpOvl(
@@ -332,32 +338,34 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
   // ── type parameter emission ──────────────────────────────────
 
-  private def emitTypeParams(ownerTypeSym: String, tparams: List[Type.Param]): Unit = {
+  private def emitTypeParams(ownerTypeSym: String, tparams: List[Type.Param], standInPos: Position): Unit = {
     tparams.foreach { tp =>
       val n = tp.name.value
       if (n.nonEmpty)
-        addSymbol(SymbolUtils.typeParamSymbol(ownerTypeSym, n), n, isType = false)
+        addSymbol(SymbolUtils.typeParamSymbol(ownerTypeSym, n), n, isType = false, tp.name.pos)
     }
   }
 
   // ── parameter emission helpers ───────────────────────────────
 
   /** Emits `<methodSym>(<paramName>)` for each Term.Param in the paramss. */
-  private def emitParams(methodSym: String, paramss: List[List[Term.Param]]): Unit =
+  private def emitParams(methodSym: String, paramss: List[List[Term.Param]], standInPos: Position): Unit =
     paramss.foreach { clause => clause.foreach { p =>
       val n = p.name.value
-      if (n.nonEmpty) addSymbol(SymbolUtils.parameterSymbol(methodSym, n), n, isType = false)
+      if (n.nonEmpty) addSymbol(SymbolUtils.parameterSymbol(methodSym, n), n, isType = false, p.name.pos)
     }}
 
-  /** Primary-constructor params double as init parameters. */
-  private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]]): Unit =
-    emitParams(ctorSym, paramss)
+  /** Primary-constructor params double as init parameters.
+    * Uses standInPos for the range (enclosing class name position). */
+  private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]], standInPos: Position): Unit =
+    emitParams(ctorSym, paramss, standInPos)
 
-  /** Emits `<classSym>.<paramName>.` for each primary-ctor param. */
-  private def emitCtorFieldAccessors(classSym: String, paramss: List[List[Term.Param]]): Unit =
+  /** Emits `<classSym>.<paramName>.` for each primary-ctor param.
+    * Uses standInPos for the range (enclosing class name position). */
+  private def emitCtorFieldAccessors(classSym: String, paramss: List[List[Term.Param]], standInPos: Position): Unit =
     paramss.foreach { clause => clause.foreach { p =>
       val n = p.name.value
-      if (n.nonEmpty) addSymbol(SymbolUtils.termSymbol(classSym, n), n, isType = false)
+      if (n.nonEmpty) addSymbol(SymbolUtils.termSymbol(classSym, n), n, isType = false, standInPos) // synthetic → stand-in
     }}
 
   // ── case class synthetics ────────────────────────────────────
@@ -369,6 +377,8 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     * stays in the class body.
     *
     * Skip: `copy$default$N`, `_N`, `productElement`, `$values`, etc. (internal).
+    *
+    * All synthetic ranges use `classPos` as stand-in (the enclosing class name position).
     */
   private def emitCaseClassSynthetics(
       classOwner: String,
@@ -376,35 +386,36 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       primaryCtorParamss: List[List[Term.Param]],
       hasUserCopy: Boolean,
       hasUserApply: Boolean,
-      ovl: mutable.Map[(String, String), Int]
+      ovl: mutable.Map[(String, String), Int],
+      classPos: Position
   ): Unit = {
     val companion = SymbolUtils.termSymbol(classOwner, className)
-    addSymbol(companion, className, isType = false)
+    addSymbol(companion, className, isType = false, classPos) // synthetic companion → stand-in
 
     // Synthetic apply in companion — always emitted.
     val applyIdx = bumpOvl(ovl, companion, "apply")
     val applySym = SymbolUtils.methodSymbol(companion, "apply", applyIdx)
-    addSymbol(applySym, "apply", isType = false)
-    emitParams(applySym, primaryCtorParamss)
+    addSymbol(applySym, "apply", isType = false, classPos) // synthetic → stand-in
+    emitParams(applySym, primaryCtorParamss, classPos)
 
     // Synthetic unapply in companion.
     val unapplyIdx = bumpOvl(ovl, companion, "unapply")
     val unapplySym = SymbolUtils.methodSymbol(companion, "unapply", unapplyIdx)
-    addSymbol(unapplySym, "unapply", isType = false)
+    addSymbol(unapplySym, "unapply", isType = false, classPos) // synthetic → stand-in
     // unapply has one synthetic param `x$1`
-    addSymbol(SymbolUtils.parameterSymbol(unapplySym, "x$1"), "x$1", isType = false)
+    addSymbol(SymbolUtils.parameterSymbol(unapplySym, "x$1"), "x$1", isType = false, classPos) // synthetic → stand-in
 
     // Synthetic toString in companion.
     val toStringIdx = bumpOvl(ovl, companion, "toString")
-    addSymbol(SymbolUtils.methodSymbol(companion, "toString", toStringIdx), "toString", isType = false)
+    addSymbol(SymbolUtils.methodSymbol(companion, "toString", toStringIdx), "toString", isType = false, classPos) // synthetic → stand-in
 
     // Synthetic copy in class — skip if user defines their own `def copy`.
     if (!hasUserCopy) {
       val classSym = SymbolUtils.typeSymbol(classOwner, className)
       val copyIdx = bumpOvl(ovl, classSym, "copy")
       val copySym = SymbolUtils.methodSymbol(classSym, "copy", copyIdx)
-      addSymbol(copySym, "copy", isType = false)
-      emitParams(copySym, primaryCtorParamss)
+      addSymbol(copySym, "copy", isType = false, classPos) // synthetic → stand-in
+      emitParams(copySym, primaryCtorParamss, classPos)
     }
   }
 

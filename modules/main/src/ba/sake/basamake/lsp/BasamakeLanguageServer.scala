@@ -14,13 +14,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   @volatile private var client: LanguageClient = uninitialized
 
   private val workspaceIndex = WorkspaceIndex()
- 
+
   // ----- LanguageClientAware
   def connect(client: LanguageClient): Unit = {
     logger.debug(s"Client connected: ${client}")
     this.client = client
   }
-  
+
   // ----- LanguageServer
   def initialize(params: InitializeParams): CompletableFuture[InitializeResult] = {
     val capabilities = ServerCapabilities()
@@ -28,20 +28,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setDocumentSymbolProvider(true)
-    
-    // TODO 1: build symbol table from: semanticsdb files (if available) + parsed source files
-    /*
-    val parseSourceFile: os.Path => Option[SourceSemanticdb] = path => {
-      if path.ext == "scala" then {
-        val parser = ScalaSourceParser(path)
-        Some(parser.extract(path.last, os.stream.inputStream(path)))
-      } /*else if path.ext == "java" then {
-        val parser = JavaSourceParser(path)
-        Some(parser.parse())
-      }*/ else None
-    }
-    initIndexFromSources(workspacePath, parseSourceFile)
-    */
+
+    // Build symbol table from semanticdb files + parsed source files
+    workspaceIndex.initialize(workspacePath)
+
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
@@ -49,7 +39,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     logger.debug("Shutdown...")
     CompletableFuture.completedFuture(null)
   }
-  
+
   def exit(): Unit = {
     logger.debug("Exit...")
     System.exit(0)
@@ -63,36 +53,52 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
 
   // ----- TextDocumentService
-  // TODO reparse files on change
-  def didChange(params: DidChangeTextDocumentParams): Unit = ()
-  def didClose(params: DidCloseTextDocumentParams): Unit = ()
-  def didOpen(params: DidOpenTextDocumentParams): Unit = ()
-  def didSave(params: DidSaveTextDocumentParams): Unit = ()
-  
+  override def didOpen(params: DidOpenTextDocumentParams): Unit = {
+    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    workspaceIndex.onDidOpen(path, params.getTextDocument.getText)
+  }
+
+  override def didChange(params: DidChangeTextDocumentParams): Unit = {
+    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    // Full sync — last change's text is the whole document
+    val text = params.getContentChanges.asScala.last.getText
+    workspaceIndex.onDidChange(path, text)
+  }
+
+  override def didSave(params: DidSaveTextDocumentParams): Unit = {
+    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    // Option[String] in lsp4j 1.0.0 — getText returns nullable String
+    workspaceIndex.onDidSave(path, Option(params.getText))
+  }
+
+  override def didClose(params: DidCloseTextDocumentParams): Unit = {
+    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    workspaceIndex.onDidClose(path)
+  }
+
   override def definition(params: DefinitionParams)
       : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
         java.util.List[? <: Location],
         java.util.List[? <: LocationLink]
       ]] =
     CompletableFuture.supplyAsync { () =>
-        val uriStr = params.getTextDocument.getUri
-        val path   = os.Path(URI.create(uriStr))
-        val line   = params.getPosition.getLine
-        val char   = params.getPosition.getCharacter
+      val path = os.Path(URI.create(params.getTextDocument.getUri))
+      val line = params.getPosition.getLine
+      val char = params.getPosition.getCharacter
+      val locs = workspaceIndex.gotoDefinitions(path, line, char).map(toLspLocation).asJava
+      org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locs)
+    }
 
-        val locationsList = workspaceIndex.findSymbolsAt(path, line, char)
-          .flatMap { symbol =>
-            // Local first — nearest scope wins (compiler scoping rules)
-            workspaceIndex.findLocalDefinition(path, symbol) match
-              case Some(loc) => Vector(loc)
-              case None      => workspaceIndex.gotoDefinitions(symbol)
-          }
-          .map(toLspLocation)
-          .distinct
-          .asJava
-        org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locationsList)
-  }
+  override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
+    CompletableFuture.supplyAsync { () =>
+      val path = os.Path(URI.create(params.getTextDocument.getUri))
+      val line = params.getPosition.getLine
+      val char = params.getPosition.getCharacter
+      val includeDecl = params.getContext.isIncludeDeclaration
+      workspaceIndex.references(path, line, char, includeDecl).map(toLspLocation).asJava
+    }
 
+  // documentSymbol returns empty for v1 — descriptor → SymbolKind map is deferred follow-up
   override def documentSymbol(params: DocumentSymbolParams)
       : CompletableFuture[
         java.util.List[org.eclipse.lsp4j.jsonrpc.messages.Either[SymbolInformation, DocumentSymbol]]
@@ -101,31 +107,12 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       List.empty.asJava
     )
 
-  override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
-    CompletableFuture.completedFuture(
-      List.empty.asJava
-    )
-
-  private def toLspLocation(loc: SymbolLocation): Location = {
+  private def toLspLocation(loc: WorkspaceIndex.SymbolLocation): Location = {
     val uri = loc.path.toNIO.toUri.toString
     val range = new Range(
         new Position(loc.range.startLine, loc.range.startCharacter),
         new Position(loc.range.endLine, loc.range.endCharacter)
     )
     new Location(uri, range)
-  }
-
-  private def initIndexFromSources(workspaceRoot: os.Path, parseSourceFile: os.Path => Option[SourceSemanticdb]): Unit = {
-    val scalaAndJavaFiles = os.walk(workspaceRoot).filter { p =>
-        os.isFile(p) && (p.ext == "scala" || p.ext == "java")
-    }
-
-    for path <- scalaAndJavaFiles do {
-      logger.debug(s"Parsing source file: $path")
-        parseSourceFile(path).foreach { doc =>
-          workspaceIndex.indexFile(path, doc)
-        }
-    }
-    logger.debug("Index: \n" + workspaceIndex.definitions.map { case (symbol, loc) => s"$symbol -> $loc" }.mkString("\n"))
   }
 }

@@ -85,6 +85,5 @@ local const coreModules =
 
 modules {
   ...navigationModules.all
-  //...mainModules.all
-  //...coreModules.all
+  ...mainModules.all
 }

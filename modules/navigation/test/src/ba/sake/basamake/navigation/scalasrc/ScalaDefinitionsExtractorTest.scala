@@ -8,7 +8,7 @@ class ScalaDefinitionsExtractorTest extends FunSuite {
   private def extract(fileName: String, code: String): Set[SymbolDefinition] = {
     val table = new SymbolTable
     val extractor = new ScalaDefinitionsExtractor(table)
-    extractor.extractFromContent(fileName, code)
+    extractor.extractFromContent(fileName, code, os.pwd / fileName)
     table.all
   }
 

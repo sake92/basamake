@@ -36,7 +36,7 @@ class ImportScopeTest extends FunSuite {
     tree match {
       case Parsed.Success(imp: Import) =>
         val st = new SymbolTable
-        st.add(SymbolDefinition("a/b/", "b", isType = false, None))
+        st.add(SymbolDefinition("a/b/", "b", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
         val ss = new ScopeStack(st)
         val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
         val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
@@ -53,7 +53,7 @@ class ImportScopeTest extends FunSuite {
     tree match {
       case Parsed.Success(imp: Import) =>
         val st = new SymbolTable
-        st.add(SymbolDefinition("a/b/C#", "C", isType = true, None))
+        st.add(SymbolDefinition("a/b/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
         val ss = new ScopeStack(st)
         val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
         val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
@@ -86,9 +86,9 @@ class ImportScopeTest extends FunSuite {
     tree match {
       case Parsed.Success(imp: Import) =>
         val st = new SymbolTable
-        st.add(SymbolDefinition("a/", "a", isType = false, None))
-        st.add(SymbolDefinition("a/b/", "b", isType = false, None))
-        st.add(SymbolDefinition("a/b/C#", "C", isType = true, None))
+        st.add(SymbolDefinition("a/", "a", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/b/", "b", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/b/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
         val ss = new ScopeStack(st)
         val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
         ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))

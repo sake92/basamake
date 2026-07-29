@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import java.io.InputStream
+import scala.compiletime.uninitialized
 import scala.meta.*
 import scala.meta.dialects.{Scala3Future, Scala213}
 import scala.meta.inputs.Input
@@ -20,10 +21,10 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils, 
 class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   /** Entry point from file-system scan: filename + InputStream. */
-  def resolve(name: String, is: InputStream): ResolvedFile =
+  def resolve(name: String, is: InputStream, path: os.Path): ResolvedFile =
     try {
       val content = new String(is.readAllBytes(), "UTF-8")
-      resolveFromContent(name, content)
+      resolveFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
         logger.warn(s"Failed to resolve references in ${name}: ${e.getMessage}")
@@ -31,7 +32,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     }
 
   /** Test-friendly entry point: filename + source string. */
-  def resolveFromContent(fileName: String, content: String): ResolvedFile = {
+  def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile = {
+    currentPath = path
     require(fileName.nonEmpty, "fileName must be non-empty")
     parseSource(content) match {
       case Some(src) => resolveInternal(fileName, src)
@@ -64,6 +66,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private var currentOwner: String = "_empty_/"
   private var currentOwnerIsType: Boolean = false
   private var methodDepth: Int = 0
+  private var currentPath: os.Path = uninitialized
 
   // ── main traversal ───────────────────────────────────────────
 
@@ -159,7 +162,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def addLocal(pos: Position, symbol: String, shortName: String, isType: Boolean): Unit = {
     val range = PositionUtils.toRange(pos)
-    locals += SymbolDefinition(symbol, shortName, isType, Some(range))
+    locals += SymbolDefinition(symbol, shortName, isType, range, currentPath)
   }
 
   private def nextLocalSymbol(): String = {
