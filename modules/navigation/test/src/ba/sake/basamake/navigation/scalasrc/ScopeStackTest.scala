@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ScopeStack, OwnerScope, LocalScope, ImportScopeData}
 
 class ScopeStackTest extends FunSuite {
 

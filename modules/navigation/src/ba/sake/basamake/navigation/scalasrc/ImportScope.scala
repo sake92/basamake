@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import scala.meta.*
-import ba.sake.basamake.navigation.{SymbolTable, SymbolUtils, PositionUtils}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolUtils, ScopeStack, ImportScopeData}
 /** Parses a scalameta `Import` stat into `ImportScopeData` entries.
   * Used by `ScopeStack` to populate import scopes during traversal.
   *
