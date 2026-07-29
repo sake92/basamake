@@ -86,7 +86,14 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     currentOwner = topLevelPkgOwner
     currentOwnerIsType = false
 
-    resolveStats(src.stats)
+    val topLevelOwner = wrapper.getOrElse(topLevelPkgOwner)
+    scopeStack.push(OwnerScope(topLevelOwner))
+    scopeStack.push(LocalScope(collection.mutable.Map.empty[String, String]))
+    try resolveStats(src.stats)
+    finally {
+      scopeStack.pop()
+      scopeStack.pop()
+    }
 
     ResolvedFile(occurrences.toVector, locals.toVector)
   }
@@ -148,13 +155,11 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   }
 
   // ── emit helpers ─────────────────────────────────────────────
-
-  private def emitDef(pos: Position, symbol: String): Unit = {
-    if (symbol.nonEmpty) {
-      val range = PositionUtils.toRange(pos)
-      occurrences += ReferenceOccurrence(symbol, range, isDefinition = true)
-    }
-  }
+  // NOTE (Task 0): definition occurrences are NOT emitted here. Global defs
+  // live in SymbolTable (populated by ScalaDefinitionsExtractor); local defs
+  // are recorded via `addLocal` into the `locals` Vector. This pass emits
+  // REFERENCE occurrences only. WorkspaceIndex queries look up def sites via
+  // SymbolTable / openLocalDefinitions.
 
   private def emitRef(pos: Position, symbol: String): Unit = {
     val range = PositionUtils.toRange(pos)
@@ -199,6 +204,28 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
           if (symbolTable.get(sym).isDefined) Some(sym) else None
         }
       }
+      .orElse(wrapperScan(topLevelPkgOwner, name, isType))
+  }
+
+  /** Cross-file top-level wrapper divergence: another file's top-level def lives
+    * under `pkg/Other$package.<name>...`, not under this file's wrapper.
+    * When the scope walk misses, scan the symbol table for any
+    * `<pkgOwner>/<file>$package.<name>...` key matching the call site's package.
+    * Only runs on miss — cheap.
+    */
+  private def wrapperScan(pkgOwner: String, name: String, isType: Boolean): Option[String] = {
+    val escName = java.util.regex.Pattern.quote(SymbolUtils.escapedName(name))
+    val pkg     = java.util.regex.Pattern.quote(pkgOwner)
+    // Regex: <pkg>/<anything>$package.<escName>(...).   (methods)
+    //     or: <pkg>/<anything>$package.<escName>.         (vals/objects)
+    //     or: <pkg>/<anything>$package.<escName>#          (types)
+    val methodPat = s"^${pkg}.*\\$$package\\.$escName\\(.*\\)\\.$$".r.pattern
+    val termPat   = s"^${pkg}.*\\$$package\\.$escName\\.$$".r.pattern
+    val typePat   = s"^${pkg}.*\\$$package\\.$escName#$$".r.pattern
+    symbolTable.keys.find { k =>
+      if isType then typePat.matcher(k).matches()
+      else methodPat.matcher(k).matches() || termPat.matcher(k).matches()
+    }
   }
 
   // ── package ──────────────────────────────────────────────────
@@ -206,16 +233,21 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolvePkg(p: Pkg): Unit = {
     val segs = p.ref.toString.split('.').toList
     val pkgOwner = SymbolUtils.packageOwner(segs)
-    emitDef(p.ref.pos, pkgOwner)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
     currentOwner = pkgOwner
     currentOwnerIsType = false
 
+    val isFilesTopPackage = pkgOwner == topLevelPkgOwner
+    val pushedWrapper = isFilesTopPackage && wrapper.isDefined
     scopeStack.push(OwnerScope(pkgOwner))
-    resolveStats(p.body)
-    scopeStack.pop()
+    if (pushedWrapper) scopeStack.push(OwnerScope(wrapper.get))
+    try resolveStats(p.body)
+    finally {
+      if (pushedWrapper) scopeStack.pop()
+      scopeStack.pop()
+    }
 
     currentOwner = oldOwner
     currentOwnerIsType = oldIsType
@@ -226,7 +258,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolvePkgObject(po: Pkg.Object): Unit = {
     val pkgOwner = mkPackageOwnerForPkgObj(currentOwner, po.name.value)
     val pkgObjOwner = SymbolUtils.termSymbol(pkgOwner, "package")
-    emitDef(po.name.pos, pkgObjOwner)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
@@ -250,24 +281,18 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     if (isInsideMethod) {
       // Local class → emit as local<N>
       val localSym = nextLocalSymbol()
-      emitDef(c.name.pos, localSym)
       addLocal(c.name.pos, localSym, c.name.value, isType = true)
 
       // Also emit extractor-style key for parity (pragmatic compromise)
       val globalSym = classSym
-      emitDef(c.name.pos, globalSym)
       // emit type params for the global key too
       c.tparams.foreach { tp =>
         val tpSym = SymbolUtils.typeParamSymbol(globalSym, tp.name.value)
         val localTpSym = nextLocalSymbol()
-        emitDef(tp.name.pos, tpSym)
-        emitDef(tp.name.pos, localTpSym)
         addLocal(tp.name.pos, localTpSym, tp.name.value, isType = false)
       }
 
       val ctorSym = SymbolUtils.constructorSymbol(globalSym, 0)
-      emitDef(c.name.pos, ctorSym)
-      emitCtorParams(ctorSym, c.ctor.paramss)
       c.ctor.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
 
       // Push owner scope and local scope
@@ -291,28 +316,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       currentOwnerIsType = oldIsType
     } else {
       // Global class
-      emitDef(c.name.pos, classSym)
-      emitTypeParams(classSym, c.tparams)
       val ctorSym = SymbolUtils.constructorSymbol(classSym, 0)
-      emitDef(c.name.pos, ctorSym)
-      emitCtorParams(ctorSym, c.ctor.paramss)
       c.ctor.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
-      emitCtorFieldAccessors(classSym, c.ctor.paramss)
-
-      val isCaseClass = c.mods.exists(_.isInstanceOf[Mod.Case])
-      if (isCaseClass) {
-        emitCaseClassSynthetics(effOwner, c.name.value, c.ctor.paramss,
-          c.templ.stats.exists {
-            case d: Defn.Def => d.name.value == "copy"
-            case d: Decl.Def => d.name.value == "copy"
-            case _ => false
-          },
-          c.templ.stats.exists {
-            case d: Defn.Def => d.name.value == "apply"
-            case d: Decl.Def => d.name.value == "apply"
-            case _ => false
-          })
-      }
 
       val oldOwner = currentOwner
       val oldIsType = currentOwnerIsType
@@ -336,10 +341,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolveTrait(t: Defn.Trait): Unit = {
     val effOwner = currentOwner
     val traitSym = SymbolUtils.typeSymbol(effOwner, t.name.value)
-    emitDef(t.name.pos, traitSym)
-    emitTypeParams(traitSym, t.tparams)
     val ctorSym = SymbolUtils.constructorSymbol(traitSym, 0)
-    emitDef(t.name.pos, ctorSym)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
@@ -366,9 +368,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     if (isInsideMethod) {
       val localSym = nextLocalSymbol()
-      emitDef(o.name.pos, localSym)
       addLocal(o.name.pos, localSym, o.name.value, isType = false)
-      emitDef(o.name.pos, objSym) // also emit global key
 
       val oldOwner = currentOwner
       val oldIsType = currentOwnerIsType
@@ -384,7 +384,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       currentOwner = oldOwner
       currentOwnerIsType = oldIsType
     } else {
-      emitDef(o.name.pos, objSym)
 
       val oldOwner = currentOwner
       val oldIsType = currentOwnerIsType
@@ -408,11 +407,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val effOwner = currentOwner
     val typeSym = SymbolUtils.typeSymbol(effOwner, e.name.value)
     val termSym = SymbolUtils.termSymbol(effOwner, e.name.value)
-    emitDef(e.name.pos, typeSym)
-    emitDef(e.name.pos, termSym)
-    emitTypeParams(typeSym, e.tparams)
     val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
-    emitDef(e.name.pos, ctorSym)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
@@ -432,13 +427,11 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveEnumCase(ec: Defn.EnumCase): Unit = {
     val sym = SymbolUtils.termSymbol(currentOwner, ec.name.value)
-    emitDef(ec.name.pos, sym)
   }
 
   private def resolveRepeatedEnumCase(rec: Defn.RepeatedEnumCase): Unit = {
     rec.cases.foreach { c =>
       val sym = SymbolUtils.termSymbol(currentOwner, c.value)
-      emitDef(c.pos, sym)
     }
   }
 
@@ -449,23 +442,13 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val methodSym = SymbolUtils.methodSymbol(effOwner, d.name.value, 0) // overload index 0 — v1 heuristic
 
     if (isInsideMethod) {
-      // Local def → emit as local<N>
+      // Local def → record as local<N>
       val localSym = nextLocalSymbol()
-      emitDef(d.name.pos, localSym)
       addLocal(d.name.pos, localSym, d.name.value, isType = false)
-      emitDef(d.name.pos, methodSym) // also emit global key
-    } else {
-      emitDef(d.name.pos, methodSym)
     }
 
-    // Emit param defs and resolve param type annotations
-    val paramsKey = if (isInsideMethod) {
-      // For local defs inside methods, params get methodSym.(name) convention
-      methodSym
-    } else methodSym
-    emitParams(paramsKey, d.paramss)
+    // Resolve param type annotations
     d.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
-    emitTypeParams(methodSym, d.tparams)
     d.decltpe.foreach(resolveType)
 
     // Bind params in local scope for body resolution
@@ -480,10 +463,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolveDeclDef(dd: Decl.Def): Unit = {
     val effOwner = effectiveOwner
     val methodSym = SymbolUtils.methodSymbol(effOwner, dd.name.value, 0)
-    emitDef(dd.name.pos, methodSym)
-    emitParams(methodSym, dd.paramss)
     dd.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
-    emitTypeParams(methodSym, dd.tparams)
     resolveType(dd.decltpe)
   }
 
@@ -497,7 +477,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       v.pats.foreach {
         case pv: Pat.Var =>
           val localSym = nextLocalSymbol()
-          emitDef(pv.name.pos, localSym)
           addLocal(pv.name.pos, localSym, pv.name.value, isType = false)
           // Add binding to block-level LocalScope (no push/pop)
           scopeStack.addLocalBinding(pv.name.value, localSym)
@@ -506,14 +485,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       // Recurse rhs in value context
       resolveTerm(v.rhs, inCallContext = false)
     } else {
-      if (!effOwner.endsWith(").")) {
-        v.pats.foreach {
-          case pv: Pat.Var =>
-            val sym = SymbolUtils.termSymbol(effOwner, pv.name.value)
-            emitDef(pv.name.pos, sym)
-          case _ => ()
-        }
-      }
       resolveTerm(v.rhs, inCallContext = false)
     }
   }
@@ -521,14 +492,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolveDeclVal(dv: Decl.Val): Unit = {
     val effOwner = effectiveOwner
     resolveType(dv.decltpe)
-    if (!isInsideMethod && !effOwner.endsWith(").")) {
-      dv.pats.foreach {
-        case pv: Pat.Var =>
-          val sym = SymbolUtils.termSymbol(effOwner, pv.name.value)
-          emitDef(pv.name.pos, sym)
-        case _ => ()
-      }
-    }
   }
 
   // ── var ──────────────────────────────────────────────────────
@@ -540,7 +503,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       vr.pats.foreach {
         case pv: Pat.Var =>
           val localSym = nextLocalSymbol()
-          emitDef(pv.name.pos, localSym)
           addLocal(pv.name.pos, localSym, pv.name.value, isType = false)
           scopeStack.addLocalBinding(pv.name.value, localSym)
         case _ => ()
@@ -550,14 +512,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         case _ => ()
       }
     } else {
-      if (!effOwner.endsWith(").")) {
-        vr.pats.foreach {
-          case pv: Pat.Var =>
-            val sym = SymbolUtils.termSymbol(effOwner, pv.name.value)
-            emitDef(pv.name.pos, sym)
-          case _ => ()
-        }
-      }
       vr.rhs match {
         case Some(t: Term) => resolveTerm(t, inCallContext = false)
         case _ => ()
@@ -568,23 +522,12 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolveDeclVar(dvr: Decl.Var): Unit = {
     val effOwner = effectiveOwner
     resolveType(dvr.decltpe)
-    if (!isInsideMethod && !effOwner.endsWith(").")) {
-      dvr.pats.foreach {
-        case pv: Pat.Var =>
-          val sym = SymbolUtils.termSymbol(effOwner, pv.name.value)
-          emitDef(pv.name.pos, sym)
-        case _ => ()
-      }
-    }
   }
 
   // ── type alias ───────────────────────────────────────────────
 
   private def resolveTypeAlias(dt: Defn.Type): Unit = {
-    val effOwner = effectiveOwner
-    val sym = SymbolUtils.typeSymbol(effOwner, dt.name.value)
-    emitDef(dt.name.pos, sym)
-    emitTypeParams(sym, dt.tparams)
+    // Type alias is registered in SymbolTable by the extractor
   }
 
   // ── given ────────────────────────────────────────────────────
@@ -593,7 +536,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     if (g.name.value.nonEmpty) {
       val effOwner = effectiveOwner
       val sym = SymbolUtils.termSymbol(effOwner, g.name.value)
-      emitDef(g.name.pos, sym)
 
       val oldOwner = currentOwner
       val oldIsType = currentOwnerIsType
@@ -609,27 +551,19 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveGivenAlias(ga: Defn.GivenAlias): Unit = {
     if (ga.name.value.nonEmpty) {
-      val effOwner = effectiveOwner
-      val sym = SymbolUtils.termSymbol(effOwner, ga.name.value)
-      emitDef(ga.name.pos, sym)
+      // Name is registered in SymbolTable by the extractor — nothing to emit here
     }
   }
 
   // ── extension group ──────────────────────────────────────────
 
   private def resolveExtensionGroup(eg: Defn.ExtensionGroup): Unit = {
-    val effOwner = effectiveOwner
     // Extension params are bound as locals for the method bodies
     methodDepth += 1
     eg.body match {
       case b: Term.Block =>
         b.stats.foreach {
           case d: Defn.Def =>
-            val methodSym = SymbolUtils.methodSymbol(effOwner, d.name.value, 0)
-            emitDef(d.name.pos, methodSym)
-            emitParams(methodSym, eg.paramss)
-            emitParams(methodSym, d.paramss)
-
             // Push extension params into scope
             scopeStack.push(LocalScope(collection.mutable.Map.empty[String, String]))
             methodDepth += 1
@@ -639,11 +573,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
           case s => resolveStat(s)
         }
       case d: Defn.Def =>
-        val methodSym = SymbolUtils.methodSymbol(effOwner, d.name.value, 0)
-        emitDef(d.name.pos, methodSym)
-        emitParams(methodSym, eg.paramss)
-        emitParams(methodSym, d.paramss)
-
         scopeStack.push(LocalScope(collection.mutable.Map.empty[String, String]))
         resolveTerm(d.body, inCallContext = false)
         scopeStack.pop()
@@ -655,9 +584,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   // ── secondary constructor ────────────────────────────────────
 
   private def resolveSecondaryCtor(cs: Ctor.Secondary): Unit = {
-    val ctorSym = SymbolUtils.constructorSymbol(currentOwner, 0)
-    emitDef(cs.name.pos, ctorSym)
-    emitParams(ctorSym, cs.paramss)
+    // Ctor params are resolved by the extractor; nothing to emit here
   }
 
   // ── import ───────────────────────────────────────────────────
@@ -831,18 +758,11 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         args.foreach(resolveType)
 
       case Type.Param(mods, name, tparams, vbounds, cbounds, bounds) =>
-        // Type param definition — emit as local<N> and extractor-style #[T]
+        // Type param definition — emit as local<N>
         val pn = name.value
         if (pn.nonEmpty) {
           val localSym = nextLocalSymbol()
-          emitDef(name.pos, localSym)
           addLocal(name.pos, localSym, pn, isType = false)
-
-          // Also emit extractor-style key: currentOwner#[T]
-          if (currentOwnerIsType) {
-            val globalSym = SymbolUtils.typeParamSymbol(currentOwner, pn)
-            emitDef(name.pos, globalSym)
-          }
 
           // Bind in local scope
           scopeStack.push(LocalScope(collection.mutable.Map(pn -> localSym)))
@@ -898,70 +818,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val base = if (baseOwner == "_empty_/") Nil
                else baseOwner.stripSuffix("/").split('/').toList.filter(_.nonEmpty)
     SymbolUtils.packageOwner(base :+ pkgObjName)
-  }
-
-  private def emitParams(methodSym: String, paramss: List[List[Term.Param]]): Unit = {
-    paramss.foreach { clause => clause.foreach { p =>
-      val n = p.name.value
-      if (n.nonEmpty) {
-        val paramSym = SymbolUtils.parameterSymbol(methodSym, n)
-        emitDef(p.name.pos, paramSym)
-      }
-    }}
-  }
-
-  private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]]): Unit =
-    emitParams(ctorSym, paramss)
-
-  private def emitCtorFieldAccessors(classSym: String, paramss: List[List[Term.Param]]): Unit = {
-    paramss.foreach { clause => clause.foreach { p =>
-      val n = p.name.value
-      if (n.nonEmpty) {
-        val sym = SymbolUtils.termSymbol(classSym, n)
-        emitDef(p.name.pos, sym)
-      }
-    }}
-  }
-
-  private def emitTypeParams(ownerTypeSym: String, tparams: List[Type.Param]): Unit = {
-    tparams.foreach { tp =>
-      val n = tp.name.value
-      if (n.nonEmpty) {
-        val sym = SymbolUtils.typeParamSymbol(ownerTypeSym, n)
-        emitDef(tp.name.pos, sym)
-      }
-    }
-  }
-
-  // ── case class synthetics ────────────────────────────────────
-
-  private def emitCaseClassSynthetics(
-      classOwner: String,
-      className: String,
-      primaryCtorParamss: List[List[Term.Param]],
-      hasUserCopy: Boolean,
-      hasUserApply: Boolean
-  ): Unit = {
-    val companion = SymbolUtils.termSymbol(classOwner, className)
-    emitDef(Position.None, companion)
-
-    val applySym = SymbolUtils.methodSymbol(companion, "apply", 0)
-    emitDef(Position.None, applySym)
-    emitParams(applySym, primaryCtorParamss)
-
-    val unapplySym = SymbolUtils.methodSymbol(companion, "unapply", 0)
-    emitDef(Position.None, unapplySym)
-    emitDef(Position.None, SymbolUtils.parameterSymbol(unapplySym, "x$1"))
-
-    val toStringSym = SymbolUtils.methodSymbol(companion, "toString", 0)
-    emitDef(Position.None, toStringSym)
-
-    if (!hasUserCopy) {
-      val classSym = SymbolUtils.typeSymbol(classOwner, className)
-      val copySym = SymbolUtils.methodSymbol(classSym, "copy", 0)
-      emitDef(Position.None, copySym)
-      emitParams(copySym, primaryCtorParamss)
-    }
   }
 
   // ── term resolution helpers ───────────────────────────────────

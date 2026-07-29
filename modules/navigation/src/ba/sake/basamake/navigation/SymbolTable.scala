@@ -39,4 +39,10 @@ class SymbolTable {
   def keys: Set[String] = definitions.keySet().asScala.toSet
 
   def all: Set[SymbolDefinition] = definitions.values().asScala.toSet
+
+  def byPath(path: os.Path): Set[SymbolDefinition] = {
+    val symbols = pathSymbols.get(path)
+    if (symbols == null) Set.empty
+    else symbols.asScala.flatMap(sym => Option(definitions.get(sym))).toSet
+  }
 }

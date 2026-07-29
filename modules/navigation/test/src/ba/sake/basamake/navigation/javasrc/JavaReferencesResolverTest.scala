@@ -129,7 +129,7 @@ class JavaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class Test { void m() { int x = 1; x = 2; } }"""
     val rf = resolve(code)
     assertLocals(rf, Set(("local0", false)))
-    assertHasOccurrence(rf, "local0", isDef = true)
+    // ref occurrence only (def in locals, not occurrences)
     assertHasOccurrence(rf, "local0", isDef = false)
   }
 
@@ -139,7 +139,7 @@ class JavaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class C { int m(int p) { return p; } }"""
     val st = new SymbolTable
     val rf = resolveWith(st, code)
-    assertHasOccurrence(rf, "pkg/C#m().(p)", isDef = true)
+    // ref occurrence to param (def in SymbolTable now, not occurrences)
     assertHasOccurrence(rf, "pkg/C#m().(p)", isDef = false)
   }
 

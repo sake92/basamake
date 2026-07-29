@@ -75,7 +75,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     // emit def for package
     cu.getPackageDeclaration.toScala.foreach { pd =>
-      emitDefRange(pd.getName.getRange, pkgOwner)
     }
 
     scopeStack.push(OwnerScope(pkgOwner))
@@ -92,11 +91,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   }
 
   // ── emit helpers ─────────────────────────────────────────────
-
-  private def emitDefRange(optRange: java.util.Optional[JpRange], symbol: String): Unit =
-    if (symbol.nonEmpty && optRange.isPresent) {
-      occurrences += ReferenceOccurrence(symbol, JavaPositionUtils.toRange(optRange.get()), isDefinition = true)
-    }
 
   private def emitRefRange(optRange: java.util.Optional[JpRange], symbol: String): Unit =
     if (optRange.isPresent) {
@@ -167,27 +161,22 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveClassOrInterface(c: ClassOrInterfaceDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, c.getNameAsString)
-    emitDefRange(c.getName.getRange, typeSym)
 
     // type params as locals
     c.getTypeParameters.asScala.foreach { tp =>
       val localSym = nextLocalSymbol()
-      emitDefRange(tp.getName.getRange, localSym)
       addLocalRange(tp.getName.getRange, localSym, tp.getNameAsString, isType = false)
       val globalTp = SymbolUtils.typeParamSymbol(typeSym, tp.getNameAsString)
-      emitDefRange(tp.getName.getRange, globalTp)
       scopeStack.push(LocalScope(collection.mutable.Map(tp.getNameAsString -> localSym)))
     }
 
     // ctor def
     val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
-    emitDefRange(c.getName.getRange, ctorSym)
 
     // ctor params (from first constructor or implicit)
     val ctors = c.getConstructors.asScala
     if (ctors.nonEmpty) {
       ctors.head.getParameters.asScala.foreach { p =>
-        emitDefRange(c.getName.getRange, SymbolUtils.parameterSymbol(ctorSym, p.getNameAsString))
       }
     }
 
@@ -204,11 +193,9 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveEnum(e: EnumDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, e.getNameAsString)
-    emitDefRange(e.getName.getRange, typeSym)
 
     e.getEntries.asScala.foreach { en =>
       val termSym = SymbolUtils.termSymbol(typeSym, en.getNameAsString)
-      emitDefRange(en.getName.getRange, termSym)
     }
 
     withOwner(typeSym, isType = true, e.getNameAsString) {
@@ -220,7 +207,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveAnnotation(a: AnnotationDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, a.getNameAsString)
-    emitDefRange(a.getName.getRange, typeSym)
     withOwner(typeSym, isType = true, a.getNameAsString) {
       a.getMembers.asScala.foreach(resolveMember(_, typeSym))
     }
@@ -230,20 +216,16 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveRecord(r: RecordDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, r.getNameAsString)
-    emitDefRange(r.getName.getRange, typeSym)
 
     // type params
     r.getTypeParameters.asScala.foreach { tp =>
       val localSym = nextLocalSymbol()
-      emitDefRange(tp.getName.getRange, localSym)
       addLocalRange(tp.getName.getRange, localSym, tp.getNameAsString, isType = false)
     }
 
     // canonical ctor
     val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
-    emitDefRange(r.getName.getRange, ctorSym)
     r.getParameters.asScala.foreach { p =>
-      emitDefRange(r.getName.getRange, SymbolUtils.parameterSymbol(ctorSym, p.getNameAsString))
     }
 
     // synth accessors (skip if user method same name)
@@ -251,7 +233,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     r.getParameters.asScala.foreach { p =>
       val cn = p.getNameAsString
       if (!userMethodNames.contains(cn)) {
-        emitDefRange(r.getName.getRange, SymbolUtils.methodSymbol(typeSym, cn, 0))
       }
     }
 
@@ -275,14 +256,12 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     case fd: FieldDeclaration =>
       fd.getVariables.asScala.foreach { v =>
         val termSym = SymbolUtils.termSymbol(owner, v.getNameAsString)
-        emitDefRange(v.getName.getRange, termSym)
         // resolve field type
         resolveTypeRef(v.getType)
         v.getInitializer.toScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
       }
     case amd: AnnotationMemberDeclaration =>
       val methodSym = SymbolUtils.methodSymbol(owner, amd.getNameAsString, 0)
-      emitDefRange(amd.getName.getRange, methodSym)
     case td: TypeDeclaration[?] =>
       resolveTypeDecl(td, owner)
     case _ => ()
@@ -292,15 +271,12 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveMethod(md: MethodDeclaration, owner: String): Unit = {
     val methodSym = SymbolUtils.methodSymbol(owner, md.getNameAsString, 0)
-    emitDefRange(md.getName.getRange, methodSym)
 
     md.getParameters.asScala.foreach { p =>
-      emitDefRange(p.getName.getRange, SymbolUtils.parameterSymbol(methodSym, p.getNameAsString))
     }
 
     md.getTypeParameters.asScala.foreach { tp =>
       val localSym = nextLocalSymbol()
-      emitDefRange(tp.getName.getRange, localSym)
       addLocalRange(tp.getName.getRange, localSym, tp.getNameAsString, isType = false)
     }
 
@@ -378,7 +354,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     case vde: VariableDeclarationExpr =>
       vde.getVariables.asScala.foreach { vd =>
         val localSym = nextLocalSymbol()
-        emitDefRange(vd.getName.getRange, localSym)
         addLocalRange(vd.getName.getRange, localSym, vd.getNameAsString, isType = false)
         scopeStack.addLocalBinding(vd.getNameAsString, localSym)
         vd.getInitializer.toScala.foreach(init => resolveExpr(init, isType = false, inCallContext = false))

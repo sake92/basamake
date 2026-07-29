@@ -83,8 +83,9 @@ object SemanticdbIndexing extends StrictLogging {
     }
   }
 
-  /** Parse a `.semanticdb` file into per-occurrences list (defs + refs) — used at didOpen
-    * to build the cursor cache for that single open file.
+  /** Parse a `.semanticdb` file into per-occurrences list — REFS ONLY.
+    * Used at didOpen to build the cursor cache for a single open file.
+    * Definition occurrences are filtered out; defs live in SymbolTable.
     */
   def parseOccurrences(semPath: os.Path): Vector[ReferenceOccurrence] = {
     val bytes = os.read.bytes(semPath)
@@ -92,10 +93,10 @@ object SemanticdbIndexing extends StrictLogging {
     docs.documents.toVector.flatMap { doc =>
       doc.occurrences
         .filter(_.symbol.nonEmpty)
+        .filter(_.role != scala.meta.internal.semanticdb.SymbolOccurrence.Role.DEFINITION)
         .map { occ =>
           val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
-          val isDef = occ.role == scala.meta.internal.semanticdb.SymbolOccurrence.Role.DEFINITION
-          ReferenceOccurrence(occ.symbol, range, isDef)
+          ReferenceOccurrence(occ.symbol, range, isDefinition = false)
         }
     }
   }

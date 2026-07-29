@@ -140,112 +140,85 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── queries ─────────────────────────────────────────────────
   def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[String] = synchronized {
-    val occs = openOccurrences.getOrElse(path, null)
-    if (occs == null) return Vector.empty
-    val enclosing = occs.filter(o => isInsideRange(line, char, o.range))
-    if (enclosing.isEmpty) Vector.empty
-    else {
-      val minLen = enclosing.map(o => rangeLength(o.range)).min
-      enclosing.filter(o => rangeLength(o.range) == minLen).map(o => o.symbol).toVector
+    val result = Vector.newBuilder[String]
+
+    // Probe ref occurrences (refs only — defs live in SymbolTable / openLocalDefinitions)
+    val occs = openOccurrences.getOrElse(path, Vector.empty)
+    val enclosingRefs = occs.filter(o => isInsideRange(line, char, o.range))
+    if (enclosingRefs.nonEmpty) {
+      val minLen = enclosingRefs.map(o => rangeLength(o.range)).min
+      result ++= enclosingRefs.filter(o => rangeLength(o.range) == minLen).map(_.symbol)
     }
+
+    // Probe local defs (locals have exact range info for cursor-on-def-site)
+    val localDefs = openLocalDefinitions.getOrElse(path, Vector.empty)
+    val enclosingLocals = localDefs.filter(ld => isInsideRange(line, char, ld.range))
+    result ++= enclosingLocals.map(_.symbol)
+
+    // Probe global defs via SymbolTable for this file
+    val globalDefs = symbolTable.byPath(path)
+    val enclosingGlobals = globalDefs.filter(sd => isInsideRange(line, char, sd.range))
+    result ++= enclosingGlobals.map(_.symbol)
+
+    result.result().distinct
   }
 
   def gotoDefinitions(path: os.Path, line: Int, char: Int): Vector[SymbolDefinition] = synchronized {
-    val occurences = openOccurrences.getOrElse(path, Vector.empty)
-    val references = occurences.filter(_.isDefinition == false)
+    val occurrences = openOccurrences.getOrElse(path, Vector.empty)
+    val references = occurrences.filter(_.isDefinition == false)
     val localDefinitionsMap = openLocalDefinitions.getOrElse(path, Vector.empty).map(ld => ld.symbol -> ld).toMap
-    
-    //occurences.filter(_.isDefinition == true).groupBy(_.symbol).map { case (sym, occs) => sym -> occs.head }
-    //logger.debug(s"gotoDefinitions: $path:$line:$char, occs=${occs}")
-    //logger.debug(s"gotoDefinitions openLocalDefinitions=${openLocalDefinitions.getOrElse(path, Vector.empty)}")
-    //val localCandidates = openLocalDefinitions.getOrElse(path, Vector.empty).filter(o => isInsideRange(line, char, o.range))
-    //logger.debug(s"gotoDefinitions localCandidates=${localCandidates}")
-
 
     val referencesUnderCursor = references.filter(o => isInsideRange(line, char, o.range))
-    println(s"gotoDefinitions referencesUnderCursor=${referencesUnderCursor}")
-    val localDefinitions = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
-    if localDefinitions.nonEmpty
-    then localDefinitions
-    else {
-      val globalDefinitions = referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol))
-      globalDefinitions
-    }
-
-    
-    
-    //logger.debug(s"gotoDefinitions globalCandidates=${globalCandidates}")
-   // val res = if localCandidates.nonEmpty
-    //then localCandidates 
-   // else globalCandidates.flatMap { occ =>
-    // localCandidates.get or Else global
-    //  symbolTable.get(occ.symbol)
-   // }
-    //logger.debug(s"gotoDefinitions result=${res}")
-
-    //res
-    
-    /*val enclosing = occs.filter(o => isInsideRange(line, char, o.range))
-    if (enclosing.isEmpty) return Vector.empty
-    val minLen = enclosing.map(o => rangeLength(o.range)).min
-    val targets = enclosing.filter(o => rangeLength(o.range) == minLen).map(_.symbol).distinct
-
-    targets.toVector.flatMap { symbol =>
-      if (SymbolUtils.isLocalSymbol(symbol)) {
-        val localDefOcc = occs.find(o => o.symbol == symbol && o.isDefinition)
-        localDefOcc match {
-          case Some(occ) =>
-            Vector(SymbolDefinition(
-              symbol = occ.symbol,
-              shortName = occ.symbol,
-              isType = SymbolUtils.isTypeSymbol(occ.symbol),
-              range = occ.range,
-              path = path
-            ))
-          case None =>
-            openLocalDefinitions.get(path).flatMap(_.find(ld => ld.symbol == symbol)).map { ld =>
-              SymbolDefinition(
-                symbol = ld.symbol,
-                shortName = ld.symbol,
-                isType = SymbolUtils.isTypeSymbol(ld.symbol),
-                range = ld.range,
-                path = path
-              )
-            }.toVector
-        }
-      } else {
-        symbolTable.get(symbol) match {
-          case Some(sd) =>
-            Vector(sd)
-          case None => Vector.empty
-        }
+    if (referencesUnderCursor.nonEmpty) {
+      val localDefinitions = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
+      if (localDefinitions.nonEmpty) localDefinitions
+      else {
+        val globalDefinitions = referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol))
+        globalDefinitions
       }
-    }*/
+    } else {
+      // Cursor not on a ref — might be on a def site. Use findSymbolsAt as fallback.
+      val targetSymbols = findSymbolsAt(path, line, char)
+      targetSymbols.flatMap { sym =>
+        openLocalDefinitions.getOrElse(path, Vector.empty).find(_.symbol == sym)
+          .orElse(symbolTable.get(sym))
+      }
+    }
   }
 
   /** v1: scan only occurrences in CURRENTLY OPEN FILES.
     * Cross-workspace references are explicitly out of scope for v1. */
   def references(path: os.Path, line: Int, char: Int, includeDeclaration: Boolean): Vector[SymbolDefinition] = synchronized {
     val targetSymbols = findSymbolsAt(path, line, char).toSet
-    if (targetSymbols.isEmpty) Vector.empty
-    else {
-      val results = Vector.newBuilder[SymbolDefinition]
-      for (openPath <- openOccurrences.keys) {
-        val occs = openOccurrences(openPath)
-        for (occ <- occs if targetSymbols.contains(occ.symbol)) {
-          if (includeDeclaration || !occ.isDefinition) {
-            results += SymbolDefinition(
-              symbol = occ.symbol,
-              shortName = occ.symbol,
-              isType = SymbolUtils.isTypeSymbol(occ.symbol),
-              range = occ.range,
-              path = openPath
-            )
-          }
-        }
+    if (targetSymbols.isEmpty) return Vector.empty
+
+    val results = Vector.newBuilder[SymbolDefinition]
+
+    // Scan ref occurrences across all open files (refs only — no isDefinition filter needed)
+    for (openPath <- openOccurrences.keys) {
+      val occs = openOccurrences(openPath)
+      for (occ <- occs if targetSymbols.contains(occ.symbol)) {
+        results += SymbolDefinition(
+          symbol = occ.symbol,
+          shortName = occ.symbol,
+          isType = SymbolUtils.isTypeSymbol(occ.symbol),
+          range = occ.range,
+          path = openPath
+        )
       }
-      results.result().distinct
     }
+
+    // If includeDeclaration, append the def site from SymbolTable or locals
+    if (includeDeclaration) {
+      for (sym <- targetSymbols) {
+        // Try locals first, then SymbolTable
+        val defOpt = openLocalDefinitions.values.flatten.find(ld => ld.symbol == sym)
+          .orElse(symbolTable.get(sym))
+        defOpt.foreach(d => results += d)
+      }
+    }
+
+    results.result().distinct
   }
 
   // ── internal helpers ─────────────────────────────────────────

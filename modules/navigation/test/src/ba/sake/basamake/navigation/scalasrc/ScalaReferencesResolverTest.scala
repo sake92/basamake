@@ -118,10 +118,9 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class C { def m(x: Int): Int = x }"""
     val st = new SymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    // def occurrence at x param: param symbol
-    assertHasOccurrence(rf, "pkg/C#m().(x)", isDef = true)
-    // ref occurrence at x in body
+    // ref occurrence at x in body (def occurrence lives in SymbolTable now)
     assertHasOccurrence(rf, "pkg/C#m().(x)", isDef = false)
+    // param def is not emitted as occurrence — it's in SymbolTable
   }
 
   // ── R.9 method-local val — local<N> ───────────────────────────
@@ -130,9 +129,9 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class C { def m(): Int = { val y = 1; y } }"""
     val st = new SymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "local0", isDef = true)   // declaration of y
-    assertHasOccurrence(rf, "local0", isDef = false)  // reference to y
-    // Should also have locals entry
+    // ref occurrence to y only (def occurrence now in locals, not occurrences)
+    assertHasOccurrence(rf, "local0", isDef = false)
+    // Should also have locals entry for the definition
     assertLocals(rf, Set(("local0", false)))
   }
 
@@ -208,5 +207,44 @@ class ScalaReferencesResolverTest extends FunSuite {
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "a/b/Bar#", isDef = false)
     // TODO check Foo is empty
+  }
+
+  // ── R.16 same-file top-level sibling def (no package) ────────
+
+  test("R.16 same-file top-level sibling def (no package)") {
+    val st = new SymbolTable
+    new ScalaDefinitionsExtractor(st).extractFromContent(
+      "bla.scala",
+      """@main def blaMain(): Unit = println(add(2, 3))
+        |def add(a: Int, b: Int): Int = a + b
+        |""".stripMargin,
+      os.pwd / "bla.scala"
+    )
+    val code = """@main def blaMain(): Unit = println(add(2, 3))
+                |def add(a: Int, b: Int): Int = a + b
+                |""".stripMargin
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("bla.scala", code, os.pwd / "bla.scala")
+    // the call `add` must resolve to the wrapper-prefixed def symbol, NOT ""
+    assertHasOccurrence(rf, "_empty_/bla$package.add().", isDef = false)
+    assert(!rf.occurrences.exists(o => o.symbol.isEmpty && o.range.startLine == 0),
+      s"expected no unresolved occurrence at the call site, got ${rf.occurrences}")
+  }
+
+  // ── R.17 cross-file top-level def (different wrapper) ─────────
+
+  test("R.17 cross-file top-level def (different wrapper)") {
+    val st = new SymbolTable
+    new ScalaDefinitionsExtractor(st).extractFromContent(
+      "Sib.scala",
+      """def add(a: Int, b: Int): Int = a + b
+        |""".stripMargin,
+      os.pwd / "Sib.scala"
+    )
+    val code = """@main def main(): Unit = println(add(2, 3))
+                |""".stripMargin
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("Main.scala", code, os.pwd / "Main.scala")
+    assertHasOccurrence(rf, "_empty_/Sib$package.add().", isDef = false)
+    assert(!rf.occurrences.exists(o => o.symbol.isEmpty && o.range.startLine == 0),
+      s"expected no unresolved at call site, got ${rf.occurrences}")
   }
 }
