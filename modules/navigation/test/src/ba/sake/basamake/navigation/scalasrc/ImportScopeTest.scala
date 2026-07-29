@@ -4,7 +4,7 @@ import munit.FunSuite
 import scala.meta.*
 import scala.meta.dialects.Scala3Future
 import scala.meta.inputs.Input
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ScopeStack, ImportScopeData}
 
 class ImportScopeTest extends FunSuite {
 

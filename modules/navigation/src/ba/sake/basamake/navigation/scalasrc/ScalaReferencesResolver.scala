@@ -8,7 +8,7 @@ import scala.meta.inputs.Input
 import com.typesafe.scalalogging.StrictLogging
 import scala.util.control.NonFatal
 import scala.collection.mutable
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils, ResolvedFile, ReferenceOccurrence, PositionUtils}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils, ResolvedFile, ReferenceOccurrence, ScopeStack, Scope, LocalScope, OwnerScope, ImportScopeData}
 
 /** Second pass over a parsed Scala source AST that emits reference occurrences.
   * Operates against an already-populated `SymbolTable` of workspace globals.

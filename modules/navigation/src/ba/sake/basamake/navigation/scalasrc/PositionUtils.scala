@@ -1,4 +1,4 @@
-package ba.sake.basamake.navigation
+package ba.sake.basamake.navigation.scalasrc
 
 import scala.meta.inputs.Position
 import scala.meta.internal.semanticdb.Range

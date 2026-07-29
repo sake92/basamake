@@ -8,7 +8,7 @@ import scala.meta.inputs.Input
 import com.typesafe.scalalogging.StrictLogging
 import scala.util.control.NonFatal
 import scala.collection.mutable
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils, PositionUtils}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 
 class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 

@@ -1,8 +1,7 @@
-package ba.sake.basamake.navigation.scalasrc
+package ba.sake.basamake.navigation
 
 import scala.collection.mutable
 import scala.util.boundary, boundary.break
-import ba.sake.basamake.navigation.{SymbolTable, SymbolUtils}
 
 /** Scope ADT for the reference resolver's scope stack.
   * Walked top-down: local → owner → imports → Predef/global.
