@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
+import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ResolvedFile}
 
 class ScalaReferencesResolverTest extends FunSuite {
@@ -36,7 +37,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.1 bare-name ref to workspace class with explicit import") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.C; val v: C = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "a/b/C#", isDef = false)
@@ -46,7 +47,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.2 ref to class in same package (no import)") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Bar extends Foo"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "pkg/Foo#", isDef = false)
@@ -56,7 +57,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.3 wildcard import") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/Thing#", "Thing", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("a/b/Thing#", "Thing", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.*; val t: Thing = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "a/b/Thing#", isDef = false)
@@ -66,7 +67,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.4 rename import") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.{C => D}; val d: D = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "a/b/C#", isDef = false)
@@ -76,8 +77,8 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.5 new C(args) — emits C# + ctor ref") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("pkg/C#`<init>`().", "<init>", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/C#`<init>`().", "<init>", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class C; object Main { val c = new C() }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "pkg/C#", isDef = false)
@@ -88,8 +89,8 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.6 Foo(args) where Foo is object with apply") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Foo.", "Foo", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("pkg/Foo.apply().", "apply", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Foo.", "Foo", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Foo.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val r = Foo(42) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "pkg/Foo.", isDef = false)
@@ -100,8 +101,8 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.7 method call obj.meth(x)") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Obj.", "Obj", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("pkg/Obj.m().", "m", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Obj.", "Obj", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Obj.m().", "m", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Main { def f(o: Obj): Int = o.m(7) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     // Type annotation ref to Obj (resolved from param type)
@@ -149,8 +150,8 @@ class ScalaReferencesResolverTest extends FunSuite {
   // TODO List type
   test("R.11 Predef List(...)") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("scala/collection/immutable/List.", "List", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("scala/collection/immutable/List.apply().", "apply", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("scala/collection/immutable/List.", "List", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("scala/collection/immutable/List.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val xs = List(1, 2) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "scala/collection/immutable/List.", isDef = false)
@@ -161,7 +162,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.12 type-position ref val x: Foo") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Main { val x: Foo = null }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "pkg/Foo#", isDef = false)
@@ -173,10 +174,10 @@ class ScalaReferencesResolverTest extends FunSuite {
     val st = new SymbolTable
     // NOTE: These are term symbols nested by dot (member) chain, matching the
     // SemanticDB convention for nested objects/vals: a., a.b., a.b.c., a.b.c.d.
-    st.add(SymbolDefinition("_empty_/a.", "a", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("_empty_/a.b.", "b", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("_empty_/a.b.c.", "c", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("_empty_/a.b.c.d.", "d", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("_empty_/a.", "a", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("_empty_/a.b.", "b", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("_empty_/a.b.c.", "c", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("_empty_/a.b.c.d.", "d", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val r = a.b.c.d }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "_empty_/a.", isDef = false)
@@ -189,8 +190,8 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.14 case class apply Person(\"x\")") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Person.", "Person", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("pkg/Person.apply().", "apply", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Person.", "Person", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/Person.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val p = Person("x") }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "pkg/Person.", isDef = false)
@@ -201,8 +202,8 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.15 unimport") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/Foo#", "Foo", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-    st.add(SymbolDefinition("a/b/Bar#", "Bar", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("a/b/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("a/b/Bar#", "Bar", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.{Foo => _, *}; val v: Bar = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "a/b/Bar#", isDef = false)

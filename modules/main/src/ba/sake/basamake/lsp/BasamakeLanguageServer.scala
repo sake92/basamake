@@ -7,6 +7,8 @@ import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
+
+import ba.sake.basamake.navigation.SymbolDefinition
 import ba.sake.basamake.lsp.index.WorkspaceIndex
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
@@ -107,7 +109,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       List.empty.asJava
     )
 
-  private def toLspLocation(loc: WorkspaceIndex.SymbolLocation): Location = {
+  private def toLspLocation(loc: SymbolDefinition): Location = {
     val uri = loc.path.toNIO.toUri.toString
     val range = new Range(
         new Position(loc.range.startLine, loc.range.startCharacter),

@@ -10,6 +10,7 @@ import com.typesafe.scalalogging.StrictLogging
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
+import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 
 class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
@@ -204,7 +205,7 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
   // ── helpers ──────────────────────────────────────────────────
 
   private def addSymbol(symbol: String, shortName: String, isType: Boolean): Unit =
-    symbolTable.add(SymbolDefinition(symbol, shortName, isType, new scala.meta.internal.semanticdb.Range(0, 0, 0, 0), currentPath))
+    symbolTable.add(SymbolDefinition(symbol, shortName, isType, new Range(0, 0, 0, 0), currentPath))
 
   private def emitParams(methodSym: String, params: java.util.List[Parameter]): Unit =
     params.asScala.foreach { p =>

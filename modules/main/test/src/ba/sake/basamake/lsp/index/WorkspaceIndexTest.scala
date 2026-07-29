@@ -24,7 +24,7 @@ class WorkspaceIndexTest extends FunSuite {
 
   private def freshIndex(): WorkspaceIndex = {
     val idx = WorkspaceIndex()
-    idx.initialize(sbtDir)
+    idx.initialize(sbtDir) 
     idx
   }
 
@@ -49,8 +49,8 @@ class WorkspaceIndexTest extends FunSuite {
 
     // utils.getMsg() at line 10, char 4 — the 'utils' identifier
     val syms = idx.findSymbolsAt(mainFile, 10, 4)
-    assert(syms.exists(_.value == "_empty_/utils."),
-      s"Expected _empty_/utils., got: ${syms.map(_.value)}")
+    assert(syms.exists(_ == "_empty_/utils."),
+      s"Expected _empty_/utils., got: ${syms}")
   }
 
   test("gotoDefinitions resolves cross-file utils from Main.scala") {

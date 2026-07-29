@@ -4,6 +4,7 @@ import munit.FunSuite
 import scala.meta.*
 import scala.meta.dialects.Scala3Future
 import scala.meta.inputs.Input
+import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ScopeStack, ImportScopeData}
 
 class ImportScopeTest extends FunSuite {
@@ -36,7 +37,7 @@ class ImportScopeTest extends FunSuite {
     tree match {
       case Parsed.Success(imp: Import) =>
         val st = new SymbolTable
-        st.add(SymbolDefinition("a/b/", "b", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/b/", "b", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
         val ss = new ScopeStack(st)
         val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
         val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
@@ -53,7 +54,7 @@ class ImportScopeTest extends FunSuite {
     tree match {
       case Parsed.Success(imp: Import) =>
         val st = new SymbolTable
-        st.add(SymbolDefinition("a/b/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
         val ss = new ScopeStack(st)
         val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
         val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
@@ -86,9 +87,9 @@ class ImportScopeTest extends FunSuite {
     tree match {
       case Parsed.Success(imp: Import) =>
         val st = new SymbolTable
-        st.add(SymbolDefinition("a/", "a", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-        st.add(SymbolDefinition("a/b/", "b", isType = false, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
-        st.add(SymbolDefinition("a/b/C#", "C", isType = true, new scala.meta.internal.semanticdb.Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/", "a", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/b/", "b", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+        st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
         val ss = new ScopeStack(st)
         val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
         ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))

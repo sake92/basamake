@@ -8,6 +8,7 @@ import scala.meta.inputs.Input
 import com.typesafe.scalalogging.StrictLogging
 import scala.util.control.NonFatal
 import scala.collection.mutable
+import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 
 class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
@@ -303,7 +304,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
   }
 
   private def addSymbol(symbol: String, shortName: String, isType: Boolean, pos: Position): Unit = {
-    val range = if (pos == Position.None) new scala.meta.internal.semanticdb.Range(0, 0, 0, 0) else PositionUtils.toRange(pos)
+    val range = if (pos == Position.None) new Range(0, 0, 0, 0) else PositionUtils.toRange(pos)
     symbolTable.add(SymbolDefinition(symbol, shortName, isType, range, currentPath))
   }
 

@@ -107,5 +107,8 @@ object SymbolUtils {
   def isLocalSymbol(symbol: String): Boolean =
     symbol.matches("^local\\d+(\\+\\d+)?$$")
 
+  def isTypeSymbol(symbol: String): Boolean =
+    symbol.endsWith("#")
+
 
 }

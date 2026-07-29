@@ -2,6 +2,7 @@ package ba.sake.basamake.lsp.index
 
 import scala.collection.mutable
 import com.typesafe.scalalogging.StrictLogging
+import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.*
 import ba.sake.basamake.navigation.scalasrc.*
 
@@ -117,18 +118,18 @@ class WorkspaceIndex extends StrictLogging {
   }
 
   // ── queries ─────────────────────────────────────────────────
-  def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[WorkspaceIndex.Symbol] = synchronized {
+  def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[String] = synchronized {
     val occs = openOccurrences.getOrElse(path, null)
     if (occs == null) return Vector.empty
     val enclosing = occs.filter(o => isInside(line, char, o.range))
     if (enclosing.isEmpty) Vector.empty
     else {
       val minLen = enclosing.map(o => rangeLength(o.range)).min
-      enclosing.filter(o => rangeLength(o.range) == minLen).map(o => WorkspaceIndex.Symbol(o.symbol)).toVector
+      enclosing.filter(o => rangeLength(o.range) == minLen).map(o => o.symbol).toVector
     }
   }
 
-  def gotoDefinitions(path: os.Path, line: Int, char: Int): Vector[WorkspaceIndex.SymbolLocation] = synchronized {
+  def gotoDefinitions(path: os.Path, line: Int, char: Int): Vector[SymbolDefinition] = synchronized {
     val occs = openOccurrences.getOrElse(path, null)
     if (occs == null) return Vector.empty
     val enclosing = occs.filter(o => isInside(line, char, o.range))
@@ -141,16 +142,28 @@ class WorkspaceIndex extends StrictLogging {
         val localDefOcc = occs.find(o => o.symbol == symbol && o.isDefinition)
         localDefOcc match {
           case Some(occ) =>
-            Vector(WorkspaceIndex.SymbolLocation(path, rangeFromSdb(occ.range)))
+            Vector(SymbolDefinition(
+              symbol = occ.symbol,
+              shortName = occ.symbol,
+              isType = SymbolUtils.isTypeSymbol(occ.symbol),
+              range = occ.range,
+              path = path
+            ))
           case None =>
             openLocals.get(path).flatMap(_.find(ld => ld.symbol == symbol)).map { ld =>
-              WorkspaceIndex.SymbolLocation(path, rangeFromSdb(ld.range))
+              SymbolDefinition(
+                symbol = ld.symbol,
+                shortName = ld.symbol,
+                isType = SymbolUtils.isTypeSymbol(ld.symbol),
+                range = ld.range,
+                path = path
+              )
             }.toVector
         }
       } else {
         symbolTable.get(symbol) match {
           case Some(sd) =>
-            Vector(WorkspaceIndex.SymbolLocation(sd.path, rangeFromSdb(sd.range)))
+            Vector(sd)
           case None => Vector.empty
         }
       }
@@ -159,16 +172,22 @@ class WorkspaceIndex extends StrictLogging {
 
   /** v1: scan only occurrences in CURRENTLY OPEN FILES.
     * Cross-workspace references are explicitly out of scope for v1. */
-  def references(path: os.Path, line: Int, char: Int, includeDeclaration: Boolean): Vector[WorkspaceIndex.SymbolLocation] = synchronized {
-    val targetSymbols = findSymbolsAt(path, line, char).map(_.value).toSet
+  def references(path: os.Path, line: Int, char: Int, includeDeclaration: Boolean): Vector[SymbolDefinition] = synchronized {
+    val targetSymbols = findSymbolsAt(path, line, char).toSet
     if (targetSymbols.isEmpty) Vector.empty
     else {
-      val results = Vector.newBuilder[WorkspaceIndex.SymbolLocation]
+      val results = Vector.newBuilder[SymbolDefinition]
       for (openPath <- openOccurrences.keys) {
         val occs = openOccurrences(openPath)
         for (occ <- occs if targetSymbols.contains(occ.symbol)) {
           if (includeDeclaration || !occ.isDefinition) {
-            results += WorkspaceIndex.SymbolLocation(openPath, rangeFromSdb(occ.range))
+            results += SymbolDefinition(
+              symbol = occ.symbol,
+              shortName = occ.symbol,
+              isType = SymbolUtils.isTypeSymbol(occ.symbol),
+              range = occ.range,
+              path = openPath
+            )
           }
         }
       }
@@ -225,27 +244,20 @@ class WorkspaceIndex extends StrictLogging {
 
   // ── range helpers ────────────────────────────────────────────
 
-  private def isInside(line: Int, char: Int, r: scala.meta.internal.semanticdb.Range): Boolean = {
+  private def isInside(line: Int, char: Int, r: Range): Boolean = {
     if (line < r.startLine || line > r.endLine) false
     else if (line == r.startLine && char < r.startCharacter) false
     else if (line == r.endLine && char >= r.endCharacter) false
     else true
   }
 
-  private def rangeLength(r: scala.meta.internal.semanticdb.Range): Long =
+  private def rangeLength(r: Range): Long =
     (r.endLine.toLong - r.startLine.toLong) * 100000 + (r.endCharacter.toLong - r.startCharacter.toLong)
 
-  private def isSentinel(r: scala.meta.internal.semanticdb.Range): Boolean =
+  private def isSentinel(r: Range): Boolean =
     r.startLine == 0 && r.startCharacter == 0 && r.endLine == 0 && r.endCharacter == 0
-
-  private def rangeFromSdb(r: scala.meta.internal.semanticdb.Range): WorkspaceIndex.SymbolLocationRange =
-    WorkspaceIndex.SymbolLocationRange(r.startLine, r.startCharacter, r.endLine, r.endCharacter)
 }
 
 object WorkspaceIndex {
   def apply(): WorkspaceIndex = new WorkspaceIndex
-
-  final case class Symbol(value: String)
-  final case class SymbolLocationRange(startLine: Int, startCharacter: Int, endLine: Int, endCharacter: Int)
-  final case class SymbolLocation(path: os.Path, range: SymbolLocationRange)
 }
