@@ -14,6 +14,10 @@ final case class ResolvedFile(
     locals: Vector[SymbolDefinition]
 )
 
+object ResolvedFile {
+  val empty: ResolvedFile = ResolvedFile(Vector.empty, Vector.empty)
+}
+
 /** Local mirror of core's SemanticdbOccurrence so the navigation module stays
   * decoupled from core. Conversion to SemanticdbOccurrence is trivial (same fields)
   * and happens at the downstream pure-source indexer.

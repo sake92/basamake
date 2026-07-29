@@ -13,6 +13,7 @@ case class SymbolDefinition(
   path: os.Path    // mandatory — absolute path to the source file declaring this symbol
 )
 
+// global symbol → definition
 class SymbolTable {
 
   private val definitions = new ConcurrentHashMap[String, SymbolDefinition]()

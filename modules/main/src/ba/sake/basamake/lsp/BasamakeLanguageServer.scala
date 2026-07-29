@@ -8,23 +8,24 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
-import ba.sake.basamake.navigation.SymbolDefinition
+import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
 import ba.sake.basamake.lsp.index.WorkspaceIndex
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
 
   @volatile private var client: LanguageClient = uninitialized
 
-  private val workspaceIndex = WorkspaceIndex()
+  private val symbolTable = new SymbolTable
+  private val workspaceIndex = new WorkspaceIndex(symbolTable)
 
   // ----- LanguageClientAware
-  def connect(client: LanguageClient): Unit = {
+  override def connect(client: LanguageClient): Unit = {
     logger.debug(s"Client connected: ${client}")
     this.client = client
   }
 
   // ----- LanguageServer
-  def initialize(params: InitializeParams): CompletableFuture[InitializeResult] = {
+  override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] = {
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
     capabilities.setDefinitionProvider(true)
@@ -37,22 +38,22 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
-  def shutdown(): CompletableFuture[Object] = {
+  override def shutdown(): CompletableFuture[Object] = {
     logger.debug("Shutdown...")
     CompletableFuture.completedFuture(null)
   }
 
-  def exit(): Unit = {
+  override def exit(): Unit = {
     logger.debug("Exit...")
     System.exit(0)
   }
 
-  def getWorkspaceService(): WorkspaceService = this
-  def getTextDocumentService(): TextDocumentService = this
+  override def getWorkspaceService(): WorkspaceService = this
+  override def getTextDocumentService(): TextDocumentService = this
 
   // ----- WorkspaceService
-  def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = ()
-  def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
+  override def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = ()
+  override def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
 
   // ----- TextDocumentService
   override def didOpen(params: DidOpenTextDocumentParams): Unit = {
@@ -64,18 +65,18 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(params.getTextDocument.getUri))
     // Full sync — last change's text is the whole document
     val text = params.getContentChanges.asScala.last.getText
-    workspaceIndex.onDidChange(path, text)
+   // workspaceIndex.onDidChange(path, text)
   }
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
     val path = os.Path(URI.create(params.getTextDocument.getUri))
     // Option[String] in lsp4j 1.0.0 — getText returns nullable String
-    workspaceIndex.onDidSave(path, Option(params.getText))
+   // workspaceIndex.onDidSave(path, Option(params.getText))
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
     val path = os.Path(URI.create(params.getTextDocument.getUri))
-    workspaceIndex.onDidClose(path)
+   // workspaceIndex.onDidClose(path)
   }
 
   override def definition(params: DefinitionParams)

@@ -14,37 +14,40 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 
   /** Entry point from file-system scan: filename + InputStream. */
-  def extract(name: String, is: InputStream, path: os.Path): Unit = {
+  def extract(name: String, is: InputStream, path: os.Path): Unit =
     try {
       val content = new String(is.readAllBytes(), "UTF-8")
       extractFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
-        logger.warn(s"Failed to parse Scala source ${name}: ${e.getMessage}")
+        logger.error(s"Error while parsing Scala source '${name}': ${e.getMessage}")
     }
-  }
 
   /** Test-friendly entry point: filename + source string. */
   def extractFromContent(fileName: String, content: String, path: os.Path): Unit = {
     currentPath = path
     require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 always wraps top-level defs under `<basename>$package.` and needs the filename to compute it")
     parseSource(content) match {
-      case Some(src) =>
+      case Right(src) =>
         extractInternal(fileName, src)
-      case None => ()
+      case Left(err) =>
+        logger.error(s"Failed to parse Scala source '${fileName}': ${err}")
     }
   }
 
   // ── parse ────────────────────────────────────────────────────
 
-  private def parseSource(content: String): Option[Source] = {
+  private def parseSource(content: String): Either[String, Source] = {
     val input = Input.String(content)
-    { given Dialect = Scala3Future; input.parse[Source] } match {
-      case Parsed.Success(source) => Some(source)
-      case Parsed.Error(_, _, _) =>
-        { given Dialect = Scala213; input.parse[Source] } match
-          case Parsed.Success(source) => Some(source)
-          case Parsed.Error(_, _, _) => None
+    val scala3Result ={ given Dialect = Scala3Future; input.parse[Source] } 
+    scala3Result match {
+      case Parsed.Success(source) => Right(source)
+      case Parsed.Error(_, msg1, _) =>
+        val scala2Result = { given Dialect = Scala213; input.parse[Source] }
+        scala2Result match {
+          case Parsed.Success(source) => Right(source)
+          case Parsed.Error(_, msg2, _) => Left(s"""scala3: "${msg1}"; scala2: "${msg2}";""")
+        }
     }
   }
 

@@ -396,5 +396,4 @@ def topLevelMethod(): Int = 42"""
       sym("com/example/Features$package."),
     ))
   }
-
 }
