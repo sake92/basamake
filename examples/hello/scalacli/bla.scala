@@ -1,4 +1,8 @@
 //> using scala 3.7
 
-@main def bla(): Unit =
+@main def blaMain(): Unit =
   println("Hello, Basamake!")
+  println(add(2, 3))
+
+def add(a: Int, b: Int): Int = a + b
+

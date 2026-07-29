@@ -8,7 +8,7 @@ class JavaDefinitionsExtractorTest extends FunSuite {
   private def extract(code: String): Set[SymbolDefinition] = {
     val table = new SymbolTable
     val extractor = new JavaDefinitionsExtractor(table)
-    extractor.extractFromContent("test.java", code)
+    extractor.extractFromContent("test.java", code, os.pwd)
     table.all
   }
 

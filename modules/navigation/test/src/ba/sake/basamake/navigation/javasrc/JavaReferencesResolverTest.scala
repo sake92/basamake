@@ -2,11 +2,18 @@ package ba.sake.basamake.navigation.javasrc
 
 import munit.FunSuite
 import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ResolvedFile}
+import scala.meta.internal.semanticdb.Range
 
 class JavaReferencesResolverTest extends FunSuite {
 
+  private val testPath = os.pwd
+  private val dummyRange = new Range(0, 0, 0, 0)
+
+  private def defn(symbol: String, name: String, isType: Boolean): SymbolDefinition =
+    SymbolDefinition(symbol, name, isType, dummyRange, testPath)
+
   private def resolveWith(st: SymbolTable, code: String): ResolvedFile =
-    new JavaReferencesResolver(st).resolveFromContent("test.java", code)
+    new JavaReferencesResolver(st).resolveFromContent("test.java", code, os.pwd)
 
   private def resolve(code: String): ResolvedFile =
     resolveWith(new SymbolTable, code)
@@ -44,7 +51,7 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.1 bare type ref same-package") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/C#", "C", isType = true, None))
+    st.add(defn("a/b/C#", "C", isType = true))
     val code = """package a.b; class D { C field; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "a/b/C#", isDef = false)
@@ -54,7 +61,7 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.2 explicit import") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/C#", "C", isType = true, None))
+    st.add(defn("a/b/C#", "C", isType = true))
     val code = """package x; import a.b.C; class D { C field; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "a/b/C#", isDef = false)
@@ -64,7 +71,7 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.3 on-demand import") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("a/b/C#", "C", isType = true, None))
+    st.add(defn("a/b/C#", "C", isType = true))
     val code = """package x; import a.b.*; class D { C field; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "a/b/C#", isDef = false)
@@ -74,7 +81,7 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.4 qualified type ref") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/C#", "C", isType = true, None))
+    st.add(defn("pkg/C#", "C", isType = true))
     val code = """package x; import pkg.C; class D { pkg.C field; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/C#", isDef = false)
@@ -84,8 +91,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.5 new C()") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/C#", "C", isType = true, None))
-    st.add(SymbolDefinition("pkg/C#`<init>`().", "<init>", isType = false, None))
+    st.add(defn("pkg/C#", "C", isType = true))
+    st.add(defn("pkg/C#`<init>`().", "<init>", isType = false))
     val code = """package pkg; class Test { Object m() { return new C(); } }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/C#", isDef = false)
@@ -96,8 +103,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.6 static call Class.method()") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Util#", "Util", isType = true, None))
-    st.add(SymbolDefinition("pkg/Util#doStuff().", "doStuff", isType = false, None))
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#doStuff().", "doStuff", isType = false))
     val code = """package pkg; class Test { void m() { Util.doStuff(); } }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/Util#doStuff().", isDef = false)
@@ -107,8 +114,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.7 field access obj.f") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, None))
-    st.add(SymbolDefinition("pkg/Foo#f.", "f", isType = false, None))
+    st.add(defn("pkg/Foo#", "Foo", isType = true))
+    st.add(defn("pkg/Foo#f.", "f", isType = false))
     val code = """package pkg; class Test { int m(Foo obj) { return obj.f; } }"""
     val rf = resolveWith(st, code)
     // v1: chained field access not fully resolved without type tracking
@@ -156,8 +163,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.12 enum constant ref") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Color#", "Color", isType = true, None))
-    st.add(SymbolDefinition("pkg/Color#RED.", "RED", isType = false, None))
+    st.add(defn("pkg/Color#", "Color", isType = true))
+    st.add(defn("pkg/Color#RED.", "RED", isType = false))
     val code = """package pkg; class Test { Color c = Color.RED; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/Color#RED.", isDef = false)
@@ -167,8 +174,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.13 method called on resolved qual — v1 chained call unresolved") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Obj#", "Obj", isType = true, None))
-    st.add(SymbolDefinition("pkg/Obj#method().", "method", isType = false, None))
+    st.add(defn("pkg/Obj#", "Obj", isType = true))
+    st.add(defn("pkg/Obj#method().", "method", isType = false))
     val code = """package pkg; class Test { void m(Obj obj) { obj.method(); } }"""
     val rf = resolveWith(st, code)
     // v1: chained method call not resolved, expect unresolved for method name
@@ -179,8 +186,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.14 record accessor call — v1 chained call unresolved") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/R#", "R", isType = true, None))
-    st.add(SymbolDefinition("pkg/R#x().", "x", isType = false, None))
+    st.add(defn("pkg/R#", "R", isType = true))
+    st.add(defn("pkg/R#x().", "x", isType = false))
     val code = """package pkg; class Test { int m(R r) { return r.x(); } }"""
     val rf = resolveWith(st, code)
     // v1 non-goal: chained call not resolved
@@ -191,8 +198,8 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.15 ref to nested class") {
     val st = new SymbolTable
-    st.add(SymbolDefinition("pkg/Outer#", "Outer", isType = true, None))
-    st.add(SymbolDefinition("pkg/Outer#Inner#", "Inner", isType = true, None))
+    st.add(defn("pkg/Outer#", "Outer", isType = true))
+    st.add(defn("pkg/Outer#Inner#", "Inner", isType = true))
     val code = """package pkg; class Test { Outer.Inner v; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/Outer#Inner#", isDef = false)

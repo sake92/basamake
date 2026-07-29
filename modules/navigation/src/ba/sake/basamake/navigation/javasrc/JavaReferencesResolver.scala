@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation.javasrc
 
 import java.io.InputStream
+import scala.compiletime.uninitialized
 import com.github.javaparser.{JavaParser, ParseResult}
 import com.github.javaparser.Range as JpRange
 import com.github.javaparser.ast.*
@@ -23,17 +24,20 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils, 
   */
 class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
-  def resolve(name: String, is: InputStream): ResolvedFile =
+  private var currentPath: os.Path = uninitialized
+
+  def resolve(name: String, is: InputStream, path: os.Path): ResolvedFile =
     try {
       val content = new String(is.readAllBytes(), "UTF-8")
-      resolveFromContent(name, content)
+      resolveFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
         logger.warn(s"Failed to resolve references in ${name}: ${e.getMessage}")
         ResolvedFile(Vector.empty, Vector.empty)
     }
 
-  def resolveFromContent(fileName: String, content: String): ResolvedFile = {
+  def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile = {
+    currentPath = path
     parse(content) match {
       case Some(cu) => resolveInternal(cu)
       case None => ResolvedFile(Vector.empty, Vector.empty)
@@ -106,7 +110,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def addLocalRange(optRange: java.util.Optional[JpRange], symbol: String, shortName: String, isType: Boolean): Unit =
     if (optRange.isPresent) {
-      locals += SymbolDefinition(symbol, shortName, isType, Some(JavaPositionUtils.toRange(optRange.get())))
+      locals += SymbolDefinition(symbol, shortName, isType, JavaPositionUtils.toRange(optRange.get()), currentPath)
     }
 
   private def nextLocalSymbol(): String = {

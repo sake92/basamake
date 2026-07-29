@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation.javasrc
 
 import java.io.InputStream
+import scala.compiletime.uninitialized
 import com.github.javaparser.{JavaParser, ParseResult}
 import com.github.javaparser.ast.*
 import com.github.javaparser.ast.body.*
@@ -13,15 +14,18 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 
 class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 
-  def extract(name: String, is: InputStream): Unit =
+  private var currentPath: os.Path = uninitialized
+
+  def extract(name: String, is: InputStream, path: os.Path): Unit =
     try {
       val content = new String(is.readAllBytes(), "UTF-8")
-      extractFromContent(name, content)
+      extractFromContent(name, content, path)
     } catch {
       case NonFatal(e) => logger.warn(s"Failed to parse Java source ${name}: ${e.getMessage}")
     }
 
-  def extractFromContent(fileName: String, content: String): Unit = {
+  def extractFromContent(fileName: String, content: String, path: os.Path): Unit = {
+    currentPath = path
     parse(content) match {
       case Some(cu) => extractCompilationUnit(cu)
       case None     => ()
@@ -200,7 +204,7 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
   // ── helpers ──────────────────────────────────────────────────
 
   private def addSymbol(symbol: String, shortName: String, isType: Boolean): Unit =
-    symbolTable.add(SymbolDefinition(symbol, shortName, isType, None))
+    symbolTable.add(SymbolDefinition(symbol, shortName, isType, new scala.meta.internal.semanticdb.Range(0, 0, 0, 0), currentPath))
 
   private def emitParams(methodSym: String, params: java.util.List[Parameter]): Unit =
     params.asScala.foreach { p =>
