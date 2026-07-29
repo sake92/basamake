@@ -2,8 +2,13 @@
 
 @main def blaMain(): Unit =
   println("Hello, Basamake!")
-  println(add(2, 3))
+  println(utils.add(a = 2, b =  3))
   println(sum(2, 3))
+  new Bla().div(6, 2)
+  new Dzava
+
+
+
 
 def add(a: Int, b: Int): Int = a + b
 

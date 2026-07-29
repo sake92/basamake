@@ -65,18 +65,18 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(params.getTextDocument.getUri))
     // Full sync — last change's text is the whole document
     val text = params.getContentChanges.asScala.last.getText
-   // workspaceIndex.onDidChange(path, text)
+    workspaceIndex.onDidChange(path, text)
   }
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
     val path = os.Path(URI.create(params.getTextDocument.getUri))
     // Option[String] in lsp4j 1.0.0 — getText returns nullable String
-   // workspaceIndex.onDidSave(path, Option(params.getText))
+    workspaceIndex.onDidSave(path, Option(params.getText))
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
     val path = os.Path(URI.create(params.getTextDocument.getUri))
-   // workspaceIndex.onDidClose(path)
+    workspaceIndex.onDidClose(path)
   }
 
   override def definition(params: DefinitionParams)
