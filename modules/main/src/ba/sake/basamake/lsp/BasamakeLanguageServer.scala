@@ -10,6 +10,7 @@ import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
 import ba.sake.basamake.lsp.index.WorkspaceIndex
+import ba.sake.basamake.bsp.BspManager
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
 
@@ -17,6 +18,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   private val symbolTable = new SymbolTable
   private val workspaceIndex = new WorkspaceIndex(symbolTable)
+  private val bspManager = BspManager(workspacePath, workspaceIndex)
 
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
@@ -34,19 +36,26 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
     // Build symbol table from semanticdb files + parsed source files
     workspaceIndex.initialize(workspacePath)
+    // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
+    bspManager.initialize(workspacePath, client)
 
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
   override def shutdown(): CompletableFuture[Object] = {
     logger.debug("Shutdown...")
+    cleanup()
     CompletableFuture.completedFuture(null)
   }
 
   override def exit(): Unit = {
     logger.debug("Exit...")
+    cleanup()
     System.exit(0)
   }
+
+  /** Idempotent cleanup — called by shutdown/exit and the JVM shutdown hook. */
+  def cleanup(): Unit = bspManager.shutdown()
 
   override def getWorkspaceService(): WorkspaceService = this
   override def getTextDocumentService(): TextDocumentService = this
@@ -57,8 +66,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   // ----- TextDocumentService
   override def didOpen(params: DidOpenTextDocumentParams): Unit = {
-    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    val uri = params.getTextDocument.getUri
+    val path = os.Path(URI.create(uri))
     workspaceIndex.onDidOpen(path, params.getTextDocument.getText)
+    // liveness only — fire-and-forget; never block UI
+    CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
   }
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
@@ -69,9 +81,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   }
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
-    val path = os.Path(URI.create(params.getTextDocument.getUri))
-    // Option[String] in lsp4j 1.0.0 — getText returns nullable String
+    val uri = params.getTextDocument.getUri
+    val path = os.Path(URI.create(uri))
     workspaceIndex.onDidSave(path, Option(params.getText))
+    // liveness + compile — fire-and-forget; didSave has no return value
+    CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = true))
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
@@ -85,7 +99,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         java.util.List[? <: LocationLink]
       ]] =
     CompletableFuture.supplyAsync { () =>
-      val path = os.Path(URI.create(params.getTextDocument.getUri))
+      val uri = params.getTextDocument.getUri
+      // Fire-and-forget liveness — does NOT block the nav response.
+      CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
+      val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
       val locs = workspaceIndex.gotoDefinitions(path, line, char).map(toLspLocation).asJava
@@ -94,7 +111,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
     CompletableFuture.supplyAsync { () =>
-      val path = os.Path(URI.create(params.getTextDocument.getUri))
+      val uri = params.getTextDocument.getUri
+      CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
+      val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
       val includeDecl = params.getContext.isIncludeDeclaration

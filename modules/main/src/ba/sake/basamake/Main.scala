@@ -30,13 +30,16 @@ object Main extends StrictLogging {
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
     server.connect(launcher.getRemoteProxy)
 
+    // JVM shutdown hook — fires on SIGTERM/SIGINT/VS Code closing the LSP process.
+    // Mirrors the old Main: ensures deder processes don't outlive the LSP server.
+    Runtime.getRuntime.addShutdownHook(new Thread(() => server.cleanup(), "basamake-shutdown-hook"))
+
     // starts async message processing; future completes when stdin closes
     val future = launcher.startListening()
 
     // Block until LSP transport closes (stdin EOF) or exit() calls System.exit.
-    // When VS Code closes, stdin reaches EOF, the future completes.
     try future.get()
-    finally () // TODO cleanup
+    finally server.cleanup()
   }
   
 }
