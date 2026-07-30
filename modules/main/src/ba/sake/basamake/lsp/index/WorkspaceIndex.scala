@@ -122,6 +122,58 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
     dirty.remove(path)
   }
 
+  // ── invalidate (BSP compile callback) ────────────────────────
+
+  /** Re-index `.semanticdb` files under the given source directories after a BSP compile.
+    * Called from BspConnection.compile's onAfterCompile callback via BspManager.
+    * Additive — does not touch existing per-file paths. */
+  def invalidate(sourceDirs: List[String]): Unit = synchronized {
+    if (sourceDirs.isEmpty) return
+    logger.info(s"Invalidating workspace index for ${sourceDirs.size} source dir(s)")
+    val skipDirNames = Set(".git", ".basamake", ".metals", ".bsp", "node_modules")
+    val skip: os.Path => Boolean = p =>
+      if (os.isDir(p)) skipDirNames.contains(p.last)
+      else if (os.isFile(p)) !(p.ext == "scala" || p.ext == "java" || p.ext == "semanticdb")
+      else true
+
+    for (dirUri <- sourceDirs) {
+      val dirPath = try os.Path(java.net.URI.create(dirUri))
+        catch {
+          case _: Exception =>
+            try os.Path(dirUri)
+            catch { case _: Exception => null }
+        }
+      if (dirPath != null && os.isDir(dirPath)) {
+        val semFiles = os.walk(dirPath, skip = skip).filter(_.ext == "semanticdb")
+        for (semPath <- semFiles) {
+          try {
+            val docs = scala.meta.internal.semanticdb.TextDocuments.parseFrom(os.read.bytes(semPath))
+            for (doc <- docs.documents.toVector if doc.uri.nonEmpty) {
+              val uriStr = if (doc.uri.startsWith("/")) doc.uri.drop(1) else doc.uri
+              val rel = os.RelPath(uriStr)
+              var ancestor: os.Path = semPath / os.up
+              var found: Option[os.Path] = None
+              while (found.isEmpty) {
+                val candidate = ancestor / rel
+                if (os.isFile(candidate)) found = Some(candidate)
+                else if (ancestor == dirPath) { found = None; ancestor = dirPath }
+                else ancestor = ancestor / os.up
+              }
+              found.foreach { src =>
+                symbolTable.removeByPath(src)
+                semanticdbBySource(src) = semPath
+                SemanticdbIndexing.parseDefinitions(semPath, src).foreach(symbolTable.add)
+                if (openBuffers.contains(src)) refreshOpenBuffer(src)
+              }
+            }
+          } catch {
+            case e: Exception => logger.warn(s"Failed to re-index $semPath: ${e.getMessage}")
+          }
+        }
+      }
+    }
+  }
+
   // ── queries ─────────────────────────────────────────────────
   def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[String] = synchronized {
     val result = Vector.newBuilder[String]
