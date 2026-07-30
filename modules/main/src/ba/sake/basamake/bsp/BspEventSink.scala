@@ -8,3 +8,9 @@ trait BspEventSink {
   def onDiagnostics(params: PublishDiagnosticsParams): Unit
   def onTargetChanged(params: DidChangeBuildTarget): Unit
 }
+
+/** After-compile hook. Implemented by BspManager — fired by BspConnection.compile under
+  * the connection's lock, forwards sourceDirs to WorkspaceIndex.invalidate. */
+trait BspAfterCompileSink {
+  def onAfterCompile(sourceDirs: List[String]): Unit
+}
