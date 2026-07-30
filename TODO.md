@@ -1,5 +1,8 @@
 
-- only keep last 10 open parsed ASTs/semanticdbs
+- move WorkspaceIndex to navigation/indexing
+- cover getreferences in tests.. and fix it..
+
+- keep last 10 open parsed ASTs/semanticdbs, use hash/timestamp to avoid reparsign..
 
 - cache deps/JDK indices GLOBALLY !!!
  - ~/.basamake/sources/jdk-21-hash/

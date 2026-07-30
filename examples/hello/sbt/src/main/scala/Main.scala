@@ -8,5 +8,5 @@ import upickle.default._
   write(Seq(1, 2, 3))
  
 def msg = 
-  utils.getMsg()
+  sbtutils.getMsg()
 

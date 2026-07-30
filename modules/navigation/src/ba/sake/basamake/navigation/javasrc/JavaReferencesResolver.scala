@@ -94,12 +94,12 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def emitRefRange(optRange: java.util.Optional[JpRange], symbol: String): Unit =
     if (optRange.isPresent) {
-      occurrences += ReferenceOccurrence(symbol, JavaPositionUtils.toRange(optRange.get()), isDefinition = false)
+      occurrences += ReferenceOccurrence(symbol, JavaPositionUtils.toRange(optRange.get()))
     }
 
   private def emitRefUnresolvedRange(optRange: java.util.Optional[JpRange]): Unit =
     if (optRange.isPresent) {
-      occurrences += ReferenceOccurrence("", JavaPositionUtils.toRange(optRange.get()), isDefinition = false)
+      occurrences += ReferenceOccurrence("", JavaPositionUtils.toRange(optRange.get()))
     }
 
   private def addLocalRange(optRange: java.util.Optional[JpRange], symbol: String, shortName: String, isType: Boolean): Unit =

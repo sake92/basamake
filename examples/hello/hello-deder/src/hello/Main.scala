@@ -4,7 +4,7 @@ object Main:
   def main(args: Array[String]): Unit =
     println("Hello, Basamake!")
     broken()
-    val d = new Deder()
+    val d = new Deder(args)
 
   def broken(): Unit =
     // Deliberate compile error: type mismatch + undefined identifier

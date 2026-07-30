@@ -6,23 +6,22 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ResolvedFile}
 
 class ScalaReferencesResolverTest extends FunSuite {
 
-  private def occ(symbol: String, isDef: Boolean): (String, Boolean) = (symbol, isDef)
+  private def occ(symbol: String): String = symbol
 
   private def assertOccurrences(
       rf: ResolvedFile,
-      expected: Set[(String, Boolean)]
+      expected: Set[String]
   )(implicit loc: munit.Location): Unit = {
-    val actual = rf.occurrences.map(o => (o.symbol, o.isDefinition)).toSet
+    val actual = rf.occurrences.map(o => o.symbol).toSet
     assertEquals(actual, expected, clues(actual))
   }
 
   private def assertHasOccurrence(
       rf: ResolvedFile,
-      symbol: String,
-      isDef: Boolean
+      symbol: String
   )(implicit loc: munit.Location): Unit = {
-    val matches = rf.occurrences.filter(o => o.symbol == symbol && o.isDefinition == isDef)
-    assert(matches.nonEmpty, s"Expected occurrence ($symbol, isDef=$isDef) not found in ${rf.occurrences.map(o => (o.symbol, o.isDefinition))}")
+    val matches = rf.occurrences.filter(o => o.symbol == symbol)
+    assert(matches.nonEmpty, s"Expected occurrence ($symbol) not found in ${rf.occurrences.map(o => o.symbol)}")
   }
 
   private def assertLocals(
@@ -40,7 +39,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.C; val v: C = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "a/b/C#", isDef = false)
+    assertHasOccurrence(rf, "a/b/C#")
   }
 
   // ── R.2 ref to class in same package (no import) ──────────────
@@ -50,7 +49,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Bar extends Foo"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "pkg/Foo#", isDef = false)
+    assertHasOccurrence(rf, "pkg/Foo#")
   }
 
   // ── R.3 wildcard import ───────────────────────────────────────
@@ -60,7 +59,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("a/b/Thing#", "Thing", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.*; val t: Thing = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "a/b/Thing#", isDef = false)
+    assertHasOccurrence(rf, "a/b/Thing#")
   }
 
   // ── R.4 rename import ─────────────────────────────────────────
@@ -70,7 +69,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.{C => D}; val d: D = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "a/b/C#", isDef = false)
+    assertHasOccurrence(rf, "a/b/C#")
   }
 
   // ── R.5 new C(args) — emits C# + ctor ref ─────────────────────
@@ -81,8 +80,8 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/C#`<init>`().", "<init>", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class C; object Main { val c = new C() }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "pkg/C#", isDef = false)
-    assertHasOccurrence(rf, "pkg/C#`<init>`().", isDef = false)
+    assertHasOccurrence(rf, "pkg/C#")
+    assertHasOccurrence(rf, "pkg/C#`<init>`().")
   }
 
   // ── R.6 Foo(args) where Foo is object with apply ──────────────
@@ -93,8 +92,8 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/Foo.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val r = Foo(42) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "pkg/Foo.", isDef = false)
-    assertHasOccurrence(rf, "pkg/Foo.apply().", isDef = false)
+    assertHasOccurrence(rf, "pkg/Foo.")
+    assertHasOccurrence(rf, "pkg/Foo.apply().")
   }
 
   // ── R.7 method call obj.meth(x) ───────────────────────────────
@@ -106,9 +105,9 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class Main { def f(o: Obj): Int = o.m(7) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     // Type annotation ref to Obj (resolved from param type)
-    assertHasOccurrence(rf, "pkg/Obj.", isDef = false)
+    assertHasOccurrence(rf, "pkg/Obj.")
     // o resolves to param symbol (correct v1 behavior)
-    assertHasOccurrence(rf, "pkg/Main#f().(o)", isDef = false)
+    assertHasOccurrence(rf, "pkg/Main#f().(o)")
     // Member resolution of m on `o` is beyond v1 — skip assert
   }
 
@@ -119,7 +118,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     val st = new SymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     // ref occurrence at x in body (def occurrence lives in SymbolTable now)
-    assertHasOccurrence(rf, "pkg/C#m().(x)", isDef = false)
+    assertHasOccurrence(rf, "pkg/C#m().(x)")
     // param def is not emitted as occurrence — it's in SymbolTable
   }
 
@@ -130,7 +129,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     val st = new SymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     // ref occurrence to y only (def occurrence now in locals, not occurrences)
-    assertHasOccurrence(rf, "local0", isDef = false)
+    assertHasOccurrence(rf, "local0")
     // Should also have locals entry for the definition
     assertLocals(rf, Set(("local0", false)))
   }
@@ -141,7 +140,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class C { def m(): Nothing = doStuff() }"""
     val st = new SymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "", isDef = false)
+    assertHasOccurrence(rf, "")
   }
 
   // ── R.11 Predef List(...) ─────────────────────────────────────
@@ -153,8 +152,8 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("scala/collection/immutable/List.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val xs = List(1, 2) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "scala/collection/immutable/List.", isDef = false)
-    assertHasOccurrence(rf, "scala/collection/immutable/List.apply().", isDef = false)
+    assertHasOccurrence(rf, "scala/collection/immutable/List.")
+    assertHasOccurrence(rf, "scala/collection/immutable/List.apply().")
   }
 
   // ── R.12 type-position ref val x: Foo ─────────────────────────
@@ -164,7 +163,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Main { val x: Foo = null }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "pkg/Foo#", isDef = false)
+    assertHasOccurrence(rf, "pkg/Foo#")
   }
 
   // ── R.13 nested a.b.c.d select ────────────────────────────────
@@ -179,10 +178,10 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("_empty_/a.b.c.d.", "d", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val r = a.b.c.d }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "_empty_/a.", isDef = false)
-    assertHasOccurrence(rf, "_empty_/a.b.", isDef = false)
-    assertHasOccurrence(rf, "_empty_/a.b.c.", isDef = false)
-    assertHasOccurrence(rf, "_empty_/a.b.c.d.", isDef = false)
+    assertHasOccurrence(rf, "_empty_/a.")
+    assertHasOccurrence(rf, "_empty_/a.b.")
+    assertHasOccurrence(rf, "_empty_/a.b.c.")
+    assertHasOccurrence(rf, "_empty_/a.b.c.d.")
   }
 
   // ── R.14 case class apply Person("x") ─────────────────────────
@@ -193,8 +192,8 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/Person.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val p = Person("x") }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "pkg/Person.", isDef = false)
-    assertHasOccurrence(rf, "pkg/Person.apply().", isDef = false)
+    assertHasOccurrence(rf, "pkg/Person.")
+    assertHasOccurrence(rf, "pkg/Person.apply().")
   }
 
   // ── R.15 unimport ─────────────────────────────────────────────
@@ -205,7 +204,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("a/b/Bar#", "Bar", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.{Foo => _, *}; val v: Bar = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "a/b/Bar#", isDef = false)
+    assertHasOccurrence(rf, "a/b/Bar#")
     // TODO check Foo is empty
   }
 
@@ -225,7 +224,7 @@ class ScalaReferencesResolverTest extends FunSuite {
                 |""".stripMargin
     val rf = new ScalaReferencesResolver(st).resolveFromContent("bla.scala", code, os.pwd / "bla.scala")
     // the call `add` must resolve to the wrapper-prefixed def symbol, NOT ""
-    assertHasOccurrence(rf, "_empty_/bla$package.add().", isDef = false)
+    assertHasOccurrence(rf, "_empty_/bla$package.add().")
     assert(!rf.occurrences.exists(o => o.symbol.isEmpty && o.range.startLine == 0),
       s"expected no unresolved occurrence at the call site, got ${rf.occurrences}")
   }
@@ -243,7 +242,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = """@main def main(): Unit = println(add(2, 3))
                 |""".stripMargin
     val rf = new ScalaReferencesResolver(st).resolveFromContent("Main.scala", code, os.pwd / "Main.scala")
-    assertHasOccurrence(rf, "_empty_/Sib$package.add().", isDef = false)
+    assertHasOccurrence(rf, "_empty_/Sib$package.add().")
     assert(!rf.occurrences.exists(o => o.symbol.isEmpty && o.range.startLine == 0),
       s"expected no unresolved at call site, got ${rf.occurrences}")
   }
@@ -260,9 +259,9 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/Util.add().(b)", "b", isType = false, r, dummyPath / "Util.scala"))
     val code = """package pkg; object Use { Util.add(a = 1, b = 2) }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, dummyPath / "test.scala")
-    assertHasOccurrence(rf, "pkg/Util.add().", isDef = false)
-    assertHasOccurrence(rf, "pkg/Util.add().(a)", isDef = false)
-    assertHasOccurrence(rf, "pkg/Util.add().(b)", isDef = false)
+    assertHasOccurrence(rf, "pkg/Util.add().")
+    assertHasOccurrence(rf, "pkg/Util.add().(a)")
+    assertHasOccurrence(rf, "pkg/Util.add().(b)")
   }
 
   // ── R.NEW method call on `new C().m` ───────────────────────────
@@ -274,7 +273,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     st.add(SymbolDefinition("pkg/C#m().", "m", isType = false, r, os.pwd / "dummy.scala"))
     val code = """package pkg; class U { val v = new C().m() }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
-    assertHasOccurrence(rf, "pkg/C#", isDef = false)
-    assertHasOccurrence(rf, "pkg/C#m().", isDef = false)
+    assertHasOccurrence(rf, "pkg/C#")
+    assertHasOccurrence(rf, "pkg/C#m().")
   }
 }

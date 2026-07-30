@@ -1,4 +1,4 @@
 
-object utils {
+object sbtutils {
     def getMsg() = "bla"
 }

@@ -158,13 +158,12 @@ class WorkspaceIndexTest extends FunSuite {
     assert(locs.head.symbol == "_empty_/Helper.greet().", s"got ${locs.head.symbol}")
   }
 
-  test("nopackages: goto add() defined in Siblings from its def site") {
+  test("nopackages: goto add() from its def site returns empty (no self-goto)") {
     val (idx, _) = freshIndexAt(nopkgRoot)
     idx.onDidOpen(nopkgSib, nopkgSibText)
     val (l, c) = TestPositions.at(nopkgSibText, """(?<p>add)\(a""")
     val locs = idx.gotoDefinitions(nopkgSib, l, c)
-    assert(locs.nonEmpty, s"expected add def from its own site, got empty")
-    assertEquals(locs.head.path.last, "Siblings.scala")
+    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
   }
 
   test("nopackages: local val ref resolves to local def inside method") {
@@ -223,13 +222,12 @@ class WorkspaceIndexTest extends FunSuite {
     assertEquals(locs.head.path, pkgModels)
   }
 
-  test("packages: goto enum case Red reference → Models.scala Color.Red") {
+  test("packages: goto on `case Red` def site returns empty (no self-goto)") {
     val (idx, _) = freshIndexAt(pkgRoot)
     idx.onDidOpen(pkgModels, pkgModelsText)
     val (l, c) = TestPositions.at(pkgModelsText, """case (?<p>Red),""")
     val locs = idx.gotoDefinitions(pkgModels, l, c)
-    assert(locs.nonEmpty, s"expected Color.Red ref to resolve, got empty")
-    assertEquals(locs.head.path, pkgModels)
+    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
   }
 
   test("packages: references finds Models.greeting declarations + open-file usages") {
@@ -260,13 +258,12 @@ class WorkspaceIndexTest extends FunSuite {
     assertEquals(locs.head.path, nestedOuter)
   }
 
-  test("nested: goto nested-object member Comp.m() → same file") {
+  test("nested: goto on `def m()` def site returns empty (no self-goto)") {
     val (idx, _) = freshIndexAt(nestedRoot)
     idx.onDidOpen(nestedOuter, nestedOuterText)
     val (l, c) = TestPositions.at(nestedOuterText, """def (?<p>m)\(\): Int""")
     val locs = idx.gotoDefinitions(nestedOuter, l, c)
-    assert(locs.nonEmpty)
-    assertEquals(locs.head.path, nestedOuter)
+    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
   }
 
   test("nested: goto package-object member answer → pkg.scala") {
@@ -283,13 +280,12 @@ class WorkspaceIndexTest extends FunSuite {
     }
   }
 
-  test("nested: goto package-object method hello() → pkg.scala") {
+  test("nested: goto on `def hello()` def site returns empty (no self-goto)") {
     val (idx, _) = freshIndexAt(nestedRoot)
     idx.onDidOpen(nestedPkg, nestedPkgText)
     val (l, c) = TestPositions.at(nestedPkgText, """(?<p>hello)\(\)""")
     val locs = idx.gotoDefinitions(nestedPkg, l, c)
-    assert(locs.nonEmpty)
-    assertEquals(locs.head.path, nestedPkg)
+    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -405,14 +401,54 @@ class WorkspaceIndexTest extends FunSuite {
     assert(locs.head.symbol == "_empty_/Dzava#dzava().", s"got ${locs.head.symbol}")
   }
 
-  test("scalacli: self-filter — goto on `class Bla` def site returns the def itself") {
+  test("scalacli: goto on `class Bla` def site returns empty (no self-goto)") {
     val (idx, _) = freshIndexAt(scalacliRoot)
     idx.onDidOpen(scalacliBla2, scalacliBla2Text)
     // bla2.scala line 6: `class Bla {`
     val (l, c) = TestPositions.at(scalacliBla2Text, """class (?<p>Bla)""")
     val locs = idx.gotoDefinitions(scalacliBla2, l, c)
-    // Def-site goto returns the def itself (conditional self-filter only applies from refs)
-    assert(locs.nonEmpty, s"expected Bla def from its own site, got empty")
-    assert(locs.head.path == scalacliBla2, s"expected Bla in bla2.scala, got $locs")
+    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // REPRO: sbt project with real semanticdb files (test resources)
+  // ═══════════════════════════════════════════════════════════════
+
+  test("REPRO sbt: goto utils from Main.scala uses semanticdb") {
+    val (idx, _) = freshIndexAt(sbtDir)
+    idx.onDidOpen(mainFile, os.read(mainFile))
+    val (l, c) = TestPositions.at(os.read(mainFile), """(?<p>utils)\.getMsg""")
+    val locs = idx.gotoDefinitions(mainFile, l, c)
+    assert(locs.nonEmpty, s"expected utils goto to resolve via semanticdb, got empty")
+    assertEquals(locs.head.path.last, "utils.scala")
+  }
+
+  test("REPRO sbt: goto getMsg member from Main.scala uses semanticdb") {
+    val (idx, _) = freshIndexAt(sbtDir)
+    idx.onDidOpen(mainFile, os.read(mainFile))
+    val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
+    val locs = idx.gotoDefinitions(mainFile, l, c)
+    assert(locs.nonEmpty, s"expected getMsg goto to resolve via semanticdb, got empty")
+    assertEquals(locs.head.path.last, "utils.scala")
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // REPRO: Java locals goto (dzava.java)
+  // ═══════════════════════════════════════════════════════════════
+
+  test("REPRO java: goto local var `a` ref in a + b") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliDzava, scalacliDzavaText)
+    val (l, c) = TestPositions.at(scalacliDzavaText, """int sum = (?<p>a) \+ b""")
+    val locs = idx.gotoDefinitions(scalacliDzava, l, c)
+    assert(locs.nonEmpty, s"expected local var `a` goto to resolve, got empty")
+  }
+
+  test("REPRO java: goto local var `b` ref in a + b") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliDzava, scalacliDzavaText)
+    val (l, c) = TestPositions.at(scalacliDzavaText, """a \+ (?<p>b);""")
+    val locs = idx.gotoDefinitions(scalacliDzava, l, c)
+    assert(locs.nonEmpty, s"expected local var `b` goto to resolve, got empty")
   }
 }

@@ -163,12 +163,12 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def emitRef(pos: Position, symbol: String): Unit = {
     val range = PositionUtils.toRange(pos)
-    occurrences += ReferenceOccurrence(symbol, range, isDefinition = false)
+    occurrences += ReferenceOccurrence(symbol, range)
   }
 
   private def emitRefUnresolved(pos: Position): Unit = {
     val range = PositionUtils.toRange(pos)
-    occurrences += ReferenceOccurrence("", range, isDefinition = false)
+    occurrences += ReferenceOccurrence("", range)
   }
 
   private def addLocal(pos: Position, symbol: String, shortName: String, isType: Boolean): Unit = {

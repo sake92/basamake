@@ -36,7 +36,7 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
     logger.info(s"Found files: scala=${scalaFiles.size}, java=${javaFiles.size}, semanticdb=${semanticdbFiles.size}")
 
     // Pass A: index semanticdb DEFINITION occurrences into symbolTable, pair with sources
-    val semPairs = SemanticdbIndexing.discoverSemanticdbSources(
+    val semPairs = SemanticdbIndexing.matchSemanticdbWithSources(
       semanticdbFiles, workspaceRoot, scalaJavaFiles, symbolTable
     )
     semanticdbBySource.clear()
@@ -66,6 +66,18 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
     }
 
     logger.info(s"Initial symbol table:\n${symbolTable.all.mkString("\n")}")
+
+    // Debug dump: write .basamake/index.txt in the workspace root so users can inspect
+    // which source files were paired with which .semanticdb files.
+    try {
+      val dump = SemanticdbIndexing.dumpPairs(semanticdbBySource.toMap, scalaJavaFiles, workspaceRoot)
+      val dumpDir = workspaceRoot / ".basamake"
+      os.makeDir.all(dumpDir)
+      os.write.over(dumpDir / "index.txt", dump)
+      logger.info(s"Wrote index dump to ${dumpDir / "index.txt"}")
+    } catch {
+      case e: Exception => logger.warn(s"Failed to write index.txt: ${e.getMessage}")
+    }
   }
 
   // ── onDidOpen/Change/Save/Close ──────────────────────────────
@@ -137,31 +149,25 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
 
   def gotoDefinitions(path: os.Path, line: Int, char: Int): Vector[SymbolDefinition] = synchronized {
     val occurrences = openOccurrences.getOrElse(path, Vector.empty)
-    val references = occurrences.filter(_.isDefinition == false)
+    // All occurrences in openOccurrences are references (defs live in SymbolTable / openLocalDefinitions).
+    val references = occurrences
     val localDefs = openLocalDefinitions.getOrElse(path, Vector.empty)
     val localDefinitionsMap = localDefs.map(ld => ld.symbol -> ld).toMap
 
     val referencesUnderCursor = references.filter(o => isInsideRange(line, char, o.range))
-    val (candidates, fromRefs): (Vector[SymbolDefinition], Boolean) =
-      if (referencesUnderCursor.nonEmpty) {
-        val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
-        if (local.nonEmpty) (local, true)
-        else (referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol)), true)
-      } else {
-        // Cursor not on a ref — might be on a def site. Use findSymbolsAt as fallback.
-        val targetSymbols = findSymbolsAt(path, line, char)
-        (targetSymbols.flatMap { sym =>
-          localDefs.find(_.symbol == sym).orElse(symbolTable.get(sym))
-        }, false)
-      }
-
-    // Filter out the location the cursor is already on, only when we came from a reference.
-    // Def-site fallback should still return the def itself.
-    if (fromRefs) {
+    // Cursor on a def site (not a ref) → return empty. "Go to definition" from the
+    // definition itself is noise; the user wants references there, not "go to self".
+    if (referencesUnderCursor.isEmpty) Vector.empty
+    else {
+      val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
+      val candidates =
+        if (local.nonEmpty) local
+        else referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol))
+      // Filter out the location the cursor is already on (self-filter for refs).
       candidates.filterNot { sd =>
         sd.path == path && isInsideRange(line, char, sd.range)
       }
-    } else candidates
+    }
   }
 
   /** v1: scan only occurrences in CURRENTLY OPEN FILES.
@@ -172,7 +178,7 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
 
     val results = Vector.newBuilder[SymbolDefinition]
 
-    // Scan ref occurrences across all open files (refs only — no isDefinition filter needed)
+    // Scan ref occurrences across all open files
     for (openPath <- openOccurrences.keys) {
       val occs = openOccurrences(openPath)
       for (occ <- occs if targetSymbols.contains(occ.symbol)) {
@@ -210,9 +216,19 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
           if (semanticdbBySource.contains(path)) {
             val useSemanticdb = !dirty.contains(path) && textMatchesDisk(path, text)
             if (useSemanticdb) {
-              val occs = try SemanticdbIndexing.parseOccurrences(semanticdbBySource(path))
-                         catch { case e: Exception => logger.warn(s"Failed to parse semanticdb $path: ${e.getMessage}"); Vector.empty }
-              (occs, Vector.empty[SymbolDefinition])
+              // parseOccurrences returns (occs, complete). Under Scala 3 -Ybest-effort the
+              // semanticdb emits short/unresolved ref symbols (e.g. `utils.` not `_empty_/utils.`);
+              // in that case fall back to source parsing for the ref occurrences (defs in
+              // SymbolTable are still full symbols and stay authoritative).
+              val (semOccs, complete) = try SemanticdbIndexing.parseOccurrences(semanticdbBySource(path))
+                         catch { case e: Exception => logger.warn(s"Failed to parse semanticdb $path: ${e.getMessage}"); (Vector.empty[ReferenceOccurrence], false) }
+              if (complete) (semOccs, Vector.empty[SymbolDefinition])
+              else {
+                logger.debug(s"Semanticdb for $path has short ref symbols, falling back to source parse")
+                val resolver = ScalaReferencesResolver(symbolTable)
+                val rf = resolver.resolveFromContent(path.last, text, path)
+                (rf.occurrences, rf.locals)
+              }
             } else {
               val resolver = ScalaReferencesResolver(symbolTable)
               val rf = resolver.resolveFromContent(path.last, text, path)
