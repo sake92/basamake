@@ -39,7 +39,7 @@ local const mainModules =
         "com.lihaoyi::os-lib-watch:0.11.9-M8"
         "ba.sake::tupson:0.20.0"
         "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0" // just for some basic types like SymbolKind, etc.
-        //"ch.epfl.scala:bsp4j:2.2.0-M2"
+        "ch.epfl.scala:bsp4j:2.2.0-M2"
         //"com.softwaremill.ox::core:1.0.5"
       }
     }
