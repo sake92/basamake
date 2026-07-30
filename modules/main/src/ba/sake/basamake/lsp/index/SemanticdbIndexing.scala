@@ -6,38 +6,37 @@ import ba.sake.basamake.navigation.{SymbolDefinition, SymbolUtils, ReferenceOccu
 
 object SemanticdbIndexing extends StrictLogging {
 
-  private val skipDirNames = Set(".git",  ".basamake", ".bsp", "node_modules")
-
-  /** Walk workspace for `META-INF/semanticdb/**/*.semanticdb` files and pair each
-    * with a workspace source file by relative path heuristic.
+  /** Pair each `.semanticdb` file with a workspace source file by relative-path
+    * heuristic, parse DEFINITION occurrences, and add them to `symbolTable`.
+    * Returns Map: sourcePath -> semanticdbPath (caller stores it for didOpen/didSave).
     *
-    * Returns Map: sourcePath -> semanticdbPath
+    * @param semanticdbFiles paths discovered by the caller (one os.walk already done)
+    * @param workspaceRoot   workspace root for path relativization
+    * @param sourceFiles      set of `.scala`/`.java` source paths in the workspace
+    * @param symbolTable      target table; definition occurrences are added here
     */
-  def discoverSemanticdbSources(workspaceRoot: os.Path): Map[os.Path, os.Path] = {
-    
-    val skip: os.Path => Boolean = p => {
-      if (os.isDir(p)) {
-        skipDirNames.contains(p.last)
-      } else false
-    }
-    val semFiles = os.walk(workspaceRoot, skip = skip).filter { p =>
-      os.isFile(p) && p.toString.endsWith(".semanticdb")
-    }
-    val sources = os.walk(workspaceRoot, skip = skip).filter { p =>
-      os.isFile(p) && (p.ext == "scala" || p.ext == "java")
-    }.toSet
-
+  def discoverSemanticdbSources(
+      semanticdbFiles: Seq[os.Path],
+      workspaceRoot: os.Path,
+      sourceFiles: Set[os.Path],
+      symbolTable: ba.sake.basamake.navigation.SymbolTable
+  ): Map[os.Path, os.Path] = {
     val result = scala.collection.mutable.Map.empty[os.Path, os.Path]
-    for semPath <- semFiles do {
-      val relOpt = relativizeSemanticdbPath(workspaceRoot, semPath)
-      relOpt.foreach { relSegs =>
-        val matches = sources.filter { src =>
+    semanticdbFiles.foreach { semPath =>
+      relativizeSemanticdbPath(workspaceRoot, semPath).foreach { relSegs =>
+        val matches = sourceFiles.filter { src =>
           endsWithSegments(src.relativeTo(workspaceRoot).toString.split('/').toList, relSegs)
         }
-        if (matches.size == 1) result(matches.head) = semPath
-        else if (matches.size > 1) {
-          logger.debug(s"Ambiguous semanticdb match for $relSegs: ${matches.map(_.toString)}")
-          result(matches.head) = semPath
+        matches.headOption.foreach { sourcePath =>
+          if (matches.size > 1)
+            logger.debug(s"Ambiguous semanticdb match for $relSegs: ${matches.map(_.toString)}")
+          result(sourcePath) = semPath
+          try {
+            val defs = parseDefinitions(semPath, sourcePath)
+            defs.foreach(symbolTable.add)
+          } catch {
+            case e: Exception => logger.warn(s"Failed to parse $semPath: ${e.getMessage}")
+          }
         }
       }
     }
@@ -80,6 +79,7 @@ object SemanticdbIndexing extends StrictLogging {
           val shortName = inferShortName(occ.symbol)
           SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
         }
+        .filterNot(sd => isSentinelRange(sd.range))
     }
   }
 
@@ -106,45 +106,6 @@ object SemanticdbIndexing extends StrictLogging {
       case -1 => symbol
       case i  => symbol.drop(i + 1)
     last.takeWhile(c => c != '#' && c != '.' && c != '(')
-  }
-
-  /** Stand-in climber: given a symbol whose range is sentinel (0,0,0,0), strip its last
-    * descriptor and look up the owner in the SymbolTable. Repeat until found. Returns
-    * the stand-in SymbolDefinition (caller copies its range).
-    */
-  // TODO check if necessary..
-  def ownerStandIn(symbol: String, table: ba.sake.basamake.navigation.SymbolTable): Option[SymbolDefinition] = {
-    var current = symbol
-    var depth = 0
-    while (depth < 32) {
-      current = stripLastDescriptor(current) match {
-        case Some(owner) => owner
-        case None        => return None
-      }
-      table.get(current) match {
-        case Some(sd) if !isSentinelRange(sd.range) => return Some(sd)
-        case _ => ()
-      }
-      depth += 1
-    }
-    None
-  }
-
-  private def stripLastDescriptor(symbol: String): Option[String] = {
-    if (symbol.endsWith(")")) {
-      val idx = symbol.lastIndexOf('(')
-      if (idx >= 0) Some(symbol.take(idx)) else None
-    } else if (symbol.endsWith("]")) {
-      val idx = symbol.lastIndexOf('[')
-      if (idx >= 0) Some(symbol.take(idx)) else None
-    } else if (symbol.endsWith(").")) {
-      val idx = symbol.lastIndexOf('(')
-      if (idx >= 0) Some(symbol.take(idx)) else None
-    } else if (symbol.endsWith("#") || symbol.endsWith(".") || symbol.endsWith("/")) {
-      val stripped = symbol.dropRight(1)
-      val slashIdx = stripped.lastIndexOf('/')
-      if (slashIdx >= 0) Some(stripped.take(slashIdx + 1)) else None
-    } else None
   }
 
   private def isSentinelRange(r: SdbRange): Boolean =

@@ -684,6 +684,9 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     // Resolve fun in call context
     resolveTerm(fun, inCallContext = true)
 
+    // Resolve the called method symbol ONCE so named args can resolve to params
+    val methodSymOpt: Option[String] = resolveMethodSymbolForApply(fun)
+
     // Synthetic apply rule
     fun match {
       case Term.Name(n) =>
@@ -714,8 +717,19 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case _ => ()
     }
 
-    // Recurse args in value context
-    args.foreach(a => resolveTerm(a, inCallContext = false))
+    // Recurse args in value context; named args (`a = expr`) also emit a ref
+    // to the method's parameter symbol when the method was resolved.
+    args.foreach {
+      case Term.Assign(name: Term.Name, value) =>
+        methodSymOpt.foreach { ms =>
+          val paramSym = SymbolUtils.parameterSymbol(ms, name.value)
+          if (symbolTable.get(paramSym).isDefined)
+            emitRef(name.pos, paramSym)
+        }
+        resolveTerm(value, inCallContext = false)
+      case other =>
+        resolveTerm(other, inCallContext = false)
+    }
   }
 
   // ── block ────────────────────────────────────────────────────
@@ -820,6 +834,21 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     SymbolUtils.packageOwner(base :+ pkgObjName)
   }
 
+  /** Resolve the called method symbol of an apply `fun`, for named-arg param lookup.
+    * Mirrors the lookup path used by `resolveTerm`/`resolveTermSelect` but only returns
+    * a method symbol (ending with `(...).`). Returns None if `fun` is not a method call
+    * or the symbol is not in the SymbolTable.
+    */
+  private def resolveMethodSymbolForApply(fun: Term): Option[String] = fun match {
+    case Term.Select(qual, name) =>
+      resolveTermToOwner(qual).flatMap { owner =>
+        resolveMemberOf(owner, name.value, isType = false, inCallContext = true)
+      }
+    case Term.Name(n) =>
+      lookup(n, isType = false, inCallContext = true)
+    case _ => None
+  }
+
   // ── term resolution helpers ───────────────────────────────────
 
   /** Resolve a term to its owner prefix (SemanticDB owner key), used for member lookups. */
@@ -843,6 +872,16 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         val n = name.value
         qualOwner.map { owner =>
           SymbolUtils.termSymbol(owner, n)
+        }
+
+      case Term.New(init) =>
+        // `new C().member` — owner is the TYPE symbol of C, so members resolve to C#member
+        init.tpe match {
+          case Type.Name(n) =>
+            lookup(n, isType = true, inCallContext = false)
+          case Type.Select(qual, name) =>
+            resolveImportRefToOwner(qual).map(owner => SymbolUtils.typeSymbol(owner, name.value))
+          case _ => None
         }
 
       case _ => None

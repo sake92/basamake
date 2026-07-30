@@ -247,4 +247,34 @@ class ScalaReferencesResolverTest extends FunSuite {
     assert(!rf.occurrences.exists(o => o.symbol.isEmpty && o.range.startLine == 0),
       s"expected no unresolved at call site, got ${rf.occurrences}")
   }
+
+  // ── R.NAMED named arg emits param ref ─────────────────────────
+
+  test("named arg emits param ref") {
+    val st = new SymbolTable
+    val dummyPath = os.pwd
+    val r = new Range(0, 0, 0, 0)
+    st.add(SymbolDefinition("pkg/Util.", "Util", isType = false, r, dummyPath / "Util.scala"))
+    st.add(SymbolDefinition("pkg/Util.add().", "add", isType = false, r, dummyPath / "Util.scala"))
+    st.add(SymbolDefinition("pkg/Util.add().(a)", "a", isType = false, r, dummyPath / "Util.scala"))
+    st.add(SymbolDefinition("pkg/Util.add().(b)", "b", isType = false, r, dummyPath / "Util.scala"))
+    val code = """package pkg; object Use { Util.add(a = 1, b = 2) }"""
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, dummyPath / "test.scala")
+    assertHasOccurrence(rf, "pkg/Util.add().", isDef = false)
+    assertHasOccurrence(rf, "pkg/Util.add().(a)", isDef = false)
+    assertHasOccurrence(rf, "pkg/Util.add().(b)", isDef = false)
+  }
+
+  // ── R.NEW method call on `new C().m` ───────────────────────────
+
+  test("method call on new C().m resolves to C#m") {
+    val st = new SymbolTable
+    val r = new Range(0, 0, 0, 0)
+    st.add(SymbolDefinition("pkg/C#", "C", isType = true, r, os.pwd / "dummy.scala"))
+    st.add(SymbolDefinition("pkg/C#m().", "m", isType = false, r, os.pwd / "dummy.scala"))
+    val code = """package pkg; class U { val v = new C().m() }"""
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
+    assertHasOccurrence(rf, "pkg/C#", isDef = false)
+    assertHasOccurrence(rf, "pkg/C#m().", isDef = false)
+  }
 }

@@ -5,7 +5,7 @@ import com.typesafe.scalalogging.StrictLogging
 import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.*
 import ba.sake.basamake.navigation.scalasrc.{ScalaDefinitionsExtractor, ScalaReferencesResolver }
-import ba.sake.basamake.navigation.javasrc.JavaDefinitionsExtractor
+import ba.sake.basamake.navigation.javasrc.{JavaDefinitionsExtractor, JavaReferencesResolver}
 
 class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
 
@@ -21,45 +21,30 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
   // ── initialize ──────────────────────────────────────────────
   def initialize(workspaceRoot: os.Path): Unit = synchronized {
     logger.info(s"Initializing workspace index at $workspaceRoot")
-    // Pass A: build semanticdbBySource
-    // TODO load semanticdb symbol definitions into symbolTable
-    /*val discovered = SemanticdbIndexing.discoverSemanticdbSources(workspaceRoot)
-    semanticdbBySource.clear()
-    semanticdbBySource.addAll(discovered)
-    logger.info(s"Discovered ${discovered.size} source files with semanticdb")
-
-    // TODO make semanticdb + .scala os.walk once
-    // Pass B: populate SymbolTable
-    //   B1: from semanticdb DEFINITION occurrences
-    for (sourcePath <- semanticdbBySource.keys) {
-      val semPath = semanticdbBySource(sourcePath)
-      try {
-        val defs = SemanticdbIndexing.parseDefinitions(semPath, sourcePath)
-        defs.foreach { sd =>
-          symbolTable.add(sd)
-        }
-      } catch {
-        case e: Exception => logger.warn(s"Failed to parse $semPath: ${e.getMessage}")
-      }
-    }*/
-
-    //   B2: from source-AST for files WITHOUT semanticdb
-    // TODO this would miss generatedSources in .deder and target/..
     val skipDirNames = Set(".git", ".basamake", ".metals", ".bsp", "node_modules")
     val relevantExtensions = Set("scala", "java", "semanticdb")
     val skip: os.Path => Boolean = p => {
       if (os.isDir(p)) skipDirNames.contains(p.last) else if (os.isFile(p)) !relevantExtensions.contains(p.ext) else true
     }
-    
+
     val sources = os.walk(workspaceRoot, skip = skip)
     val fileGroups = sources.groupBy(_.ext)
     val scalaFiles = fileGroups.getOrElse("scala", Vector.empty)
     val javaFiles = fileGroups.getOrElse("java", Vector.empty)
     val semanticdbFiles = fileGroups.getOrElse("semanticdb", Vector.empty)
+    val scalaJavaFiles = scalaFiles.toSet ++ javaFiles.toSet
     logger.info(s"Found files: scala=${scalaFiles.size}, java=${javaFiles.size}, semanticdb=${semanticdbFiles.size}")
-    // TODO load semanticdb symbol definitions into symbolTable
-    // then load only scala/java files that don't have semanticdb
-    for (path <- scalaFiles) {
+
+    // Pass A: index semanticdb DEFINITION occurrences into symbolTable, pair with sources
+    val semPairs = SemanticdbIndexing.discoverSemanticdbSources(
+      semanticdbFiles, workspaceRoot, scalaJavaFiles, symbolTable
+    )
+    semanticdbBySource.clear()
+    semanticdbBySource.addAll(semPairs)
+    logger.info(s"Indexed ${semPairs.size} semanticdb-paired source files")
+
+    // Pass B: extract from source AST for files WITHOUT semanticdb
+    for (path <- scalaFiles if !semPairs.contains(path)) {
       logger.debug(s"Extracting definitions from $path")
       try {
         val content = os.read(path)
@@ -69,7 +54,7 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
         case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
       }
     }
-    for (path <- javaFiles) {
+    for (path <- javaFiles if !semPairs.contains(path)) {
       logger.debug(s"Extracting definitions from $path")
       try {
         val content = os.read(path)
@@ -80,22 +65,6 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
       }
     }
 
-    
-
-    // Pass C: stand-in fix-up for sentinel ranges
-    // TODO check if necessary..
-    /*var changed = true
-    var iterations = 0
-    while (changed && iterations < 8) {
-      changed = false
-      iterations += 1
-      for (sd <- symbolTable.all if isSentinel(sd.range)) {
-        SemanticdbIndexing.ownerStandIn(sd.symbol, symbolTable).foreach { standIn =>
-          symbolTable.add(sd.copy(range = standIn.range))
-          changed = true
-        }
-      }
-    }*/
     logger.info(s"Initial symbol table:\n${symbolTable.all.mkString("\n")}")
   }
 
@@ -126,7 +95,10 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
       val content = text.getOrElse(try os.read(path) catch { case _ => "" })
       val extractor = ScalaDefinitionsExtractor(symbolTable)
       extractor.extractFromContent(path.last, content, path)
-      fixStandInsForPath(path)
+    } else if (path.ext == "java") {
+      val content = text.getOrElse(try os.read(path) catch { case _ => "" })
+      val extractor = JavaDefinitionsExtractor(symbolTable)
+      extractor.extractFromContent(path.last, content, path)
     }
     refreshOpenBuffer(path)
   }
@@ -166,24 +138,30 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
   def gotoDefinitions(path: os.Path, line: Int, char: Int): Vector[SymbolDefinition] = synchronized {
     val occurrences = openOccurrences.getOrElse(path, Vector.empty)
     val references = occurrences.filter(_.isDefinition == false)
-    val localDefinitionsMap = openLocalDefinitions.getOrElse(path, Vector.empty).map(ld => ld.symbol -> ld).toMap
+    val localDefs = openLocalDefinitions.getOrElse(path, Vector.empty)
+    val localDefinitionsMap = localDefs.map(ld => ld.symbol -> ld).toMap
 
     val referencesUnderCursor = references.filter(o => isInsideRange(line, char, o.range))
-    if (referencesUnderCursor.nonEmpty) {
-      val localDefinitions = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
-      if (localDefinitions.nonEmpty) localDefinitions
-      else {
-        val globalDefinitions = referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol))
-        globalDefinitions
+    val (candidates, fromRefs): (Vector[SymbolDefinition], Boolean) =
+      if (referencesUnderCursor.nonEmpty) {
+        val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
+        if (local.nonEmpty) (local, true)
+        else (referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol)), true)
+      } else {
+        // Cursor not on a ref — might be on a def site. Use findSymbolsAt as fallback.
+        val targetSymbols = findSymbolsAt(path, line, char)
+        (targetSymbols.flatMap { sym =>
+          localDefs.find(_.symbol == sym).orElse(symbolTable.get(sym))
+        }, false)
       }
-    } else {
-      // Cursor not on a ref — might be on a def site. Use findSymbolsAt as fallback.
-      val targetSymbols = findSymbolsAt(path, line, char)
-      targetSymbols.flatMap { sym =>
-        openLocalDefinitions.getOrElse(path, Vector.empty).find(_.symbol == sym)
-          .orElse(symbolTable.get(sym))
+
+    // Filter out the location the cursor is already on, only when we came from a reference.
+    // Def-site fallback should still return the def itself.
+    if (fromRefs) {
+      candidates.filterNot { sd =>
+        sd.path == path && isInsideRange(line, char, sd.range)
       }
-    }
+    } else candidates
   }
 
   /** v1: scan only occurrences in CURRENTLY OPEN FILES.
@@ -242,11 +220,17 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
             }
           } else {
             logger.debug(s"Resolving references from source for $path")
-            val resolver = ScalaReferencesResolver(symbolTable)
-            val rf = resolver.resolveFromContent(path.last, text, path)
+            val rf =
+              if (path.ext == "java") {
+                val resolver = new JavaReferencesResolver(symbolTable)
+                resolver.resolveFromContent(path.last, text, path)
+              } else {
+                val resolver = new ScalaReferencesResolver(symbolTable)
+                resolver.resolveFromContent(path.last, text, path)
+              }
             val res = (rf.occurrences, rf.locals)
             logger.debug(s"Resolved occurrences from source for $path: ${res._1}, locals: ${res._2}")
-            res 
+            res
           }
         openOccurrences(path) = occs
         openLocalDefinitions(path) = locals
@@ -258,19 +242,6 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
     try os.read(path) == text catch { case _ => false }
   }
 
-  private def fixStandInsForPath(path: os.Path): Unit = synchronized {
-    var changed = true; var iters = 0
-    while (changed && iters < 8) {
-      changed = false; iters += 1
-      for (sd <- symbolTable.all if sd.path == path && isSentinel(sd.range)) {
-        SemanticdbIndexing.ownerStandIn(sd.symbol, symbolTable).foreach { standIn =>
-          symbolTable.add(sd.copy(range = standIn.range))
-          changed = true
-        }
-      }
-    }
-  }
-
   // ── range helpers ────────────────────────────────────────────
 
   private def isInsideRange(line: Int, char: Int, occurenceRange: Range): Boolean =
@@ -280,7 +251,5 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
   private def rangeLength(r: Range): Long =
     (r.endLine.toLong - r.startLine.toLong) * 100000 + (r.endCharacter.toLong - r.startCharacter.toLong)
 
-  private def isSentinel(r: Range): Boolean =
-    r.startLine == 0 && r.startCharacter == 0 && r.endLine == 0 && r.endCharacter == 0
 }
 

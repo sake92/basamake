@@ -340,4 +340,79 @@ class WorkspaceIndexTest extends FunSuite {
     val res = idx.findSymbolsAt(nopkgSib, l, c)
     assert(res.isEmpty, s"expected no symbol at ':' colon, got $res")
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // scalacli fixture (examples/hello/scalacli/)
+  // ═══════════════════════════════════════════════════════════════
+
+  private val scalacliRoot  = os.pwd / "examples" / "hello" / "scalacli"
+  private val scalacliBla   = scalacliRoot / "bla.scala"
+  private val scalacliBla2  = scalacliRoot / "bla2.scala"
+  private val scalacliDzava = scalacliRoot / "dzava.java"
+  private val scalacliBlaText  = os.read(scalacliBla)
+  private val scalacliBla2Text = os.read(scalacliBla2)
+  private val scalacliDzavaText = os.read(scalacliDzava)
+
+  test("scalacli: goto named param `a` of utils.add(a=2, b=3) → utils.scala param") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliBla, scalacliBlaText)
+    // bla.scala line 5: `  println(utils.add(a = 2, b =  3))`
+    // Char position of `a` in `a = 2`
+    val (l, c) = TestPositions.at(scalacliBlaText, """utils.add\((?<p>a) =""")
+    val locs = idx.gotoDefinitions(scalacliBla, l, c)
+    assert(locs.nonEmpty, s"expected named-param `a` to resolve, got empty")
+    assertEquals(locs.head.path, scalacliBla2)
+    assert(locs.head.symbol == "_empty_/utils.add().(a)", s"got ${locs.head.symbol}")
+  }
+
+  test("scalacli: goto named param `b` of utils.add(a=2, b=3) → utils.scala param") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliBla, scalacliBlaText)
+    val (l, c) = TestPositions.at(scalacliBlaText, """(?<p>b) =  3""")
+    val locs = idx.gotoDefinitions(scalacliBla, l, c)
+    assert(locs.nonEmpty, s"expected named-param `b` to resolve, got empty")
+    assertEquals(locs.head.path, scalacliBla2)
+    assert(locs.head.symbol == "_empty_/utils.add().(b)", s"got ${locs.head.symbol}")
+  }
+
+  test("scalacli: goto method call on `new Bla().div(...)` → Bla.scala div") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliBla, scalacliBlaText)
+    val (l, c) = TestPositions.at(scalacliBlaText, """new Bla\(\)\.(?<p>div)\(""")
+    val locs = idx.gotoDefinitions(scalacliBla, l, c)
+    assert(locs.nonEmpty, s"expected div to resolve from new Bla().div(), got empty")
+    assertEquals(locs.head.path, scalacliBla2)
+    assert(locs.head.symbol == "_empty_/Bla#div().", s"got ${locs.head.symbol}")
+  }
+
+  test("scalacli: goto `new Dzava` from scala → dzava.java (cross-language type)") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliBla, scalacliBlaText)
+    val (l, c) = TestPositions.at(scalacliBlaText, """new (?<p>Dzava)""")
+    val locs = idx.gotoDefinitions(scalacliBla, l, c)
+    assert(locs.nonEmpty, s"expected Dzava type ref from scala to resolve, got empty")
+    assertEquals(locs.head.path, scalacliDzava)
+    assert(locs.head.symbol == "_empty_/Dzava#", s"got ${locs.head.symbol}")
+  }
+
+  test("scalacli: goto `new Dzava().dzava()` from scala → dzava.java method (cross-language)") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliBla2, scalacliBla2Text)
+    val (l, c) = TestPositions.at(scalacliBla2Text, """new Dzava\(\)\.(?<p>dzava)\(\)""")
+    val locs = idx.gotoDefinitions(scalacliBla2, l, c)
+    assert(locs.nonEmpty, s"expected dzava method to resolve cross-language, got empty")
+    assertEquals(locs.head.path, scalacliDzava)
+    assert(locs.head.symbol == "_empty_/Dzava#dzava().", s"got ${locs.head.symbol}")
+  }
+
+  test("scalacli: self-filter — goto on `class Bla` def site returns the def itself") {
+    val (idx, _) = freshIndexAt(scalacliRoot)
+    idx.onDidOpen(scalacliBla2, scalacliBla2Text)
+    // bla2.scala line 6: `class Bla {`
+    val (l, c) = TestPositions.at(scalacliBla2Text, """class (?<p>Bla)""")
+    val locs = idx.gotoDefinitions(scalacliBla2, l, c)
+    // Def-site goto returns the def itself (conditional self-filter only applies from refs)
+    assert(locs.nonEmpty, s"expected Bla def from its own site, got empty")
+    assert(locs.head.path == scalacliBla2, s"expected Bla in bla2.scala, got $locs")
+  }
 }
