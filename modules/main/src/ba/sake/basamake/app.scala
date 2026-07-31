@@ -2,7 +2,7 @@ package ba.sake.basamake
 
 import ba.sake.basamake.navigation.*
 import ba.sake.basamake.navigation.scalasrc.*
-import ba.sake.basamake.lsp.index.*
+import ba.sake.basamake.navigation.indexing.*
 
 @main def app(): Unit = {
   

@@ -1,4 +1,4 @@
-package ba.sake.basamake.lsp.index
+package ba.sake.basamake.navigation.indexing
 
 import scala.meta.internal.semanticdb.{TextDocument, TextDocuments, Range => SdbRange}
 import com.typesafe.scalalogging.StrictLogging

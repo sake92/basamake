@@ -13,7 +13,7 @@ import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.config.{BasamakeConfig, BspOverride}
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
-import ba.sake.basamake.lsp.index.WorkspaceIndex
+import ba.sake.basamake.navigation.indexing.WorkspaceIndex
 
 class BspManager private (
     workspaceRoot: os.Path,

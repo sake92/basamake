@@ -1,4 +1,4 @@
-package ba.sake.basamake.lsp.index
+package ba.sake.basamake.navigation.indexing
 
 import scala.collection.mutable
 import com.typesafe.scalalogging.StrictLogging

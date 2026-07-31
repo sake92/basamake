@@ -9,7 +9,7 @@ import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
-import ba.sake.basamake.lsp.index.WorkspaceIndex
+import ba.sake.basamake.navigation.indexing.WorkspaceIndex
 import ba.sake.basamake.bsp.BspManager
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {

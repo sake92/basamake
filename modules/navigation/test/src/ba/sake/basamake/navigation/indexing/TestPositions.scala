@@ -1,4 +1,4 @@
-package ba.sake.basamake.lsp.index
+package ba.sake.basamake.navigation.indexing
 
 import java.util.regex.{Pattern, Matcher}
 
