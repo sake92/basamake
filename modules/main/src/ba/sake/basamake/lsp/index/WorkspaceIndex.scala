@@ -65,7 +65,6 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
       }
     }
 
-    logger.info(s"Initial symbol table:\n${symbolTable.all.mkString("\n")}")
 
     // Debug dump: write .basamake/index.txt in the workspace root so users can inspect
     // which source files were paired with which .semanticdb files.
@@ -74,7 +73,6 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
       val dumpDir = workspaceRoot / ".basamake"
       os.makeDir.all(dumpDir)
       os.write.over(dumpDir / "index.txt", dump)
-      logger.info(s"Wrote index dump to ${dumpDir / "index.txt"}")
     } catch {
       case e: Exception => logger.warn(s"Failed to write index.txt: ${e.getMessage}")
     }

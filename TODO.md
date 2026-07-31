@@ -1,4 +1,6 @@
 
+- poke should compile always.. say i open file, then only do "deder bsp install", currently it wont compile
+- invalidation of wsIndex doesnt pick up newly-generated semantcdbs?
 - move WorkspaceIndex to navigation/indexing
 - cover getreferences in tests.. and fix it..
 
