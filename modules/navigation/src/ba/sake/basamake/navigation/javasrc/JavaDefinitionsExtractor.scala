@@ -24,7 +24,7 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
       val content = new String(is.readAllBytes(), "UTF-8")
       extractFromContent(name, content, path)
     } catch {
-      case NonFatal(e) => logger.warn(s"Failed to parse Java source ${name}: ${e.getMessage}")
+      case NonFatal(e) => logger.warn(s"Failed to parse Java source ${path}: ${e.getMessage}")
     }
 
   def extractFromContent(fileName: String, content: String, path: os.Path): Unit = {

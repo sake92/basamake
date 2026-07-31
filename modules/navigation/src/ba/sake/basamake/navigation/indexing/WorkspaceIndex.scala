@@ -184,10 +184,11 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
         val rel = os.RelPath(uriStr)
         var ancestor: os.Path = semPath / os.up
         var found: Option[os.Path] = None
-        while (found.isEmpty) {
+        var keepGoing = true
+        while (found.isEmpty && keepGoing) {
           val candidate = ancestor / rel
           if (os.isFile(candidate)) found = Some(candidate)
-          else if (ancestor == os.root) { found = None; ancestor = os.root }
+          else if (ancestor == os.root) keepGoing = false
           else ancestor = ancestor / os.up
         }
         found.foreach { src =>
@@ -294,7 +295,7 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
       case Some(text) =>
         val (occs, locals) =
           if (semanticdbBySource.contains(path)) {
-            val useSemanticdb = !dirty.contains(path) && textMatchesDisk(path, text)
+            val useSemanticdb = !dirty.contains(path) && textMatchesDisk(path, text) && semanticdbIsFresh(path, semanticdbBySource(path))
             if (useSemanticdb) {
               // parseOccurrences returns (occs, complete). Under Scala 3 -Ybest-effort the
               // semanticdb emits short/unresolved ref symbols (e.g. `utils.` not `_empty_/utils.`);
@@ -336,6 +337,14 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
 
   private def textMatchesDisk(path: os.Path, text: String): Boolean = {
     try os.read(path) == text catch { case _ => false }
+  }
+
+  private def semanticdbIsFresh(sourcePath: os.Path, semanticdbPath: os.Path): Boolean = {
+    try {
+      val srcMtime = os.mtime(sourcePath)
+      val semMtime = os.mtime(semanticdbPath)
+      semMtime >= srcMtime
+    } catch { case _: Exception => false }
   }
 
   // ── range helpers ────────────────────────────────────────────

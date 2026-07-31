@@ -32,7 +32,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       resolveFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
-        logger.warn(s"Failed to resolve references in ${name}: ${e.getMessage}")
+        logger.warn(s"Failed to resolve references in ${path}: ${e.getMessage}")
         ResolvedFile(Vector.empty, Vector.empty)
     }
 

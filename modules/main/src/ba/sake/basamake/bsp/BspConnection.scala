@@ -227,14 +227,23 @@ object BspConnection {
 
   private[bsp] def extractTargetSourceDirs(sources: SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
     def ensureTrailingSlash(uri: String): String = if (uri.endsWith("/")) uri else s"$uri/"
+    def parentDirUri(uri: String): String = {
+      val noTrail = if (uri.endsWith("/")) uri.stripSuffix("/") else uri
+      val idx = noTrail.lastIndexOf('/')
+      if (idx > 0) ensureTrailingSlash(noTrail.substring(0, idx))
+      else ensureTrailingSlash(noTrail)
+    }
     sources.getItems.asScala.toList.map { item =>
-      val roots = Option(item.getSources).map(_.asScala.toList).getOrElse(Nil)
+      val allDirs = Option(item.getSources).map(_.asScala.toList).getOrElse(Nil)
         .filterNot(_.getGenerated)
-        .collect {
+        .map {
           case si if si.getKind == SourceItemKind.DIRECTORY => ensureTrailingSlash(si.getUri)
-          case si if si.getKind == SourceItemKind.FILE      => si.getUri
+          case si if si.getKind == SourceItemKind.FILE      => parentDirUri(si.getUri)
         }
-      item.getTarget -> roots
+        .distinct
+      // Keep only top-level dirs (drop subdirs of other dirs in the list)
+      val topLevel = allDirs.filterNot(d => allDirs.exists(other => other != d && d.startsWith(other)))
+      item.getTarget -> topLevel
     }.toMap
   }
 

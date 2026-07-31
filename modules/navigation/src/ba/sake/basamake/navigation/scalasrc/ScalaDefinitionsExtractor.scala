@@ -20,7 +20,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       extractFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
-        logger.error(s"Error while parsing Scala source '${name}': ${e.getMessage}")
+        logger.error(s"Failed to parse Scala source '${path}': ${e.getMessage}")
     }
 
   /** Test-friendly entry point: filename + source string. */
@@ -31,7 +31,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       case Right(src) =>
         extractInternal(fileName, src)
       case Left(err) =>
-        logger.error(s"Failed to parse Scala source '${fileName}': ${err}")
+        logger.error(s"Failed to parse Scala source '${path}': ${err}")
     }
   }
 

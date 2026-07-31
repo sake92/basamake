@@ -27,7 +27,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       resolveFromContent(name, content, path)
     } catch {
       case NonFatal(e) =>
-        logger.warn(s"Failed to resolve references in ${name}: ${e.getMessage}")
+        logger.warn(s"Failed to resolve references in ${path}: ${e.getMessage}")
         ResolvedFile.empty
     }
 
@@ -39,7 +39,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case Right(src) => 
         resolveInternal(fileName, src)
       case Left(err) => 
-        logger.error(s"Failed to parse Scala source '${fileName}': ${err}")
+        logger.error(s"Failed to parse Scala source '${path}': ${err}")
         ResolvedFile.empty
     }
   }

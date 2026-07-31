@@ -712,4 +712,51 @@ class WorkspaceIndexTest extends FunSuite {
       assertEquals(locs.head.path.last, "utils.scala")
     } finally os.remove.all(root)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // P2: Source-only references test
+  // ═══════════════════════════════════════════════════════════════
+
+  test("source-only: references of utils.getMsg() finds def + call across open files") {
+    val root = TestFixture.copy("sbt", "source-only-refs")
+    try {
+      os.remove.all(root / "target")
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val mainText = os.read(mainFile)
+      val utilsText = os.read(utilsFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(utilsFile, utilsText)
+      // Cursor on def site of getMsg in utils.scala
+      val (l, c) = TestPositions.at(utilsText, """def (?<p>getMsg)""")
+      val refs = idx.references(utilsFile, l, c, includeDeclaration = true)
+      assert(refs.exists(_.path == mainFile),
+        s"expected ref in Main.scala, got ${refs.map(_.path.last)}")
+      assert(refs.exists(_.path == utilsFile),
+        s"expected def site in utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Stale semanticdb fallback test
+  // ═══════════════════════════════════════════════════════════════
+
+  test("stale-semanticdb: goto getMsg after source edit falls back to source parsing") {
+    val root = TestFixture.copy("sbt", "stale-sem-fallback")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val original = os.read(mainFile)
+      // Edit source AFTER semanticdb was generated (mtime check will detect staleness)
+      os.write.over(mainFile, "// edited after compile\n" + original)
+      Thread.sleep(10) // ensure mtime difference is visible on all filesystems
+      val (idx, _) = freshIndexAt(root)
+      val mainText = os.read(mainFile)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """utils\.(?<p>getMsg)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"stale semanticdb should fall back to source parsing, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
 }
