@@ -11,11 +11,16 @@ local const navigationModules =
         "org.scalameta::parsers:4.17.2"
         "com.github.javaparser:javaparser-core:3.28.2"
         "com.lihaoyi::os-lib:0.11.9-M8"
+        "org.lmdbjava:lmdbjava:0.9.1"
       }
     }
     testTemplate = (template.asTest()) {
       deps {
         "org.scalameta::munit::1.0.4"
+      }
+      jvmOptions {
+        "--add-opens=java.base/java.nio=ALL-UNNAMED"
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
       }
       junitXmlReport {
         enabled = true
