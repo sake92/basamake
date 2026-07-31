@@ -31,9 +31,10 @@ object BspHandshake extends StrictLogging {
   ): HandshakeResult = {
     val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
     pb.directory(bspFile.workingDir.toIO)
-    val logDir = bspFile.workingDir / ".basamake" / "logs"
+    val dirName = BspConnectionSpec.dirName(bspFile)
+    val logDir = bspFile.workspaceRoot / ".basamake" / "bsp" / dirName
     os.makeDir.all(logDir)
-    pb.redirectError(java.lang.ProcessBuilder.Redirect.appendTo((logDir / s"bsp-${bspFile.content.name}.log").toIO))
+    pb.redirectError(java.lang.ProcessBuilder.Redirect.appendTo((logDir / "stderr.log").toIO))
 
     val process = pb.start()
     logger.info(s"BSP process spawned for ${bspFile.path} (pid ${process.pid()})")

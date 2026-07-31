@@ -10,7 +10,8 @@ class BspHandshakeTest extends FunSuite {
     val spec = BspConnectionSpec(
       content = BspDiscoveryFile("fake", List("true")),
       path = os.pwd,
-      compileTimeoutSec = 5
+      compileTimeoutSec = 5,
+      workspaceRoot = os.pwd
     )
     var thrown: Option[Exception] = None
     try

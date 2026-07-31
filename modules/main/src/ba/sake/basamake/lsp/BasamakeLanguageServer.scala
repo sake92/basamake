@@ -116,8 +116,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
-    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    val uri = params.getTextDocument.getUri
+    val path = os.Path(URI.create(uri))
     workspaceIndex.onDidClose(path)
+    bspManager.clearDiagnostics(uri)
   }
 
   override def definition(params: DefinitionParams)

@@ -11,12 +11,12 @@ object BspDiscovery extends StrictLogging {
     val jsonFiles = findBspJsonFiles(workspaceRoot)
     if jsonFiles.isEmpty then
       logger.warn(s"No .bsp directories found under $workspaceRoot")
-    jsonFiles.toList.sortBy(_.toString).flatMap(parseBspSpec)
+    jsonFiles.toList.sortBy(_.toString).flatMap(parseBspSpec(_, workspaceRoot))
   }
 
   /** Parse a single .bsp JSON file. Public for the file watcher. */
-  def parseSingleSpec(jsonPath: os.Path): Option[BspConnectionSpec] =
-    parseBspSpec(jsonPath)
+  def parseSingleSpec(jsonPath: os.Path, workspaceRoot: os.Path): Option[BspConnectionSpec] =
+    parseBspSpec(jsonPath, workspaceRoot)
 
   private def findBspJsonFiles(workspaceRoot: os.Path): Set[os.Path] =
     findBspDirs(workspaceRoot).flatMap { bspDir =>
@@ -30,7 +30,7 @@ object BspDiscovery extends StrictLogging {
       .filter(p => os.isDir(p) && p.last == ".bsp")
       .toList
 
-  private def parseBspSpec(jsonPath: os.Path): Option[BspConnectionSpec] =
+  private def parseBspSpec(jsonPath: os.Path, workspaceRoot: os.Path): Option[BspConnectionSpec] =
     try
       val raw = os.read(jsonPath)
       val content = raw.parseJson[BspDiscoveryFile]
@@ -41,7 +41,8 @@ object BspDiscovery extends StrictLogging {
         logger.debug(s"Discovered ${content.name} from $jsonPath: ${content.argv.mkString(", ")}")
         Some(BspConnectionSpec(
           content = content,
-          path = jsonPath
+          path = jsonPath,
+          workspaceRoot = workspaceRoot
         ))
     catch
       case e: Exception =>

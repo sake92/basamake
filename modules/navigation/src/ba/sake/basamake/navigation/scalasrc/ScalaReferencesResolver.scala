@@ -864,6 +864,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
             )
             candidates.find(st => symbolTable.get(st).isDefined)
           }
+          .orElse(wrapperScan(topLevelPkgOwner, n, isType = false))
           .orElse(Some(SymbolUtils.packageOwner(List(n)))) // fallback: treat as package path
 
       case Term.Select(qual, name) =>

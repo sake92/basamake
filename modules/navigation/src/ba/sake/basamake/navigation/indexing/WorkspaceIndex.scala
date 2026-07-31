@@ -133,6 +133,8 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
     openOccurrences.remove(path)
     openLocalDefinitions.remove(path)
     dirty.remove(path)
+    semanticdbBySource.remove(path)
+    symbolTable.removeByPath(path)
   }
 
   // ── invalidate (BSP compile callback) ────────────────────────

@@ -695,4 +695,21 @@ class WorkspaceIndexTest extends FunSuite {
       assert(refs.isEmpty, s"expected no refs on empty cursor, got ${refs.size}")
     } finally os.remove.all(root)
   }
+
+  test("source-only: goto utils.getMsg() cross-file without semanticdb") {
+    val root = TestFixture.copy("sbt", "source-only-sbt-getmsg")
+    try {
+      os.remove.all(root / "target")
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(utilsFile, os.read(utilsFile))
+      val (l, c) = TestPositions.at(mainText, """utils\.(?<p>getMsg)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected getMsg to resolve via source-only, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
 }

@@ -132,13 +132,8 @@ class BspConnection private (
     * (source dirs + semanticdb dirs) for fast WorkspaceIndex startup. */
   private def writeTargetData(): Unit = {
     try {
-      val relPath = try spec.path.relativeTo(spec.workingDir).toString
-        catch { case _: Exception => spec.path.toString }
-      val hash = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(relPath.getBytes("UTF-8"))
-        .take(4).map(b => f"$b%02x").mkString
-      val dirName = s"${spec.content.name}_$hash"
-      val dataDir = spec.workingDir / ".basamake" / "bsp" / dirName
+      val dirName = BspConnectionSpec.dirName(spec)
+      val dataDir = spec.workspaceRoot / ".basamake" / "bsp" / dirName
       os.makeDir.all(dataDir)
       val targetInfos = (sourceDirsByTarget.keySet ++ semanticdbDirsByTarget.keySet).toList
         .map { tid =>
@@ -148,7 +143,9 @@ class BspConnection private (
             semanticdbDirs = semanticdbDirsByTarget.getOrElse(tid, Nil)
           )
         }
-      val data = BspTargetData(bspFile = relPath, targets = targetInfos)
+      val bspFileRel = try spec.path.relativeTo(spec.workspaceRoot).toString
+        catch { case _: Exception => spec.path.toString }
+      val data = BspTargetData(bspFile = bspFileRel, targets = targetInfos)
       os.write.over(dataDir / "data.json", ba.sake.tupson.toJson(data))
       logger.debug(s"Wrote BSP target data to $dataDir")
     } catch {

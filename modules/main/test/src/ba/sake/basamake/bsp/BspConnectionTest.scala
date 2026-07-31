@@ -35,7 +35,7 @@ class BspConnectionTest extends FunSuite {
   private def emptyScalacOptions = new ScalacOptionsResult(java.util.Collections.emptyList())
 
   private def fakeSpec: BspConnectionSpec =
-    BspConnectionSpec(content = BspDiscoveryFile("fake", List("true")), path = os.pwd, compileTimeoutSec = 2)
+    BspConnectionSpec(content = BspDiscoveryFile("fake", List("true")), path = os.pwd, compileTimeoutSec = 2, workspaceRoot = os.pwd)
 
   test("liveness check failure → killTree + one respawn + MaxRespawnPerCall=1") {
     var spawnCount = new AtomicInteger(0)

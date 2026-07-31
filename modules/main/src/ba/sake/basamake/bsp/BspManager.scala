@@ -67,6 +67,15 @@ class BspManager private (
     }
   }
 
+  /** Clear diagnostics for a specific URI (e.g., when a file is closed/renamed). */
+  def clearDiagnostics(uri: String): Unit = {
+    val removed = synchronized { diagnostics.remove(uri) }
+    if (removed.isDefined && client != null) {
+      client.publishDiagnostics(
+        new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList()))
+    }
+  }
+
   // ---- BspEventSink: diagnostics ----
   override def onDiagnostics(params: PublishDiagnosticsParams): Unit = {
     val uri = params.getTextDocument.getUri
@@ -162,10 +171,10 @@ class BspManager private (
     for (p <- newFiles) {
       logger.info(s"New BSP config detected: $p")
       knownBspFiles += p
-      BspDiscovery.parseSingleSpec(p).foreach(spec => applyOverrides(spec).foreach(attachConnection))
+      BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach(spec => applyOverrides(spec).foreach(attachConnection))
     }
     for (p <- modifiedFiles) {
-      BspDiscovery.parseSingleSpec(p).foreach { spec =>
+      BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach { spec =>
         val connId = BspConnectionId(spec.path.toString)
         Option(connections.get(connId)) match {
           case Some(existingConn) =>
@@ -202,10 +211,11 @@ class BspManager private (
   }
 
   private def attachConnection(spec: BspConnectionSpec): Unit = {
-    val id = BspConnectionId(spec.path.toString)
-    val conn = BspConnection(spec, this)
+    val specWithRoot = spec.copy(workspaceRoot = workspaceRoot)
+    val id = BspConnectionId(specWithRoot.path.toString)
+    val conn = BspConnection(specWithRoot, this)
     connections.put(id, conn)
-    val bspDir = spec.path.toNIO.getParent
+    val bspDir = specWithRoot.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
   }
 
