@@ -16,9 +16,15 @@ class BasamakeBuildClient(eventSink: BspEventSink) extends BuildClient, StrictLo
     eventSink.onDiagnostics(params)
   }
 
-  // TODO show messages, progress etc
-  override def onBuildShowMessage(params: ShowMessageParams): Unit =
+  // Show messages forwarded to LSP client via event sink
+  override def onBuildShowMessage(params: ShowMessageParams): Unit = {
     logger.debug(s"BSP SHOW MSG: ${params.getMessage}")
+    val lspParams = new org.eclipse.lsp4j.MessageParams(
+      convertMessageType(params.getType),
+      Option(params.getMessage).getOrElse("")
+    )
+    eventSink.onShowMessage(lspParams)
+  }
 
   override def onBuildLogMessage(params: LogMessageParams): Unit =
     logger.debug(s"BSP LOG: ${params.getMessage}")
@@ -47,4 +53,7 @@ class BasamakeBuildClient(eventSink: BspEventSink) extends BuildClient, StrictLo
 
   override def onRunPrintStderr(x$0: PrintParams): Unit = ()
   override def onRunPrintStdout(x$0: PrintParams): Unit = ()
+
+  private def convertMessageType(bspType: ch.epfl.scala.bsp4j.MessageType): org.eclipse.lsp4j.MessageType =
+    org.eclipse.lsp4j.MessageType.forValue(bspType.getValue)
 }

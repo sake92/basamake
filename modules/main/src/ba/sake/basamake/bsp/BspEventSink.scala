@@ -7,10 +7,11 @@ import ch.epfl.scala.bsp4j.{DidChangeBuildTarget, PublishDiagnosticsParams}
 trait BspEventSink {
   def onDiagnostics(params: PublishDiagnosticsParams): Unit
   def onTargetChanged(params: DidChangeBuildTarget): Unit
+  def onShowMessage(params: org.eclipse.lsp4j.MessageParams): Unit = () // default no-op
 }
 
 /** After-compile hook. Implemented by BspManager — fired by BspConnection.compile under
-  * the connection's lock, forwards sourceDirs to WorkspaceIndex.invalidate. */
+  * the connection's lock, forwards source/semanticdb dirs to WorkspaceIndex.invalidate. */
 trait BspAfterCompileSink {
-  def onAfterCompile(sourceDirs: List[String]): Unit
+  def onAfterCompile(sourceDirs: List[String], semanticdbDirs: List[String]): Unit
 }

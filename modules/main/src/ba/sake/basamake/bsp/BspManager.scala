@@ -56,7 +56,7 @@ class BspManager private (
     connOpt match {
       case Some(conn) =>
         try {
-          if (compile) conn.compile(uri)
+          if (compile || !conn.compiledOnce) conn.compile(uri)
           else conn.poke()
         } catch {
           case _: BspUnavailable => ()
@@ -87,14 +87,17 @@ class BspManager private (
   }
 
   // ---- BspAfterCompileSink: forward to WorkspaceIndex.invalidate ----
-  override def onAfterCompile(sourceDirs: List[String]): Unit =
+  override def onAfterCompile(sourceDirs: List[String], semanticdbDirs: List[String]): Unit =
     if (workspaceIndex != null) {
-      try workspaceIndex.invalidate(sourceDirs)
+      try workspaceIndex.invalidate(sourceDirs, semanticdbDirs)
       catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
     }
 
   override def onTargetChanged(params: DidChangeBuildTarget): Unit =
     logger.debug(s"buildTargetDidChange: ${params.getChanges.size()} events — no-op in v1")
+
+  override def onShowMessage(params: org.eclipse.lsp4j.MessageParams): Unit =
+    if (client != null) client.showMessage(params)
 
   // ---- Lifecycle ----
   def shutdown(): Unit = {
@@ -165,10 +168,16 @@ class BspManager private (
       BspDiscovery.parseSingleSpec(p).foreach { spec =>
         val connId = BspConnectionId(spec.path.toString)
         Option(connections.get(connId)) match {
-          case Some(_) =>
-            logger.info(s"BSP config modified: $p — detach + re-attach")
-            detachConnection(connId)
-            attachConnection(spec)
+          case Some(existingConn) =>
+            val sameContent = existingConn.spec.content.name == spec.content.name
+              && existingConn.spec.content.argv == spec.content.argv
+            if (!sameContent) {
+              logger.info(s"BSP config modified: $p — content changed, detach + re-attach")
+              detachConnection(connId)
+              attachConnection(spec)
+            } else {
+              logger.debug(s"BSP config modified: $p — content unchanged, skip re-attach")
+            }
           case None => attachConnection(spec)
         }
       }
@@ -280,8 +289,9 @@ object BspManager {
   private[bsp] def forTesting(root: os.Path, index: WorkspaceIndex = null): BspManager =
     new BspManager(root, index)
 
-  private[bsp] def forTestingWithCapturedDiagnostics(): (BspManager, java.util.List[LspPublishDiagnosticsParams]) = {
-    val root = os.pwd
+  private[bsp] def forTestingWithCapturedDiagnostics(
+      root: os.Path = os.temp.dir(prefix = "bsp-diag-test-")
+  ): (BspManager, java.util.List[LspPublishDiagnosticsParams]) = {
     val captured = new CopyOnWriteArrayList[LspPublishDiagnosticsParams]()
     val fakeClient = new LanguageClient {
       override def publishDiagnostics(p: LspPublishDiagnosticsParams): Unit = captured.add(p)

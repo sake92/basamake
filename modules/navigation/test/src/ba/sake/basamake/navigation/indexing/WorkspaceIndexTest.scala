@@ -5,114 +5,6 @@ import ba.sake.basamake.navigation.*
 
 class WorkspaceIndexTest extends FunSuite {
 
-  val sbtDir = os.pwd / "modules" / "main" / "test" / "resources" / "examples" / "sbt"
-  val mainFile = sbtDir / "src" / "main" / "scala" / "Main.scala"
-  val utilsFile = sbtDir / "src" / "main" / "scala" / "utils.scala"
-
-  // Main.scala (0-indexed lines):
-  //  0: import upickle.default._
-  //  1: (empty)
-  //  2: @main def hello(): Unit =
-  //  3:   val c = Array(1, 2, 3)
-  //  4:   val d = c
-  //  5:   println("Hello world!")
-  //  6:   println(msg)          // line 6, char 8-11 = 'msg'
-  //  7:   write(Seq(1, 2, 3))
-  //  8: (empty)
-  //  9: def msg =               // line 9, char 4-7 = 'msg'
-  // 10:   utils.getMsg()        // line 10, char 2-7 = 'utils', char 8-14 = 'getMsg'
-
-  private def freshIndex(): (WorkspaceIndex, SymbolTable) = {
-    val st = new SymbolTable
-    val idx = new WorkspaceIndex(st)
-    idx.initialize(sbtDir)
-    (idx, st)
-  }
-
-  test("initialize populates symbolTable from source-AST fallback") {
-    val (idx, st) = freshIndex()
-    val utilsSym = st.get("_empty_/utils.")
-    assert(utilsSym.isDefined, "Expected _empty_/utils. in symbol table")
-    assert(utilsSym.get.path.last == "utils.scala", s"Expected utils.scala path, got ${utilsSym.get.path.last}")
-
-    val getMsgSym = st.get("_empty_/utils.getMsg().")
-    assert(getMsgSym.isDefined, "Expected _empty_/utils.getMsg(). in symbol table")
-    assertEquals(getMsgSym.get.path, utilsFile)
-
-    // v1 note: _empty_/Main$package.msg(). is NOT resolved by the references resolver
-    // because top-level defs wrapped under $package are not reachable via the
-    // current _empty_/ fallback in lookup(). Known limitation.
-  }
-
-  test("findSymbolsAt resolves cross-file utils identifier") {
-    val (idx, _) = freshIndex()
-    idx.onDidOpen(mainFile, os.read(mainFile))
-
-    // utils.getMsg() at line 10, char 4 — the 'utils' identifier
-    val syms = idx.findSymbolsAt(mainFile, 10, 4)
-    assert(syms.exists(_ == "_empty_/utils."),
-      s"Expected _empty_/utils., got: ${syms}")
-  }
-
-  test("gotoDefinitions resolves cross-file utils from Main.scala") {
-    val (idx, _) = freshIndex()
-    idx.onDidOpen(mainFile, os.read(mainFile))
-
-    // utils.getMsg() at line 10, char 4 — the 'utils' identifier
-    val locs = idx.gotoDefinitions(mainFile, 10, 4)
-    assert(locs.nonEmpty, s"Expected locations for utils, got $locs")
-    assertEquals(locs.head.path.last, "utils.scala")
-  }
-
-  test("gotoDefinitions resolves cross-file getMsg member") {
-    val (idx, _) = freshIndex()
-    idx.onDidOpen(mainFile, os.read(mainFile))
-
-    // utils.getMsg() at line 10, char 10 — the 'getMsg' identifier
-    val locs = idx.gotoDefinitions(mainFile, 10, 10)
-    assert(locs.nonEmpty, s"Expected locations for getMsg, got $locs")
-    assertEquals(locs.head.path.last, "utils.scala")
-  }
-
-  test("references finds utils def + usage across open files") {
-    val (idx, _) = freshIndex()
-    idx.onDidOpen(mainFile, os.read(mainFile))
-    idx.onDidOpen(utilsFile, os.read(utilsFile))
-
-    // 'utils' definition at line 2, char 7 in utils.scala (0-indexed: "object utils")
-    val refs = idx.references(utilsFile, 1, 7, includeDeclaration = true)
-    assert(refs.nonEmpty, s"Expected references for utils, got $refs")
-    // Should include the usage in Main.scala at line 10 (utils.getMsg)
-    val mainRefs = refs.filter(_.path == mainFile)
-    assert(mainRefs.nonEmpty, s"Expected utils reference in Main.scala, got refs in: ${refs.map(_.path.last)}")
-  }
-
-  test("source-only fallback: WorkspaceIndex works without semanticdb") {
-    val tmpDir = os.temp.dir()
-    try {
-      os.copy(mainFile, tmpDir / "Main.scala")
-      os.copy(utilsFile, tmpDir / "utils.scala")
-      val st = new SymbolTable
-      val idx = new WorkspaceIndex(st)
-      idx.initialize(tmpDir)
-
-      val utilsSym = st.get("_empty_/utils.")
-      assert(utilsSym.isDefined, "Source-only fallback: expected _empty_/utils.")
-    } finally {
-      os.remove.all(tmpDir)
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // nopackages fixture
-  // ═══════════════════════════════════════════════════════════════
-
-  private val nopkgRoot = os.pwd / "modules" / "main" / "test" / "resources" / "examples" / "nopackages"
-  private val nopkgMain  = nopkgRoot / "Main.scala"
-  private val nopkgSib   = nopkgRoot / "Siblings.scala"
-  private val nopkgMainText  = os.read(nopkgMain)
-  private val nopkgSibText   = os.read(nopkgSib)
-
   private def freshIndexAt(root: os.Path): (WorkspaceIndex, SymbolTable) = {
     val st = new SymbolTable
     val idx = new WorkspaceIndex(st)
@@ -120,208 +12,380 @@ class WorkspaceIndexTest extends FunSuite {
     (idx, st)
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // sbt fixture (has real .semanticdb files)
+  // ═══════════════════════════════════════════════════════════════
+
+  test("initialize populates symbolTable from source-AST fallback") {
+    val root = TestFixture.copy("sbt", "sbt-init")
+    try {
+      val (idx, st) = freshIndexAt(root)
+      val utilsSym = st.get("_empty_/utils.")
+      assert(utilsSym.isDefined, "Expected _empty_/utils. in symbol table")
+      assert(utilsSym.get.path.last == "utils.scala")
+      val getMsgSym = st.get("_empty_/utils.getMsg().")
+      assert(getMsgSym.isDefined, "Expected _empty_/utils.getMsg(). in symbol table")
+      assertEquals(getMsgSym.get.path, root / "src" / "main" / "scala" / "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("findSymbolsAt resolves cross-file utils identifier") {
+    val root = TestFixture.copy("sbt", "sbt-findsym")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, os.read(mainFile))
+      val syms = idx.findSymbolsAt(mainFile, 10, 4)
+      assert(syms.exists(_ == "_empty_/utils."),
+        s"Expected _empty_/utils., got: ${syms}")
+    } finally os.remove.all(root)
+  }
+
+  test("gotoDefinitions resolves cross-file utils from Main.scala") {
+    val root = TestFixture.copy("sbt", "sbt-gotoutils")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, os.read(mainFile))
+      val locs = idx.gotoDefinitions(mainFile, 10, 4)
+      assert(locs.nonEmpty, s"Expected locations for utils, got $locs")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("gotoDefinitions resolves cross-file getMsg member") {
+    val root = TestFixture.copy("sbt", "sbt-gotogetmsg")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, os.read(mainFile))
+      val locs = idx.gotoDefinitions(mainFile, 10, 10)
+      assert(locs.nonEmpty, s"Expected locations for getMsg, got $locs")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("references finds utils def + usage across open files") {
+    val root = TestFixture.copy("sbt", "sbt-refs")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, os.read(mainFile))
+      idx.onDidOpen(utilsFile, os.read(utilsFile))
+      val refs = idx.references(utilsFile, 1, 7, includeDeclaration = true)
+      assert(refs.nonEmpty, s"Expected references for utils, got $refs")
+      val mainRefs = refs.filter(_.path == mainFile)
+      assert(mainRefs.nonEmpty, s"Expected utils reference in Main.scala, got refs in: ${refs.map(_.path.last)}")
+    } finally os.remove.all(root)
+  }
+
+  test("source-only fallback: WorkspaceIndex works without semanticdb") {
+    val root = os.pwd / "tmp" / s"source-only-${System.currentTimeMillis()}"
+    try {
+      val srcDir = root
+      os.makeDir.all(srcDir)
+      val sbtSrc = os.pwd / "modules" / "main" / "test" / "resources" / "examples" / "sbt" / "src" / "main" / "scala"
+      val mainFile = srcDir / "Main.scala"
+      val utilsFile = srcDir / "utils.scala"
+      os.copy(sbtSrc / "Main.scala", mainFile)
+      os.copy(sbtSrc / "utils.scala", utilsFile)
+      val st = new SymbolTable
+      val idx = new WorkspaceIndex(st)
+      idx.initialize(srcDir)
+      val utilsSym = st.get("_empty_/utils.")
+      assert(utilsSym.isDefined, "Source-only fallback: expected _empty_/utils.")
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // nopackages fixture
+  // ═══════════════════════════════════════════════════════════════
+
   test("nopackages: goto add() call → Siblings.scala def add") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgMain, nopkgMainText)
-    val (l, c) = TestPositions.at(nopkgMainText, """(?<p>add)\(2, 3\)""")
-    val locs = idx.gotoDefinitions(nopkgMain, l, c)
-    assert(locs.nonEmpty, s"expected add definition, got empty")
-    assertEquals(locs.head.path.last, "Siblings.scala")
-    assert(locs.head.symbol == "_empty_/Siblings$package.add().", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("nopackages", "nopkg-add")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>add)\(2, 3\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected add definition, got empty")
+      assertEquals(locs.head.path.last, "Siblings.scala")
+      assert(locs.head.symbol == "_empty_/Siblings$package.add().", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("nopackages: goto sibling val ref → Siblings.scala val siblingVal") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgMain, nopkgMainText)
-    val (l, c) = TestPositions.at(nopkgMainText, """(?<p>siblingVal)""")
-    val locs = idx.gotoDefinitions(nopkgMain, l, c)
-    assert(locs.nonEmpty, s"expected siblingVal definition, got empty")
-    assertEquals(locs.head.path.last, "Siblings.scala")
+    val root = TestFixture.copy("nopackages", "nopkg-sibval")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>siblingVal)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected siblingVal definition, got empty")
+      assertEquals(locs.head.path.last, "Siblings.scala")
+    } finally os.remove.all(root)
   }
 
   test("nopackages: goto other() call → Siblings.scala def other") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgMain, nopkgMainText)
-    val (l, c) = TestPositions.at(nopkgMainText, """(?<p>other)\(\)""")
-    val locs = idx.gotoDefinitions(nopkgMain, l, c)
-    assert(locs.nonEmpty)
-    assertEquals(locs.head.path.last, "Siblings.scala")
+    val root = TestFixture.copy("nopackages", "nopkg-other")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>other)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty)
+      assertEquals(locs.head.path.last, "Siblings.scala")
+    } finally os.remove.all(root)
   }
 
   test("nopackages: goto object member Helper.greet() → Siblings.scala Helper.greet") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgMain, nopkgMainText)
-    val (l, c) = TestPositions.at(nopkgMainText, """(?<p>greet)\(\)""")
-    val locs = idx.gotoDefinitions(nopkgMain, l, c)
-    assert(locs.nonEmpty, s"expected greet definition, got empty")
-    assertEquals(locs.head.path.last, "Siblings.scala")
-    assert(locs.head.symbol == "_empty_/Helper.greet().", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("nopackages", "nopkg-greet")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>greet)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected greet definition, got empty")
+      assertEquals(locs.head.path.last, "Siblings.scala")
+      assert(locs.head.symbol == "_empty_/Helper.greet().", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("nopackages: goto add() from its def site returns empty (no self-goto)") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgSib, nopkgSibText)
-    val (l, c) = TestPositions.at(nopkgSibText, """(?<p>add)\(a""")
-    val locs = idx.gotoDefinitions(nopkgSib, l, c)
-    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    val root = TestFixture.copy("nopackages", "nopkg-noself")
+    try {
+      val sibFile = root / "Siblings.scala"
+      val sibText = os.read(sibFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(sibFile, sibText)
+      val (l, c) = TestPositions.at(sibText, """(?<p>add)\(a""")
+      val locs = idx.gotoDefinitions(sibFile, l, c)
+      assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    } finally os.remove.all(root)
   }
 
   test("nopackages: local val ref resolves to local def inside method") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgMain, nopkgMainText)
-    val (l, c) = TestPositions.at(nopkgMainText, """println\((?<p>local)\)""")
-    val locs = idx.gotoDefinitions(nopkgMain, l, c)
-    assert(locs.nonEmpty, s"expected local definition, got empty")
-    assertEquals(locs.head.path, nopkgMain)
+    val root = TestFixture.copy("nopackages", "nopkg-local")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """println\((?<p>local)\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected local definition, got empty")
+      assertEquals(locs.head.path, mainFile)
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
   // packages fixture
   // ═══════════════════════════════════════════════════════════════
 
-  private val pkgRoot   = os.pwd / "modules" / "main" / "test" / "resources" / "examples" / "packages"
-  private val pkgMain   = pkgRoot / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
-  private val pkgModels = pkgRoot / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
-  private val pkgUtil   = pkgRoot / "src" / "main" / "scala" / "com" / "example" / "Util.scala"
-  private val pkgMainText   = os.read(pkgMain)
-  private val pkgModelsText = os.read(pkgModels)
-
   test("packages: goto greeting member of Models → Models.scala") {
-    val (idx, _) = freshIndexAt(pkgRoot)
-    idx.onDidOpen(pkgMain, pkgMainText)
-    val (l, c) = TestPositions.at(pkgMainText, """(?<p>greeting)\)""")
-    val locs = idx.gotoDefinitions(pkgMain, l, c)
-    assert(locs.nonEmpty, s"expected greeting def, got empty")
-    assertEquals(locs.head.path, pkgModels)
+    val root = TestFixture.copy("packages", "pkg-greeting")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>greeting)\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected greeting def, got empty")
+      assertEquals(locs.head.path, modelsFile)
+    } finally os.remove.all(root)
   }
 
   test("packages: goto Util.doubled member → Util.scala") {
-    val (idx, _) = freshIndexAt(pkgRoot)
-    idx.onDidOpen(pkgMain, pkgMainText)
-    val (l, c) = TestPositions.at(pkgMainText, """(?<p>doubled)\(21\)""")
-    val locs = idx.gotoDefinitions(pkgMain, l, c)
-    assert(locs.nonEmpty)
-    assertEquals(locs.head.path, pkgUtil)
+    val root = TestFixture.copy("packages", "pkg-doubled")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val utilFile = root / "src" / "main" / "scala" / "com" / "example" / "Util.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>doubled)\(21\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty)
+      assertEquals(locs.head.path, utilFile)
+    } finally os.remove.all(root)
   }
 
   test("packages: goto cross-file top-level helper() → Util.scala") {
-    val (idx, _) = freshIndexAt(pkgRoot)
-    idx.onDidOpen(pkgMain, pkgMainText)
-    val (l, c) = TestPositions.at(pkgMainText, """(?<p>helper)\(\)""")
-    val locs = idx.gotoDefinitions(pkgMain, l, c)
-    assert(locs.nonEmpty, s"expected helper def via wrapper scan, got empty")
-    assertEquals(locs.head.path, pkgUtil)
+    val root = TestFixture.copy("packages", "pkg-helper")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val utilFile = root / "src" / "main" / "scala" / "com" / "example" / "Util.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """(?<p>helper)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected helper def via wrapper scan, got empty")
+      assertEquals(locs.head.path, utilFile)
+    } finally os.remove.all(root)
   }
 
   test("packages: goto new Person type + ctor → Models.scala") {
-    val (idx, _) = freshIndexAt(pkgRoot)
-    idx.onDidOpen(pkgMain, pkgMainText)
-    val (l, c) = TestPositions.at(pkgMainText, """new (?<p>Person)\(""")
-    val locs = idx.gotoDefinitions(pkgMain, l, c)
-    assert(locs.nonEmpty, s"expected Person type/ctor ref, got empty")
-    assertEquals(locs.head.path, pkgModels)
+    val root = TestFixture.copy("packages", "pkg-person")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """new (?<p>Person)\(""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected Person type/ctor ref, got empty")
+      assertEquals(locs.head.path, modelsFile)
+    } finally os.remove.all(root)
   }
 
   test("packages: goto on `case Red` def site returns empty (no self-goto)") {
-    val (idx, _) = freshIndexAt(pkgRoot)
-    idx.onDidOpen(pkgModels, pkgModelsText)
-    val (l, c) = TestPositions.at(pkgModelsText, """case (?<p>Red),""")
-    val locs = idx.gotoDefinitions(pkgModels, l, c)
-    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    val root = TestFixture.copy("packages", "pkg-noself")
+    try {
+      val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
+      val modelsText = os.read(modelsFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(modelsFile, modelsText)
+      val (l, c) = TestPositions.at(modelsText, """case (?<p>Red),""")
+      val locs = idx.gotoDefinitions(modelsFile, l, c)
+      assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    } finally os.remove.all(root)
   }
 
   test("packages: references finds Models.greeting declarations + open-file usages") {
-    val (idx, _) = freshIndexAt(pkgRoot)
-    idx.onDidOpen(pkgMain, pkgMainText)
-    idx.onDidOpen(pkgModels, pkgModelsText)
-    val (l, c) = TestPositions.at(pkgModelsText, """val (?<p>greeting):""")
-    val refs = idx.references(pkgModels, l, c, includeDeclaration = true)
-    assert(refs.exists(_.path == pkgMain), s"expected usage in Main.scala, got ${refs.map(_.path.last)}")
+    val root = TestFixture.copy("packages", "pkg-refs")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
+      val mainText = os.read(mainFile)
+      val modelsText = os.read(modelsFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(modelsFile, modelsText)
+      val (l, c) = TestPositions.at(modelsText, """val (?<p>greeting):""")
+      val refs = idx.references(modelsFile, l, c, includeDeclaration = true)
+      assert(refs.exists(_.path == mainFile), s"expected usage in Main.scala, got ${refs.map(_.path.last)}")
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
   // nested fixture
   // ═══════════════════════════════════════════════════════════════
 
-  private val nestedRoot = os.pwd / "modules" / "main" / "test" / "resources" / "examples" / "nested"
-  private val nestedOuter = nestedRoot / "src" / "main" / "scala" / "com" / "example" / "outer" / "Outer.scala"
-  private val nestedPkg   = nestedRoot / "src" / "main" / "scala" / "com" / "example" / "pkg.scala"
-  private val nestedPkgText = os.read(nestedPkg)
-  private val nestedOuterText = os.read(nestedOuter)
-
   test("nested: goto Outer type/self param ref within class → same file") {
-    val (idx, _) = freshIndexAt(nestedRoot)
-    idx.onDidOpen(nestedOuter, nestedOuterText)
-    val (l, c) = TestPositions.at(nestedOuterText, """self: (?<p>Outer)\)""")
-    val locs = idx.gotoDefinitions(nestedOuter, l, c)
-    assert(locs.nonEmpty, s"expected Outer type ref, got empty")
-    assertEquals(locs.head.path, nestedOuter)
+    val root = TestFixture.copy("nested", "nested-outer")
+    try {
+      val outerFile = root / "src" / "main" / "scala" / "com" / "example" / "outer" / "Outer.scala"
+      val outerText = os.read(outerFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(outerFile, outerText)
+      val (l, c) = TestPositions.at(outerText, """self: (?<p>Outer)\)""")
+      val locs = idx.gotoDefinitions(outerFile, l, c)
+      assert(locs.nonEmpty, s"expected Outer type ref, got empty")
+      assertEquals(locs.head.path, outerFile)
+    } finally os.remove.all(root)
   }
 
   test("nested: goto on `def m()` def site returns empty (no self-goto)") {
-    val (idx, _) = freshIndexAt(nestedRoot)
-    idx.onDidOpen(nestedOuter, nestedOuterText)
-    val (l, c) = TestPositions.at(nestedOuterText, """def (?<p>m)\(\): Int""")
-    val locs = idx.gotoDefinitions(nestedOuter, l, c)
-    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    val root = TestFixture.copy("nested", "nested-noself")
+    try {
+      val outerFile = root / "src" / "main" / "scala" / "com" / "example" / "outer" / "Outer.scala"
+      val outerText = os.read(outerFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(outerFile, outerText)
+      val (l, c) = TestPositions.at(outerText, """def (?<p>m)\(\): Int""")
+      val locs = idx.gotoDefinitions(outerFile, l, c)
+      assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    } finally os.remove.all(root)
   }
 
   test("nested: goto package-object member answer → pkg.scala") {
-    val (idx, _) = freshIndexAt(nestedRoot)
-    idx.onDidOpen(nestedPkg, nestedPkgText)
-    val (l, c) = TestPositions.at(nestedPkgText, """println\((?<p>answer)\)""")
-    // v1 known limitation: package-object members not in scope walk for siblings
-    // The symbol is in SymbolTable under com/example/models/package.answer. but
-    // the resolver doesn't currently resolve it via wrapperScan (which uses $package pattern).
-    val locs = idx.gotoDefinitions(nestedPkg, l, c)
-    // Accept empty for now — document the limitation
-    if (locs.nonEmpty) {
-      assertEquals(locs.head.path, nestedPkg)
-    }
+    val root = TestFixture.copy("nested", "nested-pkgobj")
+    try {
+      val pkgFile = root / "src" / "main" / "scala" / "com" / "example" / "pkg.scala"
+      val pkgText = os.read(pkgFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(pkgFile, pkgText)
+      val (l, c) = TestPositions.at(pkgText, """println\((?<p>answer)\)""")
+      val locs = idx.gotoDefinitions(pkgFile, l, c)
+      if (locs.nonEmpty) {
+        assertEquals(locs.head.path, pkgFile)
+      }
+    } finally os.remove.all(root)
   }
 
   test("nested: goto on `def hello()` def site returns empty (no self-goto)") {
-    val (idx, _) = freshIndexAt(nestedRoot)
-    idx.onDidOpen(nestedPkg, nestedPkgText)
-    val (l, c) = TestPositions.at(nestedPkgText, """(?<p>hello)\(\)""")
-    val locs = idx.gotoDefinitions(nestedPkg, l, c)
-    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    val root = TestFixture.copy("nested", "nested-hello")
+    try {
+      val pkgFile = root / "src" / "main" / "scala" / "com" / "example" / "pkg.scala"
+      val pkgText = os.read(pkgFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(pkgFile, pkgText)
+      val (l, c) = TestPositions.at(pkgText, """(?<p>hello)\(\)""")
+      val locs = idx.gotoDefinitions(pkgFile, l, c)
+      assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
   // crosslang fixture
   // ═══════════════════════════════════════════════════════════════
 
-  private val xlangRoot    = os.pwd / "modules" / "main" / "test" / "resources" / "examples" / "crosslang"
-  private val xlangUse      = xlangRoot / "src" / "main" / "scala" / "com" / "lang" / "Use.scala"
-  private val xlangGreeter  = xlangRoot / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
-  private val xlangUseText = os.read(xlangUse)
-
   test("crosslang: goto imported Java Greeter type → Greeter.java") {
-    val (idx, _) = freshIndexAt(xlangRoot)
-    idx.onDidOpen(xlangUse, xlangUseText)
-    val (l, c) = TestPositions.at(xlangUseText, """import com.lang.(?<p>Greeter)""")
-    val locs = idx.gotoDefinitions(xlangUse, l, c)
-    assert(locs.nonEmpty, s"expected Java Greeter type, got empty")
-    assertEquals(locs.head.path, xlangGreeter)
+    val root = TestFixture.copy("crosslang", "xlang-greeter")
+    try {
+      val useFile = root / "src" / "main" / "scala" / "com" / "lang" / "Use.scala"
+      val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
+      val useText = os.read(useFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(useFile, useText)
+      val (l, c) = TestPositions.at(useText, """import com.lang.(?<p>Greeter)""")
+      val locs = idx.gotoDefinitions(useFile, l, c)
+      assert(locs.nonEmpty, s"expected Java Greeter type, got empty")
+      assertEquals(locs.head.path, greeterFile)
+    } finally os.remove.all(root)
   }
 
   test("crosslang: goto static Greeter.hello() → Greeter.java") {
-    val (idx, _) = freshIndexAt(xlangRoot)
-    idx.onDidOpen(xlangUse, xlangUseText)
-    val (l, c) = TestPositions.at(xlangUseText, """Greeter.(?<p>hello)\(\)""")
-    val locs = idx.gotoDefinitions(xlangUse, l, c)
-    assert(locs.nonEmpty, s"expected Greeter.hello method, got empty")
-    assertEquals(locs.head.path, xlangGreeter)
+    val root = TestFixture.copy("crosslang", "xlang-hello")
+    try {
+      val useFile = root / "src" / "main" / "scala" / "com" / "lang" / "Use.scala"
+      val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
+      val useText = os.read(useFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(useFile, useText)
+      val (l, c) = TestPositions.at(useText, """Greeter.(?<p>hello)\(\)""")
+      val locs = idx.gotoDefinitions(useFile, l, c)
+      assert(locs.nonEmpty, s"expected Greeter.hello method, got empty")
+      assertEquals(locs.head.path, greeterFile)
+    } finally os.remove.all(root)
   }
 
   test("crosslang: goto new Greeter() instance ctor → Greeter.java") {
-    val (idx, _) = freshIndexAt(xlangRoot)
-    idx.onDidOpen(xlangUse, xlangUseText)
-    val (l, c) = TestPositions.at(xlangUseText, """new (?<p>Greeter)\(\)""")
-    val locs = idx.gotoDefinitions(xlangUse, l, c)
-    assert(locs.nonEmpty)
-    assertEquals(locs.head.path, xlangGreeter)
+    val root = TestFixture.copy("crosslang", "xlang-ctor")
+    try {
+      val useFile = root / "src" / "main" / "scala" / "com" / "lang" / "Use.scala"
+      val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
+      val useText = os.read(useFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(useFile, useText)
+      val (l, c) = TestPositions.at(useText, """new (?<p>Greeter)\(\)""")
+      val locs = idx.gotoDefinitions(useFile, l, c)
+      assert(locs.nonEmpty)
+      assertEquals(locs.head.path, greeterFile)
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -329,107 +393,161 @@ class WorkspaceIndexTest extends FunSuite {
   // ═══════════════════════════════════════════════════════════════
 
   test("known-limitation: cursor on a non-ref, non-def token returns empty (v1)") {
-    val (idx, _) = freshIndexAt(nopkgRoot)
-    idx.onDidOpen(nopkgSib, nopkgSibText)
-    // Siblings.scala line 3: `object Helper:` — cursor on `:` colon
-    val (l, c) = TestPositions.at(nopkgSibText, """object Helper(?<p>:)""")
-    val res = idx.findSymbolsAt(nopkgSib, l, c)
-    assert(res.isEmpty, s"expected no symbol at ':' colon, got $res")
+    val root = TestFixture.copy("nopackages", "nopkg-colon")
+    try {
+      val sibFile = root / "Siblings.scala"
+      val sibText = os.read(sibFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(sibFile, sibText)
+      val (l, c) = TestPositions.at(sibText, """object Helper(?<p>:)""")
+      val res = idx.findSymbolsAt(sibFile, l, c)
+      assert(res.isEmpty, s"expected no symbol at ':' colon, got $res")
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // scalacli fixture (examples/hello/scalacli/)
+  // scalacli fixture
   // ═══════════════════════════════════════════════════════════════
 
-  private val scalacliRoot  = os.pwd / "examples" / "hello" / "scalacli"
-  private val scalacliBla   = scalacliRoot / "bla.scala"
-  private val scalacliBla2  = scalacliRoot / "bla2.scala"
-  private val scalacliDzava = scalacliRoot / "dzava.java"
-  private val scalacliBlaText  = os.read(scalacliBla)
-  private val scalacliBla2Text = os.read(scalacliBla2)
-  private val scalacliDzavaText = os.read(scalacliDzava)
-
   test("scalacli: goto named param `a` of utils.add(a=2, b=3) → utils.scala param") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliBla, scalacliBlaText)
-    // bla.scala line 5: `  println(utils.add(a = 2, b =  3))`
-    // Char position of `a` in `a = 2`
-    val (l, c) = TestPositions.at(scalacliBlaText, """utils.add\((?<p>a) =""")
-    val locs = idx.gotoDefinitions(scalacliBla, l, c)
-    assert(locs.nonEmpty, s"expected named-param `a` to resolve, got empty")
-    assertEquals(locs.head.path, scalacliBla2)
-    assert(locs.head.symbol == "_empty_/utils.add().(a)", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("scalacli", "scalacli-parama")
+    try {
+      val blaFile = root / "bla.scala"
+      val bla2File = root / "bla2.scala"
+      val blaText = os.read(blaFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(blaFile, blaText)
+      val (l, c) = TestPositions.at(blaText, """utils.add\((?<p>a) =""")
+      val locs = idx.gotoDefinitions(blaFile, l, c)
+      assert(locs.nonEmpty, s"expected named-param `a` to resolve, got empty")
+      assertEquals(locs.head.path, bla2File)
+      assert(locs.head.symbol == "_empty_/utils.add().(a)", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("scalacli: goto named param `b` of utils.add(a=2, b=3) → utils.scala param") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliBla, scalacliBlaText)
-    val (l, c) = TestPositions.at(scalacliBlaText, """(?<p>b) =  3""")
-    val locs = idx.gotoDefinitions(scalacliBla, l, c)
-    assert(locs.nonEmpty, s"expected named-param `b` to resolve, got empty")
-    assertEquals(locs.head.path, scalacliBla2)
-    assert(locs.head.symbol == "_empty_/utils.add().(b)", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("scalacli", "scalacli-paramb")
+    try {
+      val blaFile = root / "bla.scala"
+      val bla2File = root / "bla2.scala"
+      val blaText = os.read(blaFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(blaFile, blaText)
+      val (l, c) = TestPositions.at(blaText, """(?<p>b) =  3""")
+      val locs = idx.gotoDefinitions(blaFile, l, c)
+      assert(locs.nonEmpty, s"expected named-param `b` to resolve, got empty")
+      assertEquals(locs.head.path, bla2File)
+      assert(locs.head.symbol == "_empty_/utils.add().(b)", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("scalacli: goto method call on `new Bla().div(...)` → Bla.scala div") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliBla, scalacliBlaText)
-    val (l, c) = TestPositions.at(scalacliBlaText, """new Bla\(\)\.(?<p>div)\(""")
-    val locs = idx.gotoDefinitions(scalacliBla, l, c)
-    assert(locs.nonEmpty, s"expected div to resolve from new Bla().div(), got empty")
-    assertEquals(locs.head.path, scalacliBla2)
-    assert(locs.head.symbol == "_empty_/Bla#div().", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("scalacli", "scalacli-div")
+    try {
+      val blaFile = root / "bla.scala"
+      val bla2File = root / "bla2.scala"
+      val blaText = os.read(blaFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(blaFile, blaText)
+      val (l, c) = TestPositions.at(blaText, """new Bla\(\)\.(?<p>div)\(""")
+      val locs = idx.gotoDefinitions(blaFile, l, c)
+      assert(locs.nonEmpty, s"expected div to resolve from new Bla().div(), got empty")
+      assertEquals(locs.head.path, bla2File)
+      assert(locs.head.symbol == "_empty_/Bla#div().", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("scalacli: goto `new Dzava` from scala → dzava.java (cross-language type)") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliBla, scalacliBlaText)
-    val (l, c) = TestPositions.at(scalacliBlaText, """new (?<p>Dzava)""")
-    val locs = idx.gotoDefinitions(scalacliBla, l, c)
-    assert(locs.nonEmpty, s"expected Dzava type ref from scala to resolve, got empty")
-    assertEquals(locs.head.path, scalacliDzava)
-    assert(locs.head.symbol == "_empty_/Dzava#", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("scalacli", "scalacli-dzavatype")
+    try {
+      val blaFile = root / "bla.scala"
+      val dzavaFile = root / "dzava.java"
+      val blaText = os.read(blaFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(blaFile, blaText)
+      val (l, c) = TestPositions.at(blaText, """new (?<p>Dzava)""")
+      val locs = idx.gotoDefinitions(blaFile, l, c)
+      assert(locs.nonEmpty, s"expected Dzava type ref from scala to resolve, got empty")
+      assertEquals(locs.head.path, dzavaFile)
+      assert(locs.head.symbol == "_empty_/Dzava#", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("scalacli: goto `new Dzava().dzava()` from scala → dzava.java method (cross-language)") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliBla2, scalacliBla2Text)
-    val (l, c) = TestPositions.at(scalacliBla2Text, """new Dzava\(\)\.(?<p>dzava)\(\)""")
-    val locs = idx.gotoDefinitions(scalacliBla2, l, c)
-    assert(locs.nonEmpty, s"expected dzava method to resolve cross-language, got empty")
-    assertEquals(locs.head.path, scalacliDzava)
-    assert(locs.head.symbol == "_empty_/Dzava#dzava().", s"got ${locs.head.symbol}")
+    val root = TestFixture.copy("scalacli", "scalacli-dzavamethod")
+    try {
+      val bla2File = root / "bla2.scala"
+      val dzavaFile = root / "dzava.java"
+      val bla2Text = os.read(bla2File)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(bla2File, bla2Text)
+      val (l, c) = TestPositions.at(bla2Text, """new Dzava\(\)\.(?<p>dzava)\(\)""")
+      val locs = idx.gotoDefinitions(bla2File, l, c)
+      assert(locs.nonEmpty, s"expected dzava method to resolve cross-language, got empty")
+      assertEquals(locs.head.path, dzavaFile)
+      assert(locs.head.symbol == "_empty_/Dzava#dzava().", s"got ${locs.head.symbol}")
+    } finally os.remove.all(root)
   }
 
   test("scalacli: goto on `class Bla` def site returns empty (no self-goto)") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliBla2, scalacliBla2Text)
-    // bla2.scala line 6: `class Bla {`
-    val (l, c) = TestPositions.at(scalacliBla2Text, """class (?<p>Bla)""")
-    val locs = idx.gotoDefinitions(scalacliBla2, l, c)
-    assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    val root = TestFixture.copy("scalacli", "scalacli-noself")
+    try {
+      val bla2File = root / "bla2.scala"
+      val bla2Text = os.read(bla2File)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(bla2File, bla2Text)
+      val (l, c) = TestPositions.at(bla2Text, """class (?<p>Bla)""")
+      val locs = idx.gotoDefinitions(bla2File, l, c)
+      assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // REPRO: sbt project with real semanticdb files (test resources)
+  // REPRO: sbt project with real semanticdb files
   // ═══════════════════════════════════════════════════════════════
 
   test("REPRO sbt: goto utils from Main.scala uses semanticdb") {
-    val (idx, _) = freshIndexAt(sbtDir)
-    idx.onDidOpen(mainFile, os.read(mainFile))
-    val (l, c) = TestPositions.at(os.read(mainFile), """(?<p>utils)\.getMsg""")
-    val locs = idx.gotoDefinitions(mainFile, l, c)
-    assert(locs.nonEmpty, s"expected utils goto to resolve via semanticdb, got empty")
-    assertEquals(locs.head.path.last, "utils.scala")
+    val root = TestFixture.copy("sbt", "repro-sbt-utils")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, os.read(mainFile))
+      val (l, c) = TestPositions.at(os.read(mainFile), """(?<p>utils)\.getMsg""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected utils goto to resolve via semanticdb, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
   }
 
   test("REPRO sbt: goto getMsg member from Main.scala uses semanticdb") {
-    val (idx, _) = freshIndexAt(sbtDir)
-    idx.onDidOpen(mainFile, os.read(mainFile))
-    val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
-    val locs = idx.gotoDefinitions(mainFile, l, c)
-    assert(locs.nonEmpty, s"expected getMsg goto to resolve via semanticdb, got empty")
-    assertEquals(locs.head.path.last, "utils.scala")
+    val root = TestFixture.copy("sbt", "repro-sbt-getmsg")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, os.read(mainFile))
+      val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected getMsg goto to resolve via semanticdb, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("source-only: goto utils.getMsg() cross-file without semanticdb") {
+    val root = TestFixture.copy("sbt", "source-only-sbt")
+    try {
+      // Remove target/ to force source-only fallback
+      os.remove.all(root / "target")
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(utilsFile, os.read(utilsFile))
+      val (l, c) = TestPositions.at(mainText, """utils\.(?<p>getMsg)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected getMsg to resolve via source-only, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -437,18 +555,144 @@ class WorkspaceIndexTest extends FunSuite {
   // ═══════════════════════════════════════════════════════════════
 
   test("REPRO java: goto local var `a` ref in a + b") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliDzava, scalacliDzavaText)
-    val (l, c) = TestPositions.at(scalacliDzavaText, """int sum = (?<p>a) \+ b""")
-    val locs = idx.gotoDefinitions(scalacliDzava, l, c)
-    assert(locs.nonEmpty, s"expected local var `a` goto to resolve, got empty")
+    val root = TestFixture.copy("scalacli", "repro-java-a")
+    try {
+      val dzavaFile = root / "dzava.java"
+      val dzavaText = os.read(dzavaFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(dzavaFile, dzavaText)
+      val (l, c) = TestPositions.at(dzavaText, """int sum = (?<p>a) \+ b""")
+      val locs = idx.gotoDefinitions(dzavaFile, l, c)
+      assert(locs.nonEmpty, s"expected local var `a` goto to resolve, got empty")
+    } finally os.remove.all(root)
   }
 
   test("REPRO java: goto local var `b` ref in a + b") {
-    val (idx, _) = freshIndexAt(scalacliRoot)
-    idx.onDidOpen(scalacliDzava, scalacliDzavaText)
-    val (l, c) = TestPositions.at(scalacliDzavaText, """a \+ (?<p>b);""")
-    val locs = idx.gotoDefinitions(scalacliDzava, l, c)
-    assert(locs.nonEmpty, s"expected local var `b` goto to resolve, got empty")
+    val root = TestFixture.copy("scalacli", "repro-java-b")
+    try {
+      val dzavaFile = root / "dzava.java"
+      val dzavaText = os.read(dzavaFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(dzavaFile, dzavaText)
+      val (l, c) = TestPositions.at(dzavaText, """a \+ (?<p>b);""")
+      val locs = idx.gotoDefinitions(dzavaFile, l, c)
+      assert(locs.nonEmpty, s"expected local var `b` goto to resolve, got empty")
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // P2: References tests
+  // ═══════════════════════════════════════════════════════════════
+
+  test("nopackages: references of add() finds def + call sites across open files") {
+    val root = TestFixture.copy("nopackages", "refs-nopkg-add")
+    try {
+      val mainFile = root / "Main.scala"
+      val sibFile = root / "Siblings.scala"
+      val mainText = os.read(mainFile)
+      val sibText = os.read(sibFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(sibFile, sibText)
+      val (l, c) = TestPositions.at(sibText, """def (?<p>add)\(a""")
+      val refs = idx.references(sibFile, l, c, includeDeclaration = true)
+      assert(refs.exists(_.path == mainFile), s"expected add usage in Main.scala, got ${refs.map(_.path.last)}")
+      assert(refs.exists(_.path == sibFile), s"expected add def site in Siblings.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("nopackages: references of local val finds only same-file occurrences") {
+    val root = TestFixture.copy("nopackages", "refs-nopkg-local")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      val (l, c) = TestPositions.at(mainText, """val (?<p>local) = add""")
+      val refs = idx.references(mainFile, l, c, includeDeclaration = true)
+      assert(refs.nonEmpty, s"expected local refs, got empty")
+      assert(refs.forall(_.path == mainFile), s"expected only same-file refs for local")
+    } finally os.remove.all(root)
+  }
+
+  test("packages: references of Models.greeting finds usage in Main.scala") {
+    val root = TestFixture.copy("packages", "refs-pkg-greeting")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
+      val mainText = os.read(mainFile)
+      val modelsText = os.read(modelsFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(modelsFile, modelsText)
+      val (l, c) = TestPositions.at(modelsText, """val (?<p>greeting):""")
+      val refs = idx.references(modelsFile, l, c, includeDeclaration = true)
+      assert(refs.exists(_.path == mainFile), s"expected greeting usage in Main.scala, got ${refs.map(_.path.last)}")
+    } finally os.remove.all(root)
+  }
+
+  test("packages: references with includeDeclaration=false excludes def site") {
+    val root = TestFixture.copy("packages", "refs-pkg-nodecl")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "com" / "example" / "Main.scala"
+      val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
+      val mainText = os.read(mainFile)
+      val modelsText = os.read(modelsFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(modelsFile, modelsText)
+      val (l, c) = TestPositions.at(modelsText, """val (?<p>greeting):""")
+      val refsWith = idx.references(modelsFile, l, c, includeDeclaration = true)
+      val refsWithout = idx.references(modelsFile, l, c, includeDeclaration = false)
+      assert(refsWith.size >= refsWithout.size, "includeDeclaration=true should return >= results")
+      val declRefs = refsWith.filter(_.path == modelsFile)
+      assert(declRefs.nonEmpty, "includeDeclaration=true should include def site")
+    } finally os.remove.all(root)
+  }
+
+  test("crosslang: references of Java Greeter finds Scala usages") {
+    val root = TestFixture.copy("crosslang", "refs-xlang")
+    try {
+      val useFile = root / "src" / "main" / "scala" / "com" / "lang" / "Use.scala"
+      val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
+      val useText = os.read(useFile)
+      val greeterText = os.read(greeterFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(useFile, useText)
+      idx.onDidOpen(greeterFile, greeterText)
+      val (l, c) = TestPositions.at(greeterText, """class (?<p>Greeter)""")
+      val refs = idx.references(greeterFile, l, c, includeDeclaration = true)
+      assert(refs.exists(_.path == useFile), s"expected Greeter usage in Use.scala, got ${refs.map(_.path.last)}")
+    } finally os.remove.all(root)
+  }
+
+  test("scalacli: references of utils object finds definition + usage across files") {
+    val root = TestFixture.copy("scalacli", "refs-scalacli-utils")
+    try {
+      val blaFile = root / "bla.scala"
+      val bla2File = root / "bla2.scala"
+      val blaText = os.read(blaFile)
+      val bla2Text = os.read(bla2File)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(blaFile, blaText)
+      idx.onDidOpen(bla2File, bla2Text)
+      val (l, c) = TestPositions.at(bla2Text, """object (?<p>utils)""")
+      val refs = idx.references(bla2File, l, c, includeDeclaration = true)
+      assert(refs.exists(_.path == blaFile), s"expected utils usage in bla.scala, got ${refs.map(_.path.last)}")
+      assert(refs.exists(_.path == bla2File), s"expected utils def in bla2.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("references on empty cursor position returns empty") {
+    val root = TestFixture.copy("nopackages", "refs-empty")
+    try {
+      val mainFile = root / "Main.scala"
+      val mainText = os.read(mainFile)
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile, mainText)
+      // Cursor on a line that has only whitespace (line after the last content)
+      val refs = idx.references(mainFile, 999, 0, includeDeclaration = true)
+      assert(refs.isEmpty, s"expected no refs on empty cursor, got ${refs.size}")
+    } finally os.remove.all(root)
   }
 }

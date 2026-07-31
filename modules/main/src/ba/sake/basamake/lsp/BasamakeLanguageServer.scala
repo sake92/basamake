@@ -10,7 +10,8 @@ import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
 import ba.sake.basamake.navigation.indexing.WorkspaceIndex
-import ba.sake.basamake.bsp.BspManager
+import ba.sake.basamake.bsp.{BspManager, BspTargetData}
+import ba.sake.tupson.{given, *}
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
 
@@ -35,7 +36,8 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDocumentSymbolProvider(true)
 
     // Build symbol table from semanticdb files + parsed source files
-    workspaceIndex.initialize(workspacePath)
+    val semanticdbDirs = loadSemanticdbDirsFromDataJson()
+    workspaceIndex.initialize(workspacePath, semanticdbDirs)
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client)
 
@@ -57,6 +59,31 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   /** Idempotent cleanup — called by shutdown/exit and the JVM shutdown hook. */
   def cleanup(): Unit = bspManager.shutdown()
 
+  /** Read .basamake/bsp/.../data.json files and collect semanticdb dirs.
+    * Speeds up subsequent startups by indexing BSP-managed output dirs without
+    * walking the entire workspace. Returns empty list if no data.json files exist. */
+  private def loadSemanticdbDirsFromDataJson(): List[String] = {
+    val bspDir = workspacePath / ".basamake" / "bsp"
+    if (!os.isDir(bspDir)) return Nil
+    try {
+      val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
+      dataFiles.flatMap { f =>
+        try {
+          val data = os.read(f).parseJson[BspTargetData]
+          data.targets.flatMap(_.semanticdbDirs)
+        } catch {
+          case e: Exception =>
+            logger.debug(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
+            Nil
+        }
+      }.toList
+    } catch {
+      case e: Exception =>
+        logger.debug(s"Failed to load data.json: ${e.getMessage}")
+        Nil
+    }
+  }
+
   override def getWorkspaceService(): WorkspaceService = this
   override def getTextDocumentService(): TextDocumentService = this
 
@@ -70,7 +97,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidOpen(path, params.getTextDocument.getText)
     // liveness only — fire-and-forget; never block UI
-    CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
+    Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
   }
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
@@ -85,7 +112,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidSave(path, Option(params.getText))
     // liveness + compile — fire-and-forget; didSave has no return value
-    CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = true))
+    Thread.ofVirtual().start(() => bspManager.poke(uri, compile = true))
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
@@ -101,8 +128,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
       // Fire-and-forget liveness — does NOT block the nav response.
-      // TODO virtual thread..
-      CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
+      Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
@@ -113,8 +139,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
-      // TODO virtual thread
-      CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
+      Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter

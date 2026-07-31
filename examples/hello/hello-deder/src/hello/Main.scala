@@ -9,7 +9,7 @@ object Main:
   def broken(): Unit =
     // Deliberate compile error: type mismatch + undefined identifier
     val x = "this is a string"
-    val y =  x //nonexistentFunction(x) 
+    val y =  nonexistentFunction(x) 
     println(y)
 
 class Deder(args: Array[String]):

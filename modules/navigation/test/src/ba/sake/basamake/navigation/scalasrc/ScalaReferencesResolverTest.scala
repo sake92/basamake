@@ -205,7 +205,8 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = """package x; import a.b.{Foo => _, *}; val v: Bar = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "a/b/Bar#")
-    // TODO check Foo is empty
+    assert(!rf.occurrences.exists(_.symbol == "a/b/Foo#"),
+      s"Foo# should NOT appear — it was unimported (Foo => _)")
   }
 
   // ── R.16 same-file top-level sibling def (no package) ────────

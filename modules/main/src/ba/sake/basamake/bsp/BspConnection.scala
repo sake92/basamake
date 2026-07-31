@@ -28,9 +28,13 @@ class BspConnection private (
   @volatile private var buildServer: BuildServer = null
   @volatile private var alive = false
   @volatile var inverseSourcesUnsupported = false
+  /** True after the first successful compile on this connection. Reset on respawn. */
+  @volatile var compiledOnce = false
 
   /** target → source dirs (from handshake SourcesResult). Used by selectTargets. */
   @volatile private var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
+  /** target → semanticdb dirs (from handshake ScalacOptionsResult). */
+  @volatile private var semanticdbDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
 
   private val lock = new Object
   private val consecutiveFails = new AtomicInteger(0)
@@ -78,6 +82,8 @@ class BspConnection private (
         if (ok) onAfterCompile(targetIds)
       } catch {
         case e: Exception => logger.error(s"compile failed for $uri", e)
+      } finally {
+        compiledOnce = true
       }
     }
   }
@@ -92,12 +98,17 @@ class BspConnection private (
     * which forwards to WorkspaceIndex.invalidate. */
   def sourceDirs: List[String] = sourceDirsByTarget.values.flatten.toList
 
+  /** Flattened semanticdb dirs from scalacOptions — used for invalidation. */
+  def semanticdbDirs: List[String] = semanticdbDirsByTarget.values.flatten.toList
+
   private def spawnAndHandshake(): Unit = {
     try {
       val result = spawnFn()
       process = result.process
       buildServer = result.buildServer
       sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
+      semanticdbDirsByTarget = BspConnection.extractTargetSemanticdbDirs(result.scalacOptions)
+      compiledOnce = false
     } catch {
       case e: Exception =>
         consecutiveFails.incrementAndGet()
@@ -107,10 +118,41 @@ class BspConnection private (
   }
 
   private def onAfterCompile(targetIds: List[BuildTargetIdentifier]): Unit = {
-    val dirs = sourceDirs
-    if (dirs.nonEmpty) eventSink match {
-      case s: BspAfterCompileSink => s.onAfterCompile(dirs)
-      case _ => ()  // no-op if the sink does not implement the after-compile hook
+    val sDirs = sourceDirs
+    val semDirs = semanticdbDirs
+    if (sDirs.nonEmpty) eventSink match {
+      case s: BspAfterCompileSink => s.onAfterCompile(sDirs, semDirs)
+      case _ => ()
+    }
+    // Persist BSP metadata for faster startup next time
+    writeTargetData()
+  }
+
+  /** Writes .basamake/bsp/<name>_<hash>/data.json with target metadata
+    * (source dirs + semanticdb dirs) for fast WorkspaceIndex startup. */
+  private def writeTargetData(): Unit = {
+    try {
+      val relPath = try spec.path.relativeTo(spec.workingDir).toString
+        catch { case _: Exception => spec.path.toString }
+      val hash = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(relPath.getBytes("UTF-8"))
+        .take(4).map(b => f"$b%02x").mkString
+      val dirName = s"${spec.content.name}_$hash"
+      val dataDir = spec.workingDir / ".basamake" / "bsp" / dirName
+      os.makeDir.all(dataDir)
+      val targetInfos = (sourceDirsByTarget.keySet ++ semanticdbDirsByTarget.keySet).toList
+        .map { tid =>
+          BspTargetInfo(
+            id = tid.getUri,
+            sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
+            semanticdbDirs = semanticdbDirsByTarget.getOrElse(tid, Nil)
+          )
+        }
+      val data = BspTargetData(bspFile = relPath, targets = targetInfos)
+      os.write.over(dataDir / "data.json", ba.sake.tupson.toJson(data))
+      logger.debug(s"Wrote BSP target data to $dataDir")
+    } catch {
+      case e: Exception => logger.warn(s"Failed to write BSP target data: ${e.getMessage}")
     }
   }
 
@@ -196,6 +238,13 @@ object BspConnection {
           case si if si.getKind == SourceItemKind.FILE      => si.getUri
         }
       item.getTarget -> roots
+    }.toMap
+  }
+
+  private[bsp] def extractTargetSemanticdbDirs(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, List[String]] = {
+    Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
+      val paths = ScalacOptionsUtils.semanticdbTargetPaths(Option(item.getOptions).toList.flatMap(_.asScala))
+      item.getTarget -> paths.map(p => p.toNIO.toUri.toString)
     }.toMap
   }
 

@@ -46,7 +46,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── parse ────────────────────────────────────────────────────
 
-  // TODO inputstream
   private def parseSource(content: String): Either[String, Source] = {
     val input = Input.String(content)
     val scala3Result ={ given Dialect = Scala3Future; input.parse[Source] } 
@@ -347,7 +346,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val oldIsType = currentOwnerIsType
     currentOwner = traitSym
     currentOwnerIsType = true
-    // TODO if isInsideMethod -> local??
+    // NOTE: local traits inside methods are not yet emitted as local<N> — v1 limitation
 
     scopeStack.push(OwnerScope(traitSym))
     scopeStack.push(LocalScope(collection.mutable.Map(t.name.value -> traitSym)))
@@ -413,7 +412,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val oldIsType = currentOwnerIsType
     currentOwner = termSym
     currentOwnerIsType = false
-    // TODO isInsideMethod ?
+    // NOTE: local enums inside methods are not yet emitted as local<N> — v1 limitation
 
     scopeStack.push(OwnerScope(termSym))
     scopeStack.push(LocalScope(collection.mutable.Map(e.name.value -> termSym)))

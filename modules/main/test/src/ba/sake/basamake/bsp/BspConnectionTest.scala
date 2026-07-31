@@ -32,6 +32,8 @@ class MockBuildServer extends BuildServer {
 
 class BspConnectionTest extends FunSuite {
 
+  private def emptyScalacOptions = new ScalacOptionsResult(java.util.Collections.emptyList())
+
   private def fakeSpec: BspConnectionSpec =
     BspConnectionSpec(content = BspDiscoveryFile("fake", List("true")), path = os.pwd, compileTimeoutSec = 2)
 
@@ -51,7 +53,8 @@ class BspConnectionTest extends FunSuite {
           else new MockBuildServer
         HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
-          new DependencySourcesResult(java.util.Collections.emptyList()))
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
       },
       killTree = _ => { killCalled.set(true); () },
       eventSink = new BspEventSink {
@@ -102,7 +105,8 @@ class BspConnectionTest extends FunSuite {
         HandshakeResult(proc, new MockBuildServer,
           new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
-          new DependencySourcesResult(java.util.Collections.emptyList()))
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
       },
       killTree = _ => (),
       eventSink = new BspEventSink {
@@ -127,7 +131,8 @@ class BspConnectionTest extends FunSuite {
         HandshakeResult(proc, new MockBuildServer,
           new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
-          new DependencySourcesResult(java.util.Collections.emptyList()))
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
       },
       killTree = _ => (),
       eventSink = new BspEventSink {

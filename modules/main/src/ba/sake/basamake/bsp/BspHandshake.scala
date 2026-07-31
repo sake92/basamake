@@ -14,15 +14,16 @@ final case class HandshakeResult(
     buildServer: BuildServer,
     targets: WorkspaceBuildTargetsResult,
     sources: SourcesResult,
-    dependencySources: DependencySourcesResult
+    dependencySources: DependencySourcesResult,
+    scalacOptions: ScalacOptionsResult
 )
 
 object BspHandshake extends StrictLogging {
 
   /** Spawn a BSP process, create a JSON-RPC proxy implementing both BuildServer and
     * ScalaBuildServer, run the full handshake (initialize → sources → dependency
-    * sources), and return the result. On failure the process is killed before the
-    * exception propagates. */
+    * sources → scalacOptions), and return the result. On failure the process is
+    * killed before the exception propagates. */
   def execute(
       bspFile: BspConnectionSpec,
       eventSink: BspEventSink,
@@ -30,25 +31,12 @@ object BspHandshake extends StrictLogging {
   ): HandshakeResult = {
     val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
     pb.directory(bspFile.workingDir.toIO)
-    pb.redirectError(java.lang.ProcessBuilder.Redirect.PIPE)
+    val logDir = bspFile.workingDir / ".basamake" / "logs"
+    os.makeDir.all(logDir)
+    pb.redirectError(java.lang.ProcessBuilder.Redirect.appendTo((logDir / s"bsp-${bspFile.content.name}.log").toIO))
 
     val process = pb.start()
     logger.info(s"BSP process spawned for ${bspFile.path} (pid ${process.pid()})")
-
-    // Drain stderr asynchronously — prevents pipe-buffer deadlock (64KB on Linux)
-    // when BSP child logs enough to stderr that it blocks the process.
-    Thread.ofVirtual().start(() => {
-      val stderr = process.getErrorStream
-      try
-        val reader = java.io.BufferedReader(
-          java.io.InputStreamReader(stderr, java.nio.charset.StandardCharsets.UTF_8)
-        )
-        try Iterator.continually(reader.readLine()).takeWhile(_ != null).foreach { line =>
-          logger.debug(s"[bsp-stderr ${bspFile.content.name}] $line")
-        }
-        finally reader.close()
-      catch case _: java.io.IOException => () // process terminated, expected
-    })
 
     try {
       val buildClient = BasamakeBuildClient(eventSink)
@@ -60,7 +48,7 @@ object BspHandshake extends StrictLogging {
           .setInput(process.getInputStream)
           .setOutput(process.getOutputStream)
           .create()
-      val buildServer: BuildServer = launcher.getRemoteProxy
+      val remoteProxy = launcher.getRemoteProxy
       launcher.startListening()
       logger.info(s"BSP launcher started for ${bspFile.path}.")
 
@@ -75,24 +63,24 @@ object BspHandshake extends StrictLogging {
       )
 
       logger.debug("Sending buildInitialize...")
-      buildServer.buildInitialize(initParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      remoteProxy.buildInitialize(initParams).get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("buildInitialize OK")
 
-      buildServer.onBuildInitialized()
+      remoteProxy.onBuildInitialized()
       logger.debug("onBuildInitialized sent")
 
       logger.debug("Requesting workspaceBuildTargets...")
-      val targetsResult = buildServer.workspaceBuildTargets().get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      val targetsResult = remoteProxy.workspaceBuildTargets().get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       val targetIds = targetsResult.getTargets.asScala.map(_.getId).toList
       logger.debug(s"Found ${targetIds.size} build targets: ${targetIds.map(_.getUri).mkString(", ")}")
 
       logger.debug("Requesting buildTargetSources...")
       val sourcesParams = new SourcesParams(targetIds.asJava)
-      val sourcesFuture = buildServer.buildTargetSources(sourcesParams)
+      val sourcesFuture = remoteProxy.buildTargetSources(sourcesParams)
 
       logger.debug("Requesting buildTargetDependencySources...")
       val dependencySourcesParams = new DependencySourcesParams(targetIds.asJava)
-      val depSourcesFuture = buildServer.buildTargetDependencySources(dependencySourcesParams)
+      val depSourcesFuture = remoteProxy.buildTargetDependencySources(dependencySourcesParams)
 
       val sourcesResult = sourcesFuture.get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("buildTargetSources OK")
@@ -100,7 +88,20 @@ object BspHandshake extends StrictLogging {
       val dependencySourcesResult = depSourcesFuture.get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("buildTargetDependencySources OK")
 
-      HandshakeResult(process, buildServer, targetsResult, sourcesResult, dependencySourcesResult)
+      // Query scalacOptions for semanticdb target dirs — best-effort; non-Scala
+      // BSP servers may not support this. Fall back to empty result.
+      logger.debug("Requesting buildTargetScalacOptions...")
+      val scalacOptionsResult = try {
+        remoteProxy.buildTargetScalacOptions(new ScalacOptionsParams(targetIds.asJava))
+          .get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      } catch {
+        case e: Exception =>
+          logger.debug(s"buildTargetScalacOptions failed (${e.getMessage}), continuing without scalacOptions")
+          new ScalacOptionsResult(java.util.Collections.emptyList())
+      }
+      logger.debug("buildTargetScalacOptions OK")
+
+      HandshakeResult(process, remoteProxy, targetsResult, sourcesResult, dependencySourcesResult, scalacOptionsResult)
     } catch {
       case e: Exception =>
         val signaled = ProcessUtils.terminateProcessTree(process)

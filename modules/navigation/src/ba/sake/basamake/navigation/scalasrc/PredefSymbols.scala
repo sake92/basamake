@@ -11,29 +11,22 @@ package ba.sake.basamake.navigation.scalasrc
   */
 object PredefSymbols {
 
-  /** Keys are source-level names. Values are canonical SemanticDB symbol strings,
-    * matching what the Scala 3 compiler would emit for that default name.
-    *
-    * Type-shaped values end with `#` (class/trait); term-shaped values end with
-    * `.` (object/val) or `).` / `(+N).` (method).
-    */
-  private val map: Map[String, String] = Map(
-    // ── scala.collection.immutable ─────────────────────────────────
-    // TODO types too
-    "List"   -> "scala/collection/immutable/List.",     // companion object (call site)
-    "Map"    -> "scala/collection/immutable/Map.",
-    "Set"    -> "scala/collection/immutable/Set.",
-    "Seq"    -> "scala/collection/immutable/Seq.",
-    "Vector" -> "scala/collection/immutable/Vector.",
-    "Nil"    -> "scala/collection/immutable/Nil.",
+  /** Type-shaped entries — used when isType=true in context (e.g. `val x: List[Int]`).
+    * Keys are source-level names, values end with `#`. */
+  private val typeMap: Map[String, String] = Map(
+    // ── scala.collection.immutable types ────────────────────────────
+    "List"   -> "scala/collection/immutable/List#",
+    "Map"    -> "scala/collection/immutable/Map#",
+    "Set"    -> "scala/collection/immutable/Set#",
+    "Seq"    -> "scala/collection/immutable/Seq#",
+    "Vector" -> "scala/collection/immutable/Vector#",
     // ── scala (top-level) types ────────────────────────────────────
     "Option" -> "scala/Option#",
     "Some"   -> "scala/Some#",
-    "None"   -> "scala/None.",   // object — term only
     "Either" -> "scala/Either#",
     "Left"   -> "scala/Left#",
     "Right"  -> "scala/Right#",
-    // ── scala (top-level) value types / primitives ─────────────────
+    // ── scala value types / primitives ─────────────────────────────
     "Int"     -> "scala/Int#",
     "Long"    -> "scala/Long#",
     "Double"  -> "scala/Double#",
@@ -44,10 +37,23 @@ object PredefSymbols {
     "Boolean" -> "scala/Boolean#",
     "Unit"    -> "scala/Unit#",
     "Array"   -> "scala/Array#",
-    // ── java.lang ──────────────────────────────────────────────────
+    // ── java.lang types ────────────────────────────────────────────
     "String" -> "java/lang/String#",
-    "Object" -> "java/lang/Object#",
-    // ── scala.Console / Predef objects ─────────────────────────────
+    "Object" -> "java/lang/Object#"
+  )
+
+  /** Term-shaped entries — used when isType=false (companion objects, vals, methods).
+    * Keys are source-level names, values end with `.` or `).` / `(+N).`. */
+  private val termMap: Map[String, String] = Map(
+    // ── scala.collection.immutable companion objects ────────────────
+    "List"   -> "scala/collection/immutable/List.",
+    "Map"    -> "scala/collection/immutable/Map.",
+    "Set"    -> "scala/collection/immutable/Set.",
+    "Seq"    -> "scala/collection/immutable/Seq.",
+    "Vector" -> "scala/collection/immutable/Vector.",
+    "Nil"    -> "scala/collection/immutable/Nil.",
+    // ── scala (top-level) term objects ─────────────────────────────
+    "None"    -> "scala/None.",
     "Console" -> "scala/Console.",
     "Predef"  -> "scala/Predef.",
     // ── scala.Predef methods (term, method descriptor) ─────────────
@@ -56,32 +62,22 @@ object PredefSymbols {
     "identity" -> "scala/Predef.identity().",
     "assert"   -> "scala/Predef.assert().",
     "require"  -> "scala/Predef.require().",
-    "???"      -> "scala/Predef.`???`()."   // backtick-escaped operator name
+    "???"      -> "scala/Predef.`???`()."
   )
 
   /** Look up a name in the Predef/default-import table.
     *
-    * When `isType` is true, only type-shaped symbols (ending `#`) are returned.
-    * When `isType` is false (term context), term-shaped symbols (ending `.` or
-    * `).` / `(+N).`) are returned.
-    *
-    * Note: the same source name can be both a type and a term (e.g. `List` is the
-    * trait `scala.collection.immutable.List#` AND the companion object `…List.`).
-    * `PredefSymbols` stores one entry per source name — the form most likely to
-    * appear at a reference. For ambiguous cases the caller should try the `isType`
-    * path first, then fall back to the opposite shape; this `lookup` enforces
-    * shape via the `isType` parameter but exposes [[rawLookup]] for shape-agnostic
-    * checks.
+    * When `isType` is true, only the type map is consulted.
+    * When `isType` is false (term context), the term map is consulted.
     */
   def lookup(name: String, isType: Boolean): Option[String] =
-    map.get(name).filter { sym =>
-      if isType then sym.endsWith("#")
-      else !sym.endsWith("#") // term-shaped: ends with . ) or (+N).
-    }
+    if isType then typeMap.get(name)
+    else termMap.get(name)
 
   /** Shape-agnostic raw lookup. Returns the stored symbol string for `name`
-    * regardless of type/term shape. Useful when the caller wants to inspect the
-    * entry and branch on its suffix.
+    * regardless of type/term shape. Checks both maps. Useful when the caller
+    * wants to inspect the entry and branch on its suffix.
     */
-  def rawLookup(name: String): Option[String] = map.get(name)
+  def rawLookup(name: String): Option[String] =
+    termMap.get(name).orElse(typeMap.get(name))
 }
