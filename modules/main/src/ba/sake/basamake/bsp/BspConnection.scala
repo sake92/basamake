@@ -7,7 +7,7 @@ import ch.epfl.scala.bsp4j.*
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.util.{ProcessUtils, ScalacOptionsUtils, UriUtils}
 
-/** One BSP connection: process + proxy + liveness. No queue, no park, no state machine.
+/** One BSP connection: process + liveness.
   *
   * Concurrency: one `Object` lock per connection serializes ensureConnected/poke/compile.
   * JVM/Scala `synchronized` is reentrant — `compile` calls `poke` under the same lock
@@ -16,7 +16,7 @@ import ba.sake.basamake.util.{ProcessUtils, ScalacOptionsUtils, UriUtils}
   *
   * Storm protection: MaxRespawnPerCall = 1 (one respawn per user poke, never a hot loop);
   * after MaxConsecutiveFails=3 rapid fails within CooldownMs=5000, ensureConnected
-  * throws BspUnavailable (swallowed by BspManager.poke) instead of hammering deder. */
+  * throws BspUnavailable (swallowed by BspManager.poke) instead of hammering BSP build tool. */
 class BspConnection private (
     val spec: BspConnectionSpec,
     spawnFn: () => HandshakeResult,

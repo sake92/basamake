@@ -101,6 +101,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
       // Fire-and-forget liveness — does NOT block the nav response.
+      // TODO virtual thread..
       CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
@@ -112,6 +113,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
+      // TODO virtual thread
       CompletableFuture.supplyAsync(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine

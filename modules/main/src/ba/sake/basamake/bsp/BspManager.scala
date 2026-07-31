@@ -49,6 +49,7 @@ class BspManager private (
   }
 
   // ---- poke: the one entry point from LSP handlers ----
+  // makes sure BSP connection is alive, respawns if needed, and triggers compile if requested.
   def poke(uri: String, compile: Boolean): Unit = {
     if (shuttingDown.get()) return
     val connOpt = router.route(uri).flatMap(id => Option(connections.get(id)))
