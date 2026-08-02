@@ -21,11 +21,14 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
   // ── initialize ──────────────────────────────────────────────
   def initialize(semanticdbDirs: List[String] = Nil): Unit = synchronized {
     logger.info(s"Initializing workspace index at $workspacePath")
+    // TODO avoid walking .worktrees/ etc.
+    // maybe all .gitignored dirs/files? but include generated sources (target/scala-2.13/src_managed/...)
     val skipDirNames = Set(".git", ".basamake", ".metals", ".bsp", "node_modules")
     val relevantExtensions = Set("scala", "java", "semanticdb")
-    val skip: os.Path => Boolean = p => {
-      if (os.isDir(p)) skipDirNames.contains(p.last) else if (os.isFile(p)) !relevantExtensions.contains(p.ext) else true
-    }
+    def skip(p: os.Path): Boolean =
+      if os.isDir(p) then skipDirNames.contains(p.last)
+      else if os.isFile(p) then !relevantExtensions.contains(p.ext)
+      else true
 
     val sources = os.walk(workspacePath, skip = skip)
     val fileGroups = sources.groupBy(_.ext)
