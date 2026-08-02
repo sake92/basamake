@@ -10,6 +10,17 @@ object ScalacOptionsUtils {
       options.exists(_.startsWith("-P:semanticdb:")) ||
       options.exists(_ == "-Xplugin:semanticdb")
 
+  def sourceRootDir(options: List[String]): os.Path = {
+    val scala3 = options.sliding(2).collect {
+      case Seq("-sourceroot", path) if !path.startsWith("-") => os.Path(path)
+    }.toList
+    val scala2 = options.collect {
+      case s if s.startsWith("-P:semanticdb:sourceroot:") =>
+        os.Path(s.stripPrefix("-P:semanticdb:sourceroot:"))
+    }
+    (scala3 ++ scala2).headOption.getOrElse(os.pwd) // fallback to workspace root if not specified
+  }
+
   /** Extracts custom SemanticDB output paths from scalac options.
     * Scala 3 uses space-separated and Scala 2 is colon-separated). */
   def semanticdbTargetPath(options: List[String]): Option[os.Path] = {

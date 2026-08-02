@@ -297,7 +297,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
           if (semanticdbBySource.contains(path)) {
             val useSemanticdb = !dirty.contains(path) && textMatchesDisk(path, text) && semanticdbIsFresh(path, semanticdbBySource(path))
             if (useSemanticdb) {
-              val res = SemanticdbIndexing.parseOccurrences(semanticdbBySource(path))
+              val res = SemanticdbIndexing.parseOccurrences(semanticdbBySource(path), path)
               (res.occurrences, res.locals)
             } else {
               val resolver = ScalaReferencesResolver(symbolTable)

@@ -135,7 +135,7 @@ object SemanticdbIndexing extends StrictLogging {
     * for the ref occurrences when `complete=false` (defs in SymbolTable are still
     * authoritative — DEFINITION occurrences are full symbols).
     */
-  def parseOccurrences(semPath: os.Path): ResolvedFile = {
+  def parseOccurrences(semPath: os.Path, sourcePath: os.Path): ResolvedFile = {
     val bytes = os.read.bytes(semPath)
     val doc = TextDocuments.parseFrom(bytes).documents.head
     val (references, definitions) = doc.occurrences.toVector
@@ -150,7 +150,7 @@ object SemanticdbIndexing extends StrictLogging {
       val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
       val isType = occ.symbol.endsWith("#")
       val shortName = inferShortName(occ.symbol)
-      SymbolDefinition(occ.symbol, shortName, isType, range, semPath)
+      SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
     }
     ResolvedFile(refs, localDefs)
   }

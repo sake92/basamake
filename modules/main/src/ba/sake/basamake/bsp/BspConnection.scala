@@ -31,6 +31,8 @@ class BspConnection private (
   /** True after the first successful compile on this connection. Reset on respawn. */
   @volatile var compiledOnce = false
 
+
+  @volatile private var sourceRootDirByTarget: Map[BuildTargetIdentifier, String] = Map.empty
   /** target → source dirs (from handshake SourcesResult). Used by selectTargets. */
   @volatile private var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
   @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, String] = Map.empty
@@ -107,6 +109,7 @@ class BspConnection private (
       val result = spawnFn()
       process = result.process
       buildServer = result.buildServer
+      sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions)
       sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
       classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
       semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
@@ -141,6 +144,7 @@ class BspConnection private (
         .map { tid =>
           BspTargetInfo(
             id = tid.getUri,
+            sourceRootDir = sourceRootDirByTarget(tid),
             sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
             semanticdbDir = semanticdbDirByTarget(tid)
           )
@@ -226,6 +230,14 @@ object BspConnection {
       killTree: java.lang.Process => Unit,
       eventSink: BspEventSink
   ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink)
+
+  private[bsp] def sourceRootDirByTarget(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, String] = {
+    Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
+      val target = item.getTarget
+      val path = ScalacOptionsUtils.sourceRootDir(Option(item.getOptions).toList.flatMap(_.asScala))
+      target -> path.toString
+    }.toMap
+  }
 
   private[bsp] def extractTargetSourceDirs(sources: SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
     def ensureTrailingSlash(uri: String): String = if (uri.endsWith("/")) uri else s"$uri/"
