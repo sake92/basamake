@@ -33,8 +33,9 @@ class BspConnection private (
 
   /** target → source dirs (from handshake SourcesResult). Used by selectTargets. */
   @volatile private var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
+  @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, String] = Map.empty
   /** target → semanticdb dirs (from handshake ScalacOptionsResult). */
-  @volatile private var semanticdbDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
+  @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, String] = Map.empty
 
   private val lock = new Object
   private val consecutiveFails = new AtomicInteger(0)
@@ -99,7 +100,7 @@ class BspConnection private (
   def sourceDirs: List[String] = sourceDirsByTarget.values.flatten.toList
 
   /** Flattened semanticdb dirs from scalacOptions — used for invalidation. */
-  def semanticdbDirs: List[String] = semanticdbDirsByTarget.values.flatten.toList
+  def semanticdbDirs: List[String] = semanticdbDirByTarget.values.toList
 
   private def spawnAndHandshake(): Unit = {
     try {
@@ -107,7 +108,8 @@ class BspConnection private (
       process = result.process
       buildServer = result.buildServer
       sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
-      semanticdbDirsByTarget = BspConnection.extractTargetSemanticdbDirs(result.scalacOptions)
+      classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
+      semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
       compiledOnce = false
     } catch {
       case e: Exception =>
@@ -135,12 +137,12 @@ class BspConnection private (
       val dirName = BspConnectionSpec.dirName(spec)
       val dataDir = spec.workspaceRoot / ".basamake" / "bsp" / dirName
       os.makeDir.all(dataDir)
-      val targetInfos = (sourceDirsByTarget.keySet ++ semanticdbDirsByTarget.keySet).toList
+      val targetInfos = (sourceDirsByTarget.keySet ++ semanticdbDirByTarget.keySet).toList
         .map { tid =>
           BspTargetInfo(
             id = tid.getUri,
             sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
-            semanticdbDirs = semanticdbDirsByTarget.getOrElse(tid, Nil)
+            semanticdbDir = semanticdbDirByTarget(tid)
           )
         }
       val bspFileRel = try spec.path.relativeTo(spec.workspaceRoot).toString
@@ -247,10 +249,19 @@ object BspConnection {
     }.toMap
   }
 
-  private[bsp] def extractTargetSemanticdbDirs(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, List[String]] = {
+  private[bsp] def extractTargetClassDir(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, String] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
-      val paths = ScalacOptionsUtils.semanticdbTargetPaths(Option(item.getOptions).toList.flatMap(_.asScala))
-      item.getTarget -> paths.map(p => p.toNIO.toUri.toString)
+      val path = item.getClassDirectory
+      item.getTarget -> path
+    }.toMap
+  }
+
+  private[bsp] def extractTargetSemanticdbDir(opts: ScalacOptionsResult, classDirectoryByTarget: Map[BuildTargetIdentifier, String]): Map[BuildTargetIdentifier, String] = {
+    Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
+      val target = item.getTarget
+      val path = ScalacOptionsUtils.semanticdbTargetPath(Option(item.getOptions).toList.flatMap(_.asScala))
+      val fallback = classDirectoryByTarget(target) // fall back to class directory if no explicit semanticdb-target
+      target -> path.getOrElse(fallback).toString
     }.toMap
   }
 

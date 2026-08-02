@@ -14,5 +14,5 @@ final case class BspTargetData(
 final case class BspTargetInfo(
     id: String,               // BuildTargetIdentifier URI
     sourceDirs: List[String], // URI strings
-    semanticdbDirs: List[String] // URI strings from scalacOptions
+    semanticdbDir: String     // URI string from scalacOptions, or class directory fallback
 ) derives JsonRW

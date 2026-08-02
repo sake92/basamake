@@ -59,30 +59,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   /** Idempotent cleanup — called by shutdown/exit and the JVM shutdown hook. */
   def cleanup(): Unit = bspManager.shutdown()
 
-  /** Read .basamake/bsp/.../data.json files and collect semanticdb dirs.
-    * Speeds up subsequent startups by indexing BSP-managed output dirs without
-    * walking the entire workspace. Returns empty list if no data.json files exist. */
-  private def loadSemanticdbDirsFromDataJson(): List[String] = {
-    val bspDir = workspacePath / ".basamake" / "bsp"
-    if (!os.isDir(bspDir)) return Nil
-    try {
-      val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
-      dataFiles.flatMap { f =>
-        try {
-          val data = os.read(f).parseJson[BspTargetData]
-          data.targets.flatMap(_.semanticdbDirs)
-        } catch {
-          case e: Exception =>
-            logger.debug(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
-            Nil
-        }
-      }.toList
-    } catch {
-      case e: Exception =>
-        logger.debug(s"Failed to load data.json: ${e.getMessage}")
-        Nil
-    }
-  }
 
   override def getWorkspaceService(): WorkspaceService = this
   override def getTextDocumentService(): TextDocumentService = this
@@ -96,7 +72,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val uri = params.getTextDocument.getUri
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidOpen(path, params.getTextDocument.getText)
-    // liveness only — fire-and-forget; never block UI
     Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
   }
 
@@ -104,6 +79,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(params.getTextDocument.getUri))
     // Full sync — last change's text is the whole document
     val text = params.getContentChanges.asScala.last.getText
+    // TODO in new thread?
     workspaceIndex.onDidChange(path, text)
   }
 
@@ -111,11 +87,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val uri = params.getTextDocument.getUri
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidSave(path, Option(params.getText))
-    // liveness + compile — fire-and-forget; didSave has no return value
     Thread.ofVirtual().start(() => bspManager.poke(uri, compile = true))
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
+    // TODO in new thread?
     val uri = params.getTextDocument.getUri
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidClose(path)
@@ -129,7 +105,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       ]] =
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
-      // Fire-and-forget liveness — does NOT block the nav response.
       Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
@@ -165,5 +140,30 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         new Position(loc.range.endLine, loc.range.endCharacter)
     )
     new Location(uri, range)
+  }
+
+  /** Read .basamake/bsp/.../data.json files and collect semanticdb dirs.
+    * Speeds up subsequent startups by indexing BSP-managed output dirs without
+    * walking the entire workspace. Returns empty list if no data.json files exist. */
+  private def loadSemanticdbDirsFromDataJson(): List[String] = {
+    val bspDir = workspacePath / ".basamake" / "bsp"
+    if (!os.isDir(bspDir)) return Nil
+    try {
+      val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
+      dataFiles.flatMap { f =>
+        try {
+          val data = os.read(f).parseJson[BspTargetData]
+          data.targets.map(_.semanticdbDir)
+        } catch {
+          case e: Exception =>
+            logger.debug(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
+            Nil
+        }
+      }.toList
+    } catch {
+      case e: Exception =>
+        logger.debug(s"Failed to load data.json: ${e.getMessage}")
+        Nil
+    }
   }
 }
