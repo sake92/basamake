@@ -7,53 +7,35 @@ import ba.sake.basamake.navigation.{SymbolDefinition, SymbolUtils, ReferenceOccu
 // TODO check how works under Scala 3 -Ybest-effort (partial symbols)
 object SemanticdbIndexing extends StrictLogging {
 
-  /** Pair each `.semanticdb` file with its workspace source file.
+  /** Index `.semanticdb` files from a single BSP target's output directory.
     *
-    * Strategy: read the `TextDocument.uri` (e.g. `src/main/scala/Main.scala`),
-    * then climb from the `.semanticdb` file's parent directory up to `workspaceRoot`
-    * (inclusive). At each ancestor `a`, try `a / uri` — first match wins. This
-    * handles any layout where the semanticdb output base differs from the workspace
-    * root (sbt, bloop, mill, scala-cli, etc.).
+    * Walks `semanticdbDir`, reads each file's `TextDocument.uri`, and resolves it
+    * directly against `sourceRoot` — no ancestor climbing. The URI inside a
+    * SemanticDB file is relative to the source root (specified via scalac
+    * `-sourceroot` or defaults to the build tool's source root).
     *
     * Once paired, DEFINITION occurrences are parsed and added to `symbolTable`.
     *
-    * @param semanticdbFiles paths discovered by the caller (one os.walk already done)
-    * @param workspaceRoot   workspace root for path resolution
-    * @param sourceFiles      set of `.scala`/`.java` source paths in the workspace
-    * @param symbolTable      target table; definition occurrences are added here
+    * @param semanticdbDir directory containing `.semanticdb` files for one target
+    * @param sourceRoot    source root path for URI resolution
+    * @param symbolTable   target table; definition occurrences are added here
     * @return Map: sourcePath -> semanticdbPath (caller stores it for didOpen/didSave)
     */
-  def matchSemanticdbWithSources(
-      semanticdbFiles: Seq[os.Path],
-      workspaceRoot: os.Path,
-      sourceFiles: Set[os.Path],
+  def indexSemanticdbDir(
+      semanticdbDir: os.Path,
+      sourceRoot: os.Path,
       symbolTable: ba.sake.basamake.navigation.SymbolTable
   ): Map[os.Path, os.Path] = {
-    val sourceSet = sourceFiles
     val result = scala.collection.mutable.Map.empty[os.Path, os.Path]
-    semanticdbFiles.foreach { semPath =>
+    val semFiles = os.walk(semanticdbDir).filter(_.ext == "semanticdb").toList
+    semFiles.foreach { semPath =>
       readUri(semPath).foreach { uri =>
         val uriStr = if (uri.startsWith("/")) uri.drop(1) else uri
-        val rel = os.RelPath(uriStr)
-
-        // Climb from the .semanticdb file's parent up to workspaceRoot.
-        var ancestor: os.Path = semPath / os.up
-        var found: Option[os.Path] = None
-        while (found.isEmpty) {
-          val candidate = ancestor / rel
-          if (sourceSet.contains(candidate) || os.isFile(candidate)) {
-            found = Some(candidate)
-          } else if (ancestor == workspaceRoot) {
-            // climbed all the way — done
-            found = None
-            ancestor = workspaceRoot // break condition below
-          } else {
-            ancestor = ancestor / os.up
-          }
-        }
-        found match {
-          case Some(src) => pairAndIndex(semPath, src, symbolTable, result)
-          case None => logger.debug(s"No source match for $semPath (uri=$uri)")
+        val src = sourceRoot / os.RelPath(uriStr)
+        if (os.isFile(src)) {
+          pairAndIndex(semPath, src, symbolTable, result)
+        } else {
+          logger.debug(s"No source match for $semPath (uri=$uri, sourceRoot=$sourceRoot)")
         }
       }
     }

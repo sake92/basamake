@@ -19,12 +19,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
   private val dirty = mutable.Set.empty[os.Path]
 
   // ── initialize ──────────────────────────────────────────────
-  def initialize(semanticdbDirs: List[String] = Nil): Unit = synchronized {
+  def initialize(roots: List[SemanticdbDirs] = Nil): Unit = synchronized {
     logger.info(s"Initializing workspace index at $workspacePath")
-    // TODO avoid walking .worktrees/ etc.
-    // maybe all .gitignored dirs/files? but include generated sources (target/scala-2.13/src_managed/...)
     val skipDirNames = Set(".git", ".basamake", ".metals", ".bsp", "node_modules")
-    val relevantExtensions = Set("scala", "java", "semanticdb")
+    val relevantExtensions = Set("scala", "java")
     def skip(p: os.Path): Boolean =
       if os.isDir(p) then skipDirNames.contains(p.last)
       else if os.isFile(p) then !relevantExtensions.contains(p.ext)
@@ -34,20 +32,31 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
     val fileGroups = sources.groupBy(_.ext)
     val scalaFiles = fileGroups.getOrElse("scala", Vector.empty)
     val javaFiles = fileGroups.getOrElse("java", Vector.empty)
-    val semanticdbFiles = fileGroups.getOrElse("semanticdb", Vector.empty)
     val scalaJavaFiles = scalaFiles.toSet ++ javaFiles.toSet
-    logger.info(s"Found files: scala=${scalaFiles.size}, java=${javaFiles.size}, semanticdb=${semanticdbFiles.size}")
+    logger.info(s"Found files: scala=${scalaFiles.size}, java=${javaFiles.size}")
 
-    // Pass A: index semanticdb DEFINITION occurrences into symbolTable, pair with sources
-    val semPairs = SemanticdbIndexing.matchSemanticdbWithSources(
-      semanticdbFiles, workspacePath, scalaJavaFiles, symbolTable
-    )
+    // Pass A: index semanticdb DEFINITION occurrences from BSP-provided
+    // (sourceRootDir, semanticdbDir) pairs into symbolTable, pair with sources.
+    // No workspace-wide .semanticdb walk — only explicit dirs from data.json / BSP compile.
     semanticdbBySource.clear()
-    semanticdbBySource.addAll(semPairs)
-    logger.info(s"Indexed ${semPairs.size} semanticdb-paired source files")
+    if (roots.nonEmpty) {
+      logger.info(s"Indexing semanticdb from ${roots.size} target root(s)")
+      for (root <- roots) {
+        val semDir = try os.Path(java.net.URI.create(root.semanticdbDir))
+          catch { case _: Exception => try os.Path(root.semanticdbDir) catch { case _: Exception => null } }
+        val srcRoot = try os.Path(java.net.URI.create(root.sourceRootDir))
+          catch { case _: Exception => try os.Path(root.sourceRootDir) catch { case _: Exception => workspacePath } }
+        if (semDir != null && os.isDir(semDir)) {
+          val pairs = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, symbolTable)
+          semanticdbBySource.addAll(pairs)
+          logger.info(s"Indexed ${pairs.size} semanticdb-paired source files from ${semDir}")
+        }
+      }
+    }
+    logger.info(s"Total semanticdb-paired source files: ${semanticdbBySource.size}")
 
     // Pass B: extract from source AST for files WITHOUT semanticdb
-    for (path <- scalaFiles if !semPairs.contains(path)) {
+    for (path <- scalaFiles if !semanticdbBySource.contains(path)) {
       logger.debug(s"Extracting definitions from $path")
       try {
         val content = os.read(path)
@@ -57,7 +66,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
         case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
       }
     }
-    for (path <- javaFiles if !semPairs.contains(path)) {
+    for (path <- javaFiles if !semanticdbBySource.contains(path)) {
       logger.debug(s"Extracting definitions from $path")
       try {
         val content = os.read(path)
@@ -66,22 +75,6 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
       } catch {
         case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
       }
-    }
-
-    // Pass C: index semanticdb files from explicit dirs (data.json) that workspace walk missed
-    if (semanticdbDirs.nonEmpty) {
-      logger.info(s"Indexing ${semanticdbDirs.size} supplemental semanticdb dirs from data.json")
-      val semFilesToIndex = semanticdbDirs.flatMap { uri =>
-        val dirPath = try os.Path(java.net.URI.create(uri))
-          catch { case _: Exception => try os.Path(uri) catch { case _: Exception => null } }
-        if (dirPath != null && os.isDir(dirPath))
-          os.walk(dirPath).filter(_.ext == "semanticdb").toList
-        else Nil
-      }
-      for (semPath <- semFilesToIndex) {
-        indexSemanticdbFile(semPath)
-      }
-      logger.info(s"Supplemental semanticdb indexing complete: ${semFilesToIndex.size} files")
     }
 
     // Debug dump: write .basamake/index.txt in the workspace root so users can inspect
@@ -144,57 +137,35 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
 
   /** Re-index `.semanticdb` files after a BSP compile.
     * Called from BspConnection.compile's onAfterCompile callback via BspManager.
-    * Walks semanticdbDirs preferentially (from scalacOptions); falls back to
-    * workspace-wide walk when semanticdbDirs is empty. Additive — does not touch
-    * existing per-file paths. */
-  def invalidate(sourceDirs: List[String], semanticdbDirs: List[String]): Unit = synchronized {
-    if (sourceDirs.isEmpty && semanticdbDirs.isEmpty) return
-    logger.info(s"Invalidating workspace index (${semanticdbDirs.size} semanticdb dirs, ${sourceDirs.size} source dirs)")
+    * Uses per-target (sourceRootDir, semanticdbDir) pairs for direct URI resolution
+    * — no climbing. Additive — does not touch existing per-file paths. */
+  def invalidate(roots: List[SemanticdbDirs]): Unit = synchronized {
+    if (roots.isEmpty) return
+    logger.info(s"Invalidating workspace index (${roots.size} semanticdb root(s))")
 
-    // Collect .semanticdb files to (re-)index
-    val semFilesToIndex = if (semanticdbDirs.nonEmpty) {
-      // Fast path: walk only the known semanticdb dirs
-      semanticdbDirs.flatMap { uri =>
-        val dirPath = try os.Path(java.net.URI.create(uri))
-          catch { case _: Exception => try os.Path(uri) catch { case _: Exception => null } }
-        if (dirPath != null && os.isDir(dirPath))
-          os.walk(dirPath).filter(_.ext == "semanticdb").toList
-        else Nil
+    for (root <- roots) {
+      val semDir = try os.Path(java.net.URI.create(root.semanticdbDir))
+        catch { case _: Exception => try os.Path(root.semanticdbDir) catch { case _: Exception => null } }
+      val srcRoot = try os.Path(java.net.URI.create(root.sourceRootDir))
+        catch { case _: Exception => try os.Path(root.sourceRootDir) catch { case _: Exception => workspacePath } }
+      if (semDir != null && os.isDir(semDir)) {
+        val semFiles = os.walk(semDir).filter(_.ext == "semanticdb").toList
+        for (semPath <- semFiles) {
+          indexSemanticdbFile(semPath, srcRoot)
+        }
       }
-    } else {
-      // Fallback: walk source dirs for .semanticdb (backward compat)
-      sourceDirs.flatMap { uri =>
-        val dirPath = try os.Path(java.net.URI.create(uri))
-          catch { case _: Exception => try os.Path(uri) catch { case _: Exception => null } }
-        if (dirPath != null && os.isDir(dirPath))
-          os.walk(dirPath, skip = p => os.isDir(p) && p.last == ".git" || p.last == ".basamake")
-            .filter(_.ext == "semanticdb").toList
-        else Nil
-      }
-    }
-
-    for (semPath <- semFilesToIndex) {
-      indexSemanticdbFile(semPath)
     }
   }
 
-  /** Index a single .semanticdb file: parse definitions, pair with source, update SymbolTable. */
-  private def indexSemanticdbFile(semPath: os.Path): Unit = {
+  /** Index a single .semanticdb file: parse definitions, pair with source via direct
+    * sourceRoot / uri resolution, update SymbolTable. */
+  private def indexSemanticdbFile(semPath: os.Path, sourceRoot: os.Path): Unit = {
     try {
       val docs = scala.meta.internal.semanticdb.TextDocuments.parseFrom(os.read.bytes(semPath))
       for (doc <- docs.documents.toVector if doc.uri.nonEmpty) {
         val uriStr = if (doc.uri.startsWith("/")) doc.uri.drop(1) else doc.uri
-        val rel = os.RelPath(uriStr)
-        var ancestor: os.Path = semPath / os.up
-        var found: Option[os.Path] = None
-        var keepGoing = true
-        while (found.isEmpty && keepGoing) {
-          val candidate = ancestor / rel
-          if (os.isFile(candidate)) found = Some(candidate)
-          else if (ancestor == os.root) keepGoing = false
-          else ancestor = ancestor / os.up
-        }
-        found.foreach { src =>
+        val src = sourceRoot / os.RelPath(uriStr)
+        if (os.isFile(src)) {
           symbolTable.removeByPath(src)
           semanticdbBySource(src) = semPath
           SemanticdbIndexing.parseDefinitions(semPath, src).foreach(symbolTable.add)

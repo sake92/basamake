@@ -6,6 +6,7 @@ import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.*
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.util.{ProcessUtils, ScalacOptionsUtils, UriUtils}
+import ba.sake.basamake.navigation.indexing.SemanticdbDirs
 
 /** One BSP connection: process + liveness.
   *
@@ -97,13 +98,6 @@ class BspConnection private (
     killTree()
   }
 
-  /** Flattened source dirs from the handshake — passed to BspManager.onAfterCompile
-    * which forwards to WorkspaceIndex.invalidate. */
-  def sourceDirs: List[String] = sourceDirsByTarget.values.flatten.toList
-
-  /** Flattened semanticdb dirs from scalacOptions — used for invalidation. */
-  def semanticdbDirs: List[String] = semanticdbDirByTarget.values.toList
-
   private def spawnAndHandshake(): Unit = {
     try {
       val result = spawnFn()
@@ -123,10 +117,13 @@ class BspConnection private (
   }
 
   private def onAfterCompile(targetIds: List[BuildTargetIdentifier]): Unit = {
-    val sDirs = sourceDirs
-    val semDirs = semanticdbDirs
-    if (sDirs.nonEmpty) eventSink match {
-      case s: BspAfterCompileSink => s.onAfterCompile(sDirs, semDirs)
+    val roots = for {
+      tid <- targetIds
+      semDir <- semanticdbDirByTarget.get(tid)
+      srcRoot = sourceRootDirByTarget.getOrElse(tid, spec.workspaceRoot.toString)
+    } yield SemanticdbDirs(srcRoot, semDir)
+    if (roots.nonEmpty) eventSink match {
+      case s: BspAfterCompileSink => s.onAfterCompile(roots)
       case _ => ()
     }
     // Persist BSP metadata for faster startup next time

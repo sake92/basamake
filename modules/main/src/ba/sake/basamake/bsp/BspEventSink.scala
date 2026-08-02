@@ -1,6 +1,7 @@
 package ba.sake.basamake.bsp
 
 import ch.epfl.scala.bsp4j.{DidChangeBuildTarget, PublishDiagnosticsParams}
+import ba.sake.basamake.navigation.indexing.SemanticdbDirs
 
 /** Sink for BSP-originated notifications. Implemented by BspManager (or a per-connection
   * delegate) — replaces the old BlockingQueue[ConnectionMessage] plumbing. */
@@ -11,7 +12,8 @@ trait BspEventSink {
 }
 
 /** After-compile hook. Implemented by BspManager — fired by BspConnection.compile under
-  * the connection's lock, forwards source/semanticdb dirs to WorkspaceIndex.invalidate. */
+  * the connection's lock, forwards per-target (sourceRootDir, semanticdbDir) pairs
+  * to WorkspaceIndex.invalidate. */
 trait BspAfterCompileSink {
-  def onAfterCompile(sourceDirs: List[String], semanticdbDirs: List[String]): Unit
+  def onAfterCompile(roots: List[SemanticdbDirs]): Unit
 }

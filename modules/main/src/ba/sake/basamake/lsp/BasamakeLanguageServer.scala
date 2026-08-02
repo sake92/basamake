@@ -9,7 +9,7 @@ import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
-import ba.sake.basamake.navigation.indexing.WorkspaceIndex
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.tupson.{given, *}
 
@@ -36,8 +36,8 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDocumentSymbolProvider(true)
 
     // Build symbol table from semanticdb files + parsed source files
-    val semanticdbDirs = loadSemanticdbDirsFromDataJson()
-    workspaceIndex.initialize(semanticdbDirs)
+    val roots = loadSemanticdbRootsFromDataJson()
+    workspaceIndex.initialize(roots)
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client)
 
@@ -142,10 +142,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     new Location(uri, range)
   }
 
-  /** Read .basamake/bsp/.../data.json files and collect semanticdb dirs.
+  /** Read .basamake/bsp/.../data.json files and collect (sourceRootDir, semanticdbDir) pairs.
     * Speeds up subsequent startups by indexing BSP-managed output dirs without
     * walking the entire workspace. Returns empty list if no data.json files exist. */
-  private def loadSemanticdbDirsFromDataJson(): List[String] = {
+  private def loadSemanticdbRootsFromDataJson(): List[SemanticdbDirs] = {
     val bspDir = workspacePath / ".basamake" / "bsp"
     if (!os.isDir(bspDir)) return Nil
     try {
@@ -153,7 +153,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       dataFiles.flatMap { f =>
         try {
           val data = os.read(f).parseJson[BspTargetData]
-          data.targets.map(_.semanticdbDir)
+          data.targets.map(t => SemanticdbDirs(t.sourceRootDir, t.semanticdbDir))
         } catch {
           case e: Exception =>
             logger.debug(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")

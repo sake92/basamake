@@ -13,7 +13,7 @@ import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.config.{BasamakeConfig, BspOverride}
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
-import ba.sake.basamake.navigation.indexing.WorkspaceIndex
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
 
 class BspManager private (
     workspaceRoot: os.Path,
@@ -96,9 +96,9 @@ class BspManager private (
   }
 
   // ---- BspAfterCompileSink: forward to WorkspaceIndex.invalidate ----
-  override def onAfterCompile(sourceDirs: List[String], semanticdbDirs: List[String]): Unit =
+  override def onAfterCompile(roots: List[SemanticdbDirs]): Unit =
     if (workspaceIndex != null) {
-      try workspaceIndex.invalidate(sourceDirs, semanticdbDirs)
+      try workspaceIndex.invalidate(roots)
       catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
     }
 
