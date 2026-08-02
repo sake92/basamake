@@ -7,8 +7,8 @@ class WorkspaceIndexTest extends FunSuite {
 
   private def freshIndexAt(root: os.Path): (WorkspaceIndex, SymbolTable) = {
     val st = new SymbolTable
-    val idx = new WorkspaceIndex(st)
-    idx.initialize(root)
+    val idx = new WorkspaceIndex(root, st)
+    idx.initialize(List.empty)
     (idx, st)
   }
 
@@ -91,8 +91,8 @@ class WorkspaceIndexTest extends FunSuite {
       os.copy(sbtSrc / "Main.scala", mainFile)
       os.copy(sbtSrc / "utils.scala", utilsFile)
       val st = new SymbolTable
-      val idx = new WorkspaceIndex(st)
-      idx.initialize(srcDir)
+      val idx = new WorkspaceIndex(root, st)
+      idx.initialize(List.empty)
       val utilsSym = st.get("_empty_/utils.")
       assert(utilsSym.isDefined, "Source-only fallback: expected _empty_/utils.")
     } finally os.remove.all(root)

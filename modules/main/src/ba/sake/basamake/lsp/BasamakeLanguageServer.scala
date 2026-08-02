@@ -18,7 +18,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   @volatile private var client: LanguageClient = uninitialized
 
   private val symbolTable = new SymbolTable
-  private val workspaceIndex = new WorkspaceIndex(symbolTable)
+  private val workspaceIndex = new WorkspaceIndex(workspacePath, symbolTable)
   private val bspManager = BspManager(workspacePath, workspaceIndex)
 
   // ----- LanguageClientAware
@@ -37,7 +37,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
     // Build symbol table from semanticdb files + parsed source files
     val semanticdbDirs = loadSemanticdbDirsFromDataJson()
-    workspaceIndex.initialize(workspacePath, semanticdbDirs)
+    workspaceIndex.initialize(semanticdbDirs)
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client)
 

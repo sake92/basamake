@@ -1,4 +1,12 @@
 
+- use paths relative to WORKSPACE, not absolute, easier to debug
+
+- go-to-def with semanticdb isnt working well
+  - dump ALL CURRENT global symbols
+  - dump ALL REFS and LOCALS in CURRENTLY OPEN FILE(s)
+  - try debug wtf is going on
+  - start from SIMPLEST POSSIBLE FILE AND MAKE TESTS ALONG THE WAY
+
 - ignore .gitignore-d folders, hmm we need target/ for semanticdb files, but ignore .worktrees/ ..???
 - poke should compile always.. say i open file, then only do "deder bsp install", currently it wont compile
 - invalidation of wsIndex doesnt pick up newly-generated semantcdbs?

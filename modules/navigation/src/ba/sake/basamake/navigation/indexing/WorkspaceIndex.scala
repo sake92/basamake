@@ -7,7 +7,7 @@ import ba.sake.basamake.navigation.*
 import ba.sake.basamake.navigation.scalasrc.{ScalaDefinitionsExtractor, ScalaReferencesResolver }
 import ba.sake.basamake.navigation.javasrc.{JavaDefinitionsExtractor, JavaReferencesResolver}
 
-class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
+class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends StrictLogging {
 
   // source path → .semanticdb path (built once at initialize)
   private val semanticdbBySource = mutable.Map.empty[os.Path, os.Path]
@@ -19,15 +19,15 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
   private val dirty = mutable.Set.empty[os.Path]
 
   // ── initialize ──────────────────────────────────────────────
-  def initialize(workspaceRoot: os.Path, semanticdbDirs: List[String] = Nil): Unit = synchronized {
-    logger.info(s"Initializing workspace index at $workspaceRoot")
+  def initialize(semanticdbDirs: List[String] = Nil): Unit = synchronized {
+    logger.info(s"Initializing workspace index at $workspacePath")
     val skipDirNames = Set(".git", ".basamake", ".metals", ".bsp", "node_modules")
     val relevantExtensions = Set("scala", "java", "semanticdb")
     val skip: os.Path => Boolean = p => {
       if (os.isDir(p)) skipDirNames.contains(p.last) else if (os.isFile(p)) !relevantExtensions.contains(p.ext) else true
     }
 
-    val sources = os.walk(workspaceRoot, skip = skip)
+    val sources = os.walk(workspacePath, skip = skip)
     val fileGroups = sources.groupBy(_.ext)
     val scalaFiles = fileGroups.getOrElse("scala", Vector.empty)
     val javaFiles = fileGroups.getOrElse("java", Vector.empty)
@@ -37,7 +37,7 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
 
     // Pass A: index semanticdb DEFINITION occurrences into symbolTable, pair with sources
     val semPairs = SemanticdbIndexing.matchSemanticdbWithSources(
-      semanticdbFiles, workspaceRoot, scalaJavaFiles, symbolTable
+      semanticdbFiles, workspacePath, scalaJavaFiles, symbolTable
     )
     semanticdbBySource.clear()
     semanticdbBySource.addAll(semPairs)
@@ -84,8 +84,8 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
     // Debug dump: write .basamake/index.txt in the workspace root so users can inspect
     // which source files were paired with which .semanticdb files.
     try {
-      val dump = SemanticdbIndexing.dumpPairs(semanticdbBySource.toMap, scalaJavaFiles, workspaceRoot)
-      val dumpDir = workspaceRoot / ".basamake"
+      val dump = SemanticdbIndexing.dumpPairs(semanticdbBySource.toMap, scalaJavaFiles, workspacePath)
+      val dumpDir = workspacePath / ".basamake"
       os.makeDir.all(dumpDir)
       os.write.over(dumpDir / "index.txt", dump)
     } catch {
@@ -297,19 +297,8 @@ class WorkspaceIndex(symbolTable: SymbolTable) extends StrictLogging {
           if (semanticdbBySource.contains(path)) {
             val useSemanticdb = !dirty.contains(path) && textMatchesDisk(path, text) && semanticdbIsFresh(path, semanticdbBySource(path))
             if (useSemanticdb) {
-              // parseOccurrences returns (occs, complete). Under Scala 3 -Ybest-effort the
-              // semanticdb emits short/unresolved ref symbols (e.g. `utils.` not `_empty_/utils.`);
-              // in that case fall back to source parsing for the ref occurrences (defs in
-              // SymbolTable are still full symbols and stay authoritative).
-              val (semOccs, complete) = try SemanticdbIndexing.parseOccurrences(semanticdbBySource(path))
-                         catch { case e: Exception => logger.warn(s"Failed to parse semanticdb $path: ${e.getMessage}"); (Vector.empty[ReferenceOccurrence], false) }
-              if (complete) (semOccs, Vector.empty[SymbolDefinition])
-              else {
-                logger.debug(s"Semanticdb for $path has short ref symbols, falling back to source parse")
-                val resolver = ScalaReferencesResolver(symbolTable)
-                val rf = resolver.resolveFromContent(path.last, text, path)
-                (rf.occurrences, rf.locals)
-              }
+              val res = SemanticdbIndexing.parseOccurrences(semanticdbBySource(path))
+              (res.occurrences, res.locals)
             } else {
               val resolver = ScalaReferencesResolver(symbolTable)
               val rf = resolver.resolveFromContent(path.last, text, path)

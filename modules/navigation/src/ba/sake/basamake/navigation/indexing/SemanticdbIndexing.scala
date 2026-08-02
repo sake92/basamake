@@ -2,8 +2,9 @@ package ba.sake.basamake.navigation.indexing
 
 import scala.meta.internal.semanticdb.{TextDocument, TextDocuments, Range => SdbRange}
 import com.typesafe.scalalogging.StrictLogging
-import ba.sake.basamake.navigation.{SymbolDefinition, SymbolUtils, ReferenceOccurrence}
+import ba.sake.basamake.navigation.{SymbolDefinition, SymbolUtils, ReferenceOccurrence , ResolvedFile}
 
+// TODO check how works under Scala 3 -Ybest-effort (partial symbols)
 object SemanticdbIndexing extends StrictLogging {
 
   /** Pair each `.semanticdb` file with its workspace source file.
@@ -93,8 +94,9 @@ object SemanticdbIndexing extends StrictLogging {
     sb.append(s"# semanticdb pair dump (workspace=$workspaceRoot)\n")
     sb.append(s"# paired sources: ${pairs.size} / ${allSources.size}\n")
     allSources.toList.sorted.foreach { src =>
-      val sem = pairs.get(src).map(_.toString).getOrElse("<<NO SEMANTICDB>>")
-      sb.append(s"$src  =>  $sem\n")
+      val relSem = pairs.get(src).map(_.relativeTo(workspaceRoot).toString).getOrElse("<<NO SEMANTICDB>>")
+      val relSrc = src.relativeTo(workspaceRoot)
+      sb.append(s"$relSrc  =>  $relSem\n")
     }
     sb.toString
   }
@@ -104,6 +106,8 @@ object SemanticdbIndexing extends StrictLogging {
     * isType guessed from the descriptor suffix (# => true).
     */
   def parseDefinitions(semPath: os.Path, sourcePath: os.Path): Vector[SymbolDefinition] = {
+    def isSentinelRange(r: SdbRange): Boolean =
+      r.startLine == 0 && r.endLine == 0 && r.startCharacter == 0  && r.endCharacter == 0
     val bytes = os.read.bytes(semPath)
     val docs = TextDocuments.parseFrom(bytes)
     docs.documents.toVector.flatMap { doc =>
@@ -116,7 +120,7 @@ object SemanticdbIndexing extends StrictLogging {
           val shortName = inferShortName(occ.symbol)
           SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
         }
-        .filterNot(sd => isSentinelRange(sd.range))
+        //.filterNot(sd => isSentinelRange(sd.range))
     }
   }
 
@@ -131,29 +135,25 @@ object SemanticdbIndexing extends StrictLogging {
     * for the ref occurrences when `complete=false` (defs in SymbolTable are still
     * authoritative — DEFINITION occurrences are full symbols).
     */
-  def parseOccurrences(semPath: os.Path): (Vector[ReferenceOccurrence], Boolean) = {
+  def parseOccurrences(semPath: os.Path): ResolvedFile = {
     val bytes = os.read.bytes(semPath)
-    val docs = TextDocuments.parseFrom(bytes)
-    val occs = docs.documents.toVector.flatMap { doc =>
-      doc.occurrences
-        .filter(_.symbol.nonEmpty)
-        .filter(_.role != scala.meta.internal.semanticdb.SymbolOccurrence.Role.DEFINITION)
-        .map { occ =>
-          val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
-          ReferenceOccurrence(occ.symbol, range)
-        }
-    }
-    val complete = occs.forall(o => isFullSymbol(o.symbol))
-    (occs, complete)
-  }
+    val doc = TextDocuments.parseFrom(bytes).documents.head
+    val (references, definitions) = doc.occurrences.toVector
+      .filter(_.symbol.nonEmpty)
+      .partition(_.role == scala.meta.internal.semanticdb.SymbolOccurrence.Role.REFERENCE)
 
-  /** A full SemanticDB symbol has an owner prefix containing `/` (e.g. `_empty_/utils.`,
-    * `scala/Int#`, `java/lang/String#`, `com/example/Outer#m().`). Short / unresolved
-    * symbols emitted under `-Ybest-effort` lack the owner (e.g. `utils.`, `Unit#`).
-    * `local<N>` are document-scoped and considered complete.
-    */
-  private def isFullSymbol(symbol: String): Boolean =
-    symbol.contains("/") || SymbolUtils.isLocalSymbol(symbol)
+    val refs = references.map { occ =>
+      val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
+      ReferenceOccurrence(occ.symbol, range)
+    }
+    val localDefs = definitions.filter(o => SymbolUtils.isLocalSymbol(o.symbol)).map { occ =>
+      val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
+      val isType = occ.symbol.endsWith("#")
+      val shortName = inferShortName(occ.symbol)
+      SymbolDefinition(occ.symbol, shortName, isType, range, semPath)
+    }
+    ResolvedFile(refs, localDefs)
+  }
 
   private def inferShortName(symbol: String): String = {
     val last = symbol.lastIndexOf('/') match
@@ -162,6 +162,4 @@ object SemanticdbIndexing extends StrictLogging {
     last.takeWhile(c => c != '#' && c != '.' && c != '(')
   }
 
-  private def isSentinelRange(r: SdbRange): Boolean =
-    r.startLine == 0 && r.startCharacter == 0 && r.endLine == 0 && r.endCharacter == 0
 }

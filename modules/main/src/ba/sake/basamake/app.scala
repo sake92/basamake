@@ -25,7 +25,7 @@ import ba.sake.basamake.navigation.indexing.*
 
 
 
-  val workspaceIndex = new WorkspaceIndex(symbolTable)
+  val workspaceIndex = new WorkspaceIndex(os.pwd, symbolTable)
   workspaceIndex.onDidOpen(filePath, code)
   {
     val definitions = workspaceIndex.gotoDefinitions(filePath, line = 2, char = 14)

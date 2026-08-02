@@ -7,13 +7,13 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
 
   test("invalidate does not throw on an empty dir list (no-op)") {
     val st = new SymbolTable
-    val idx = new WorkspaceIndex(st)
+    val idx = new WorkspaceIndex(os.pwd, st)
     idx.invalidate(Nil, Nil) // must not throw
   }
 
   test("invalidate accepts a directory string and does not throw even if dir does not exist") {
     val st = new SymbolTable
-    val idx = new WorkspaceIndex(st)
+    val idx = new WorkspaceIndex(os.pwd, st)
     idx.invalidate(List("/no/such/dir/anywhere"), Nil)
   }
 }
