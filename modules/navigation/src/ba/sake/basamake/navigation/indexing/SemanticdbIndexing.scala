@@ -88,21 +88,19 @@ object SemanticdbIndexing extends StrictLogging {
     * isType guessed from the descriptor suffix (# => true).
     */
   def parseDefinitions(semPath: os.Path, sourcePath: os.Path): Vector[SymbolDefinition] = {
-    def isSentinelRange(r: SdbRange): Boolean =
-      r.startLine == 0 && r.endLine == 0 && r.startCharacter == 0  && r.endCharacter == 0
     val bytes = os.read.bytes(semPath)
     val docs = TextDocuments.parseFrom(bytes)
     docs.documents.toVector.flatMap { doc =>
       doc.occurrences
         .filter(_.role == scala.meta.internal.semanticdb.SymbolOccurrence.Role.DEFINITION)
         .filter(_.symbol.nonEmpty)
+        .filterNot(o => SymbolUtils.isLocalSymbol(o.symbol)) // only global symbols go in SymbolTable
         .map { occ =>
           val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
           val isType = occ.symbol.endsWith("#")
           val shortName = inferShortName(occ.symbol)
           SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
         }
-        //.filterNot(sd => isSentinelRange(sd.range))
     }
   }
 

@@ -34,13 +34,15 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setDocumentSymbolProvider(true)
-
-    // Build symbol table from semanticdb files + parsed source files
     val roots = loadSemanticdbRootsFromDataJson()
-    workspaceIndex.initialize(roots)
+    try {
+      workspaceIndex.initialize(roots)
+    } catch {
+      case e: Exception =>
+        logger.error(s"Failed to initialize workspace index: ${e.getMessage}")
+    }
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client)
-
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
@@ -77,7 +79,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
     val path = os.Path(URI.create(params.getTextDocument.getUri))
-    // Full sync — last change's text is the whole document
     val text = params.getContentChanges.asScala.last.getText
     // TODO in new thread?
     workspaceIndex.onDidChange(path, text)
@@ -146,8 +147,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     * Speeds up subsequent startups by indexing BSP-managed output dirs without
     * walking the entire workspace. Returns empty list if no data.json files exist. */
   private def loadSemanticdbRootsFromDataJson(): List[SemanticdbDirs] = {
-    val bspDir = workspacePath / ".basamake" / "bsp"
-    if (!os.isDir(bspDir)) return Nil
+    val bspDir = workspacePath / ".basamake/bsp"
+    if (!os.exists(bspDir) || !os.isDir(bspDir)) {
+      logger.debug(s"No BSP data.json files found in ${bspDir}")
+      return Nil
+    }
     try {
       val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
       dataFiles.flatMap { f =>
@@ -156,13 +160,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
           data.targets.map(t => SemanticdbDirs(t.sourceRootDir, t.semanticdbDir))
         } catch {
           case e: Exception =>
-            logger.debug(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
+            logger.error(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
             Nil
         }
       }.toList
     } catch {
       case e: Exception =>
-        logger.debug(s"Failed to load data.json: ${e.getMessage}")
+        logger.error(s"Failed to load data.json files: ${e.getMessage}")
         Nil
     }
   }

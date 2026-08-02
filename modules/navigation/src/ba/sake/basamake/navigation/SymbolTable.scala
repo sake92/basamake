@@ -3,6 +3,7 @@ package ba.sake.basamake.navigation
 import java.util.concurrent.ConcurrentHashMap
 import scala.jdk.CollectionConverters.*
 import scala.meta.internal.semanticdb.Range
+import com.typesafe.scalalogging.StrictLogging
 
 // IMPORTANT: Do NOT store Scalameta Tree objects here. Only Strings and Range.
 case class SymbolDefinition(
@@ -14,12 +15,15 @@ case class SymbolDefinition(
 )
 
 // global symbol → definition
-class SymbolTable {
+class SymbolTable extends StrictLogging {
 
   private val definitions = new ConcurrentHashMap[String, SymbolDefinition]()
   private val pathSymbols = new ConcurrentHashMap[os.Path, java.util.Set[String]]()
 
   def add(symDef: SymbolDefinition): Unit = {
+    if SymbolUtils.isLocalSymbol(symDef.symbol) then
+      logger.warn(s"Attempted to add local symbol ${symDef.symbol} to global SymbolTable; skipping")
+      return
     definitions.put(symDef.symbol, symDef)
     pathSymbols.computeIfAbsent(symDef.path, _ => ConcurrentHashMap.newKeySet[String]()).add(symDef.symbol)
   }

@@ -2,6 +2,7 @@ package ba.sake.basamake.bsp
 
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
+import java.net.URI
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.*
 import com.typesafe.scalalogging.StrictLogging
@@ -33,12 +34,12 @@ class BspConnection private (
   @volatile var compiledOnce = false
 
 
-  @volatile private var sourceRootDirByTarget: Map[BuildTargetIdentifier, String] = Map.empty
+  @volatile private var sourceRootDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
   /** target → source dirs (from handshake SourcesResult). Used by selectTargets. */
   @volatile private var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
-  @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, String] = Map.empty
+  @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
   /** target → semanticdb dirs (from handshake ScalacOptionsResult). */
-  @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, String] = Map.empty
+  @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
 
   private val lock = new Object
   private val consecutiveFails = new AtomicInteger(0)
@@ -120,7 +121,7 @@ class BspConnection private (
     val roots = for {
       tid <- targetIds
       semDir <- semanticdbDirByTarget.get(tid)
-      srcRoot = sourceRootDirByTarget.getOrElse(tid, spec.workspaceRoot.toString)
+      srcRoot = sourceRootDirByTarget.getOrElse(tid, spec.workspaceRoot)
     } yield SemanticdbDirs(srcRoot, semDir)
     if (roots.nonEmpty) eventSink match {
       case s: BspAfterCompileSink => s.onAfterCompile(roots)
@@ -142,7 +143,7 @@ class BspConnection private (
           BspTargetInfo(
             id = tid.getUri,
             sourceRootDir = sourceRootDirByTarget(tid),
-            sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
+          //  sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
             semanticdbDir = semanticdbDirByTarget(tid)
           )
         }
@@ -228,11 +229,11 @@ object BspConnection {
       eventSink: BspEventSink
   ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink)
 
-  private[bsp] def sourceRootDirByTarget(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, String] = {
+  private[bsp] def sourceRootDirByTarget(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
       val target = item.getTarget
       val path = ScalacOptionsUtils.sourceRootDir(Option(item.getOptions).toList.flatMap(_.asScala))
-      target -> path.toString
+      target -> path
     }.toMap
   }
 
@@ -258,19 +259,19 @@ object BspConnection {
     }.toMap
   }
 
-  private[bsp] def extractTargetClassDir(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, String] = {
+  private[bsp] def extractTargetClassDir(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
-      val path = item.getClassDirectory
+      val path = os.Path(URI.create(item.getClassDirectory))
       item.getTarget -> path
     }.toMap
   }
 
-  private[bsp] def extractTargetSemanticdbDir(opts: ScalacOptionsResult, classDirectoryByTarget: Map[BuildTargetIdentifier, String]): Map[BuildTargetIdentifier, String] = {
+  private[bsp] def extractTargetSemanticdbDir(opts: ScalacOptionsResult, classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path]): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
       val target = item.getTarget
       val path = ScalacOptionsUtils.semanticdbTargetPath(Option(item.getOptions).toList.flatMap(_.asScala))
       val fallback = classDirectoryByTarget(target) // fall back to class directory if no explicit semanticdb-target
-      target -> path.getOrElse(fallback).toString
+      target -> path.getOrElse(fallback)
     }.toMap
   }
 

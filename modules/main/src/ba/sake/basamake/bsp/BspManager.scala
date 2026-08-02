@@ -59,7 +59,8 @@ class BspManager private (
           if (compile || !conn.compiledOnce) conn.compile(uri)
           else conn.poke()
         } catch {
-          case _: BspUnavailable => ()
+          case e: BspUnavailable => 
+            logger.debug(s"BSP connection unavailable for $uri", e)
           case e: Exception => logger.warn(s"poke failed for $uri: ${e.getMessage}", e)
         }
       case None =>
