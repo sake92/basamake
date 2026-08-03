@@ -24,5 +24,6 @@ object BasamakeConfig {
 final case class BspOverride(
     bspFile: String,
     enabled: Boolean = true,
-    compileTimeoutSec: Option[Long] = None  // default 600s (10 min)
+    compileTimeoutSec: Option[Long] = None,   // default 600s (10 min)
+    handshakeTimeoutSec: Option[Long] = None  // default 120s
 ) derives JsonRW

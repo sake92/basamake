@@ -59,8 +59,6 @@ class BspManager private (
           if (compile || !conn.compiledOnce) conn.compile(uri)
           else conn.poke()
         } catch {
-          case e: BspUnavailable => 
-            logger.debug(s"BSP connection unavailable for $uri", e)
           case e: Exception => logger.warn(s"poke failed for $uri: ${e.getMessage}", e)
         }
       case None =>
@@ -226,8 +224,11 @@ class BspManager private (
     config.bspOverrides.find(_.bspFile == relPath) match {
       case Some(ov) =>
         if (ov.enabled) {
-          val merged = spec.copy(compileTimeoutSec = ov.compileTimeoutSec.getOrElse(spec.compileTimeoutSec))
-          logger.debug(s"Override applied for $relPath: compileTimeoutSec=${merged.compileTimeoutSec}")
+          val merged = spec.copy(
+            compileTimeoutSec = ov.compileTimeoutSec.getOrElse(spec.compileTimeoutSec),
+            handshakeTimeoutSec = ov.handshakeTimeoutSec.getOrElse(spec.handshakeTimeoutSec)
+          )
+          logger.debug(s"Override applied for $relPath: compileTimeoutSec=${merged.compileTimeoutSec}, handshakeTimeoutSec=${merged.handshakeTimeoutSec}")
           Some(merged)
         } else {
           logger.info(s"BSP connection $relPath disabled by override")

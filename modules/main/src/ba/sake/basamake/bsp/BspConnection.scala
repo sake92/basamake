@@ -1,7 +1,6 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{CompletableFuture, TimeUnit}
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
+import java.util.concurrent.{CompletableFuture, CopyOnWriteArrayList, TimeUnit}
 import java.net.URI
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.*
@@ -11,14 +10,12 @@ import ba.sake.basamake.navigation.indexing.SemanticdbDirs
 
 /** One BSP connection: process + liveness.
   *
-  * Concurrency: one `Object` lock per connection serializes ensureConnected/poke/compile.
-  * JVM/Scala `synchronized` is reentrant — `compile` calls `poke` under the same lock
-  * without self-deadlock. `process.onExit().thenRun(() => alive = false)` is the only
-  * async piece; its callback never re-enters the lock.
-  *
-  * Storm protection: MaxRespawnPerCall = 1 (one respawn per user poke, never a hot loop);
-  * after MaxConsecutiveFails=3 rapid fails within CooldownMs=5000, ensureConnected
-  * throws BspUnavailable (swallowed by BspManager.poke) instead of hammering BSP build tool. */
+  * Concurrency: spawnLock serializes spawnAndHandshake + killTree (ping-failure recovery).
+  * Volatile spawning flag lets fast-path callers detect an in-progress spawn and queue/return
+  * without blocking. poke/compile on an alive connection may run concurrently (BSP server
+  * handles it). Pending compiles that arrive during spawn are queued in a CopyOnWriteArrayList
+  * with deduplication (addIfAbsent) and drained after spawn succeeds. On spawn failure the
+  * queue is cleared; the next user action will attempt a fresh spawn. */
 class BspConnection private (
     val spec: BspConnectionSpec,
     spawnFn: () => HandshakeResult,
@@ -41,44 +38,70 @@ class BspConnection private (
   /** target → semanticdb target dir (from handshake ScalacOptionsResult). */
   @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
 
-  private val lock = new Object
-  private val consecutiveFails = new AtomicInteger(0)
-  private val lastFailMs = new AtomicLong(0)
-
-  private val MaxRespawnPerCall = 1
-  private val CooldownMs = 5_000L // TODO remove ?
-  private val MaxConsecutiveFails = 3
+  private val spawnLock = new Object
+  /** True while spawnAndHandshake is in progress. Volatile for fast-path checks. */
+  @volatile private var spawning = false
+  /** Compile target IDs that arrived during spawn. Dedup via addIfAbsent. */
+  private val pendingCompileTargetIds = new CopyOnWriteArrayList[BuildTargetIdentifier]()
+  
   private val PingTimeoutSec = 2L
   private val ShutdownTimeoutSec = 2L
 
-  def ensureConnected(): Unit = lock.synchronized {
+  def ensureConnected(): Unit = {
     if (alive) return
-    val now = System.currentTimeMillis()
-    if (consecutiveFails.get() >= MaxConsecutiveFails &&
-        (now - lastFailMs.get()) < CooldownMs) {
-      throw BspUnavailable("in cooldown after repeated failures")
+    if (spawning) return          // another caller is spawning; any intent is already queued
+    spawnLock.synchronized {
+      if (alive) return           // re-check after lock acquire
+      if (spawning) return        // another thread started spawn between our check and lock
+      spawning = true
+      try {
+        spawnAndHandshake()
+        process.onExit().thenRun(() => alive = false)
+        alive = true
+        compiledOnce = false
+      } catch {
+        case e: Exception =>
+          pendingCompileTargetIds.clear()   // discard queued work
+          throw e
+      } finally {
+        spawning = false
+      }
     }
-    spawnAndHandshake()
-    process.onExit().thenRun(() => alive = false)
-    alive = true
-    consecutiveFails.set(0)
+    drainPendingCompiles()         // outside spawnLock — BSP is alive now
   }
 
-  def poke(): Unit = lock.synchronized {
-    if (!alive) { ensureConnected(); return }
+  def poke(): Unit = {
+    if (!alive) {
+      if (spawning) return         // spawn in progress → no-op
+      ensureConnected()
+      return
+    }
     try {
       buildServer.workspaceBuildTargets().get(PingTimeoutSec, TimeUnit.SECONDS)
     } catch {
       case e: Exception =>
         logger.warn(s"ping failed, killing process: ${e.getMessage}")
-        killTree(); alive = false
-        ensureConnected()                // one respawn attempt, errors bubble
+        spawnLock.synchronized { killTree(); alive = false }
+        if (!spawning) ensureConnected()
     }
   }
 
-  def compile(uri: String): Unit = lock.synchronized {
-    poke()                              // liveness first; reentrant on same lock
+  def compile(uri: String): Unit = {
+    if (!alive) {
+      if (spawning) {
+        val tids = selectTargets(uri)
+        for (tid <- tids) pendingCompileTargetIds.addIfAbsent(tid)
+        return
+      }
+      ensureConnected()
+      if (!alive) return                 // spawn failed
+    }
+    poke()                                // liveness check
     val targetIds = selectTargets(uri)
+    compileTargets(targetIds)
+  }
+
+  private def compileTargets(targetIds: List[BuildTargetIdentifier]): Unit = {
     if (targetIds.nonEmpty) {
       try {
         val result = buildServer.buildTargetCompile(new CompileParams(targetIds.asJava))
@@ -86,35 +109,39 @@ class BspConnection private (
         val ok = result.getStatusCode == StatusCode.OK || hasBestEffortFlag(targetIds)
         if (ok) onAfterCompile(targetIds)
       } catch {
-        case e: Exception => logger.error(s"compile failed for $uri", e)
+        case e: Exception => logger.error(s"compile failed for ${targetIds.map(_.getUri).mkString(", ")}", e)
       } finally {
         compiledOnce = true
       }
     }
   }
 
-  def shutdown(): Unit = lock.synchronized {
+  def shutdown(): Unit = spawnLock.synchronized {
     alive = false
+    spawning = false
+    pendingCompileTargetIds.clear()
     if (buildServer != null) tryGracefulShutdown()
     killTree()
   }
 
   private def spawnAndHandshake(): Unit = {
-    try {
-      val result = spawnFn()
-      process = result.process
-      buildServer = result.buildServer
-      sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions)
-      sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
-      classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
-      semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
-      compiledOnce = false
-    } catch {
-      case e: Exception =>
-        consecutiveFails.incrementAndGet()
-        lastFailMs.set(System.currentTimeMillis())
-        throw e
+    val result = spawnFn()
+    process = result.process
+    buildServer = result.buildServer
+    sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions)
+    sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
+    classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
+    semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
+  }
+
+  private def drainPendingCompiles(): Unit = {
+    if (pendingCompileTargetIds.isEmpty) return
+    val targetIds = {
+      val list = new java.util.ArrayList(pendingCompileTargetIds)
+      pendingCompileTargetIds.clear()
+      list.asScala.toList
     }
+    compileTargets(targetIds)
   }
 
   private def onAfterCompile(targetIds: List[BuildTargetIdentifier]): Unit = {
@@ -210,6 +237,11 @@ class BspConnection private (
   private[bsp] def aliveForTesting: Boolean = alive
   private[bsp] def simulateProcessExitForTesting(): Unit =
     if (process != null) alive = false
+  private[bsp] def setSpawningFlagForTesting(v: Boolean): Unit = { spawning = v }
+  private[bsp] def pendingCompileTargetIdsForTesting: Vector[BuildTargetIdentifier] = {
+    import scala.jdk.CollectionConverters.*
+    pendingCompileTargetIds.asScala.toVector
+  }
 }
 
 object BspConnection {

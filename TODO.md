@@ -1,4 +1,5 @@
 
+- write config with all BSP defaults, easier to override by user
 - use paths relative to WORKSPACE, not absolute, easier to debug
 
 - go-to-def with semanticdb isnt working well

@@ -37,14 +37,19 @@ class BspConnectionTest extends FunSuite {
   private def fakeSpec: BspConnectionSpec =
     BspConnectionSpec(content = BspDiscoveryFile("fake", List("true")), path = os.pwd, compileTimeoutSec = 2, workspaceRoot = os.pwd)
 
-  test("liveness check failure → killTree + one respawn + MaxRespawnPerCall=1") {
+  private def noopSink = new BspEventSink {
+    def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+    def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+  }
+
+  test("liveness check failure → killTree + respawn") {
     var spawnCount = new AtomicInteger(0)
     var killCalled = new AtomicBoolean(false)
     var firstCall = true
     val conn = BspConnection.forTesting(
       spec = fakeSpec,
       spawn = () => {
-        val n = spawnCount.incrementAndGet()
+        spawnCount.incrementAndGet()
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         val server =
           if firstCall then { firstCall = false; new MockBuildServer {
@@ -57,25 +62,22 @@ class BspConnectionTest extends FunSuite {
           emptyScalacOptions)
       },
       killTree = _ => { killCalled.set(true); () },
-      eventSink = new BspEventSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-      }
+      eventSink = noopSink
     )
 
     conn.poke()  // spawn #1: alive=false → ensureConnected → return (no liveness check yet)
-    conn.poke()  // spawn #2: alive=true → workspaceBuildTargets fails → killTree + respawn
-    assertEquals(spawnCount.get(), 2, "exactly one respawn after a liveness failure")
+    conn.poke()  // alive=true → workspaceBuildTargets fails → killTree + respawn
+    assert(spawnCount.get() >= 2, "respawn after a liveness failure")
     assert(killCalled.get(), "killTree called on the dead process")
     // Third poke: liveness passes (second spawn's server is fine), no further spawn.
     killCalled.set(false)
-    var c = spawnCount.get()
+    val c = spawnCount.get()
     conn.poke()
     assertEquals(spawnCount.get(), c, "no spawn if alive")
     assert(!killCalled.get(), "no killTree if alive")
   }
 
-  test("three rapid respawn fails → 4th call within 5s throws BspUnavailable") {
+  test("spawn failure → next poke triggers fresh spawn") {
     var spawnCount = new AtomicInteger(0)
     val conn = BspConnection.forTesting(
       spec = fakeSpec,
@@ -84,18 +86,17 @@ class BspConnectionTest extends FunSuite {
         throw new RuntimeException("deder refuses to start")
       },
       killTree = _ => (),
-      eventSink = new BspEventSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-      }
+      eventSink = noopSink
     )
-    for (i <- 1 to 3) {
-      try conn.ensureConnected() catch { case _: RuntimeException => () }
-    }
-    intercept[BspUnavailable] { conn.ensureConnected() }
+    // First attempt fails
+    try conn.ensureConnected() catch { case _: RuntimeException => () }
+    assertEquals(spawnCount.get(), 1)
+    // Next attempt also tries (no cooldown, no MaxConsecutiveFails)
+    try conn.ensureConnected() catch { case _: RuntimeException => () }
+    assertEquals(spawnCount.get(), 2, "no cooldown — next poke is a fresh attempt")
   }
 
-  test("successful handshake resets consecutiveFails to 0 immediately") {
+  test("successful handshake → alive → exit → respawn → alive") {
     var spawnCount = new AtomicInteger(0)
     val conn = BspConnection.forTesting(
       spec = fakeSpec,
@@ -109,18 +110,15 @@ class BspConnectionTest extends FunSuite {
           emptyScalacOptions)
       },
       killTree = _ => (),
-      eventSink = new BspEventSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-      }
+      eventSink = noopSink
     )
     conn.poke()   // spawn #1, success
     assertEquals(spawnCount.get(), 1)
     conn.simulateProcessExitForTesting()
-    conn.poke()   // ensures !alive → respawn, success
+    conn.poke()   // !alive → respawn, success
     assertEquals(spawnCount.get(), 2)
     conn.poke()   // alive → ping OK, no respawn
-    assertEquals(spawnCount.get(), 2, "successful respawn resets fail counter")
+    assertEquals(spawnCount.get(), 2)
   }
 
   test("process.onExit callback flips alive=false") {
@@ -135,15 +133,120 @@ class BspConnectionTest extends FunSuite {
           emptyScalacOptions)
       },
       killTree = _ => (),
-      eventSink = new BspEventSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-      }
+      eventSink = noopSink
     )
     conn.poke()
     assert(conn.aliveForTesting, "alive should be true after handshake")
     conn.simulateProcessExitForTesting()
     assert(!conn.aliveForTesting, "alive should flip false after onExit callback")
+  }
+
+  test("poke during spawn returns immediately without blocking") {
+    val latch = new java.util.concurrent.CountDownLatch(1)
+    var spawnCount = new AtomicInteger(0)
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        spawnCount.incrementAndGet()
+        latch.await()  // block spawn until we've tested concurrent access
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        HandshakeResult(proc, new MockBuildServer,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          new SourcesResult(java.util.Collections.emptyList()),
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => (),
+      eventSink = noopSink
+    )
+    // Start spawn in background
+    val t = new Thread(() => conn.poke())
+    t.start()
+    Thread.sleep(100)  // let spawn begin
+    // poke should return immediately (spawning flag set)
+    val start = System.currentTimeMillis()
+    conn.poke()
+    val elapsed = System.currentTimeMillis() - start
+    assert(elapsed < 200, s"poke should return fast during spawn, took ${elapsed}ms")
+    latch.countDown()
+    t.join(5000)
+    assertEquals(spawnCount.get(), 1, "only one spawn despite concurrent poke")
+  }
+
+  test("compile during spawn queues URI and runs after spawn") {
+    var compileCount = new AtomicInteger(0)
+    val tid = new BuildTargetIdentifier("//test")
+    val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
+    val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        val server = new MockBuildServer {
+          override def buildTargetCompile(p: CompileParams) = {
+            compileCount.incrementAndGet()
+            CompletableFuture.completedFuture(new CompileResult(StatusCode.OK))
+          }
+        }
+        HandshakeResult(proc, server,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          sourcesResult,
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => (),
+      eventSink = noopSink
+    )
+    // First spawn: success (populates sourceDirsByTarget)
+    conn.ensureConnected()
+    conn.simulateProcessExitForTesting()
+    // Simulate: spawning in progress + compile queued
+    conn.setSpawningFlagForTesting(true)
+    conn.compile("file:///test/Foo.scala")
+    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1)
+    assertEquals(conn.pendingCompileTargetIdsForTesting.head, tid)
+    // Duplicate compile during same spawn — addIfAbsent prevents dup
+    conn.compile("file:///test/Foo.scala")
+    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1, "addIfAbsent deduplicates")
+    // Release spawn + drain
+    conn.setSpawningFlagForTesting(false)
+    conn.ensureConnected()
+    // After spawn + drain, compile should have been called
+    assert(compileCount.get() >= 1, "queued compile was executed after spawn")
+    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 0, "queue drained after spawn")
+  }
+
+  test("failed spawn clears pending compiles") {
+    val tid = new BuildTargetIdentifier("//bar")
+    val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
+    val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
+    var spawnSucceed = true
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        if (!spawnSucceed) throw new RuntimeException("spawn fail")
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        HandshakeResult(proc, new MockBuildServer,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          sourcesResult,
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => (),
+      eventSink = noopSink
+    )
+    // First spawn: success (populates sourceDirsByTarget)
+    conn.ensureConnected()
+    conn.simulateProcessExitForTesting()
+    // Simulate: spawning in progress + compile queued
+    conn.setSpawningFlagForTesting(true)
+    conn.compile("file:///test/Bar.scala")
+    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1)
+    conn.setSpawningFlagForTesting(false)
+    // Second spawn: fail → queue must be cleared
+    spawnSucceed = false
+    try conn.ensureConnected() catch { case _: RuntimeException => () }
+    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 0, "pending compiles cleared on spawn failure")
   }
 }
 

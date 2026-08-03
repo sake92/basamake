@@ -11,6 +11,7 @@ class BspHandshakeTest extends FunSuite {
       content = BspDiscoveryFile("fake", List("true")),
       path = os.pwd,
       compileTimeoutSec = 5,
+      handshakeTimeoutSec = 5,
       workspaceRoot = os.pwd
     )
     var thrown: Option[Exception] = None
@@ -18,7 +19,7 @@ class BspHandshakeTest extends FunSuite {
       BspHandshake.execute(spec, eventSink = new BspEventSink {
         def onDiagnostics(p: ch.epfl.scala.bsp4j.PublishDiagnosticsParams): Unit = ()
         def onTargetChanged(p: ch.epfl.scala.bsp4j.DidChangeBuildTarget): Unit = ()
-      }, timeoutSec = 5)
+      })
     catch
       case e: Exception => thrown = Some(e)
     assert(thrown.isDefined, "handshake should throw for a process that exits immediately")

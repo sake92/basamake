@@ -26,9 +26,9 @@ object BspHandshake extends StrictLogging {
     * killed before the exception propagates. */
   def execute(
       bspFile: BspConnectionSpec,
-      eventSink: BspEventSink,
-      timeoutSec: Long = 60
+      eventSink: BspEventSink
   ): HandshakeResult = {
+    val timeoutSec = bspFile.handshakeTimeoutSec
     val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
     pb.directory(bspFile.workingDir.toIO)
     val dirName = BspConnectionSpec.dirName(bspFile)

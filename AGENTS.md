@@ -130,12 +130,12 @@ All work runs on `supplyAsync` — no blocking on lsp4j threads.
 
 `BspManager` discovers `.bsp/*.json` at `initialize()` but spawns no processes (lazy). The first
 `poke(uri, compile)` LSP-side — from `didOpen`/`didSave`/`definition`/`references` — calls
-`BspConnection.ensureConnected()` which spawns + handshakes. One `Object` lock per connection
-serializes `ensureConnected`/`poke`/`compile` (JVM synchronized is reentrant — no self-deadlock).
-`process.onExit().thenRun(() => alive = false)` is the only async piece; its callback never
-re-enters the lock. Recovery on next user action: liveness check fails → kill + respawn + one
-retry (MaxRespawnPerCall=1). After 3 rapid fails within 5 s, ensureConnected throws
-BspUnavailable (swallowed by BspManager.poke — keeps existing diagnostics, no spam).
+`BspConnection.ensureConnected()` which spawns + handshakes. `spawnLock` serializes
+`spawnAndHandshake` (preventing concurrent process starts). A volatile `spawning` flag lets
+fast-path callers detect an in-progress spawn: pokes return immediately (no-op), compiles
+are queued in a `CopyOnWriteArrayList` (dedup via `addIfAbsent`) and drained after spawn
+succeeds. On spawn failure the queue is cleared; no cooldown, no retry limits, no
+`BspUnavailable` — every user action is a fresh attempt.
 
 ## Logging
 
@@ -192,7 +192,7 @@ Spec summary + basamake consumer notes: **`agents/semanticdb.md`** — symbol fo
 | `modules/navigation/src/ba/sake/basamake/navigation/javasrc/JavaDefinitionsExtractor.scala` | Pass 1: Java def extraction |
 | `modules/navigation/src/ba/sake/basamake/navigation/javasrc/JavaReferencesResolver.scala` | Pass 2: Java ref resolution |
 | `modules/main/src/ba/sake/basamake/bsp/BspManager.scala` | Owns connections, router, watcher, diagnostics accumulator, shutdown |
-| `modules/main/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, one `Object` lock, reentrant `synchronized` |
+| `modules/main/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, `spawnLock`, `spawning` flag, pending-compile queue |
 | `modules/main/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, queue-free, eventSink-based build client |
 | `modules/main/src/ba/sake/basamake/bsp/BspRouter.scala` | Two-phase URI routing (ground-truth + bootstrap heuristic) |
 | `examples/hello/` | Test project + smoke_test.py |
