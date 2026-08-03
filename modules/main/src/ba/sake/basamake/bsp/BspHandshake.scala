@@ -39,6 +39,10 @@ object BspHandshake extends StrictLogging {
     val process = pb.start()
     logger.info(s"BSP process spawned for ${bspFile.path} (pid ${process.pid()})")
 
+    // Brief pause: give the BSP process time to start its internal server
+    // (e.g. deder-bsp starts a background Deder server, needs a moment).
+    Thread.sleep(200)
+
     try {
       val buildClient = BasamakeBuildClient(eventSink)
 

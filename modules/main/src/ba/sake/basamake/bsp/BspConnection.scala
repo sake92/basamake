@@ -231,10 +231,25 @@ class BspConnection private (
       result.getTargets.asScala.toList
     } catch {
       case e: Exception =>
-        logger.warn(s"buildTargetInverseSources failed for $uri: ${e.getMessage}")
-        if (!inverseSourcesUnsupported) {
-          inverseSourcesUnsupported = true
-          logger.info(s"inverseSources unsupported by ${spec.content.name} (${e.getMessage}) — caching, will skip")
+        if (org.eclipse.lsp4j.jsonrpc.JsonRpcException.indicatesStreamClosed(e)) {
+          // process died — NOT a method-support issue, don't cache
+          logger.debug(s"buildTargetInverseSources stream closed for $uri — process likely died")
+        } else {
+          val isMethodNotFound = e match {
+            case ree: org.eclipse.lsp4j.jsonrpc.ResponseErrorException =>
+              ree.getResponseError.getCode ==
+                org.eclipse.lsp4j.jsonrpc.messages.ResponseErrorCode.MethodNotFound.getValue
+            case _ => false
+          }
+          if (isMethodNotFound) {
+            logger.debug(s"buildTargetInverseSources not supported by ${spec.content.name} — MethodNotFound")
+          } else {
+            logger.warn(s"buildTargetInverseSources failed for $uri: ${e.getMessage}")
+          }
+          if (!inverseSourcesUnsupported) {
+            inverseSourcesUnsupported = true
+            logger.info(s"inverseSources unsupported by ${spec.content.name} (${e.getMessage}) — caching, will skip")
+          }
         }
         Nil
     }

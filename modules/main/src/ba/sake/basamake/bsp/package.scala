@@ -16,7 +16,7 @@ final case class BspConnectionSpec(
     content: BspDiscoveryFile,
     path: os.Path,
     compileTimeoutSec: Long = 600,
-    handshakeTimeoutSec: Long = 120,
+    handshakeTimeoutSec: Long = 10,
     workspaceRoot: os.Path
 ) {
   val workingDir: os.Path = path / os.up / os.up
