@@ -6,7 +6,7 @@ import java.util.{Timer, TimerTask}
 import scala.collection.mutable
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
-import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams}
+import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams, StatusCode, TaskFinishParams, TaskStartParams}
 import org.eclipse.lsp4j.{Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams => LspPublishDiagnosticsParams, Range}
 import org.eclipse.lsp4j.services.LanguageClient
 import com.typesafe.scalalogging.StrictLogging
@@ -96,16 +96,58 @@ class BspManager private (
 
   // ---- BspAfterCompileSink: forward to WorkspaceIndex.invalidate ----
   override def onAfterCompile(roots: List[SemanticdbDirs]): Unit =
-    if (workspaceIndex != null) {
-      try workspaceIndex.invalidate(roots)
-      catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
-    }
+    try workspaceIndex.invalidate(roots)
+    catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
+    
 
   override def onTargetChanged(params: DidChangeBuildTarget): Unit =
     logger.debug(s"buildTargetDidChange: ${params.getChanges.size()} events — no-op in v1")
 
   override def onShowMessage(params: org.eclipse.lsp4j.MessageParams): Unit =
     if (client != null) client.showMessage(params)
+
+  // ---- BSP task notifications → LSP logMessage ----
+  override def onTaskStart(params: TaskStartParams): Unit = {
+    val msg = Option(params.getMessage).filter(_.nonEmpty)
+    msg.foreach { m =>
+      logToClient(org.eclipse.lsp4j.MessageType.Info, s"Compiling: $m")
+    }
+  }
+
+  override def onTaskFinish(params: TaskFinishParams): Unit = {
+    val msg = Option(params.getMessage).filter(_.nonEmpty)
+    val (msgType, text) = params.getStatus match {
+      case StatusCode.ERROR =>
+        (org.eclipse.lsp4j.MessageType.Error,
+         msg.fold("Compilation failed")(m => s"Compilation failed: $m"))
+      case StatusCode.CANCELLED =>
+        (org.eclipse.lsp4j.MessageType.Warning, "Compilation cancelled")
+      case _ =>
+        (org.eclipse.lsp4j.MessageType.Info,
+         msg.fold("Compilation succeeded")(m => m))
+    }
+    logToClient(msgType, text)
+  }
+
+  // ---- Connection lifecycle → LSP logMessage ----
+  override def onConnectionStarted(spec: BspConnectionSpec): Unit =
+    logToClient(org.eclipse.lsp4j.MessageType.Info,
+      s"Connecting to build server: ${spec.content.name}")
+
+  override def onConnectionSucceeded(spec: BspConnectionSpec, targetCount: Int): Unit =
+    logToClient(org.eclipse.lsp4j.MessageType.Info,
+      s"Connected to ${spec.content.name} — $targetCount build target(s)")
+
+  override def onConnectionFailed(spec: BspConnectionSpec, error: String): Unit =
+    logToClient(org.eclipse.lsp4j.MessageType.Error,
+      s"Failed to connect to ${spec.content.name}: $error")
+
+  private def logToClient(msgType: org.eclipse.lsp4j.MessageType, msg: String): Unit = {
+    if (client != null) {
+      client.logMessage(new org.eclipse.lsp4j.MessageParams(msgType, msg))
+      logger.debug(s"→ LSP client: [$msgType] $msg")
+    }
+  }
 
   // ---- Lifecycle ----
   def shutdown(): Unit = {
@@ -303,19 +345,20 @@ object BspManager {
 
   private[bsp] def forTestingWithCapturedDiagnostics(
       root: os.Path = os.temp.dir(prefix = "bsp-diag-test-")
-  ): (BspManager, java.util.List[LspPublishDiagnosticsParams]) = {
+  ): (BspManager, java.util.List[LspPublishDiagnosticsParams], java.util.List[org.eclipse.lsp4j.MessageParams]) = {
     val captured = new CopyOnWriteArrayList[LspPublishDiagnosticsParams]()
+    val capturedLog = new CopyOnWriteArrayList[org.eclipse.lsp4j.MessageParams]()
     val fakeClient = new LanguageClient {
       override def publishDiagnostics(p: LspPublishDiagnosticsParams): Unit = captured.add(p)
       override def telemetryEvent(x$0: Any): Unit = ()
       override def showMessage(x$0: org.eclipse.lsp4j.MessageParams): Unit = ()
       override def showMessageRequest(x$0: org.eclipse.lsp4j.ShowMessageRequestParams): java.util.concurrent.CompletableFuture[org.eclipse.lsp4j.MessageActionItem] = java.util.concurrent.CompletableFuture.completedFuture(null)
-      override def logMessage(x$0: org.eclipse.lsp4j.MessageParams): Unit = ()
+      override def logMessage(x$0: org.eclipse.lsp4j.MessageParams): Unit = capturedLog.add(x$0)
       override def createProgress(x$0: org.eclipse.lsp4j.WorkDoneProgressCreateParams): java.util.concurrent.CompletableFuture[Void] = java.util.concurrent.CompletableFuture.completedFuture(null)
       override def applyEdit(x$0: org.eclipse.lsp4j.ApplyWorkspaceEditParams): java.util.concurrent.CompletableFuture[org.eclipse.lsp4j.ApplyWorkspaceEditResponse] = java.util.concurrent.CompletableFuture.completedFuture(new org.eclipse.lsp4j.ApplyWorkspaceEditResponse(false))
     }
     val mgr = new BspManager(root, null)
     mgr.client = fakeClient
-    (mgr, captured)
+    (mgr, captured, capturedLog)
   }
 }

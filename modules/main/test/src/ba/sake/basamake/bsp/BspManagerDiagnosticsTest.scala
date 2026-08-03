@@ -7,7 +7,7 @@ import munit.FunSuite
 class BspManagerDiagnosticsTest extends FunSuite {
 
   test("two targets emit diagnostics for same uri → union published") {
-    val (mgr, published) = BspManager.forTestingWithCapturedDiagnostics()
+    val (mgr, published, _) = BspManager.forTestingWithCapturedDiagnostics()
     val uri = "file:///x/A.scala"
     val targetA = new BuildTargetIdentifier("bsp://A")
     val targetB = new BuildTargetIdentifier("bsp://B")
@@ -26,7 +26,7 @@ class BspManagerDiagnosticsTest extends FunSuite {
   }
 
   test("reset=true clears only that target's slice") {
-    val (mgr, published) = BspManager.forTestingWithCapturedDiagnostics()
+    val (mgr, published, _) = BspManager.forTestingWithCapturedDiagnostics()
     val uri = "file:///x/A.scala"
     val targetA = new BuildTargetIdentifier("bsp://A")
     val targetB = new BuildTargetIdentifier("bsp://B")

@@ -32,6 +32,7 @@ class BasamakeBuildClient(eventSink: BspEventSink) extends BuildClient, StrictLo
   override def onBuildTaskStart(params: TaskStartParams): Unit = {
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("?")
     logger.debug(s"BSP TASK START: $taskId ${params.getMessage}")
+    eventSink.onTaskStart(params)
   }
 
   override def onBuildTaskProgress(params: TaskProgressParams): Unit = {
@@ -44,6 +45,7 @@ class BasamakeBuildClient(eventSink: BspEventSink) extends BuildClient, StrictLo
     logger.debug(
       s"BSP TASK FINISH: $taskId status=${params.getStatus} msg=${params.getMessage}"
     )
+    eventSink.onTaskFinish(params)
   }
 
   override def onBuildTargetDidChange(params: DidChangeBuildTarget): Unit = {

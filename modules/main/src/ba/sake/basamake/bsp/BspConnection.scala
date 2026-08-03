@@ -44,7 +44,7 @@ class BspConnection private (
   /** Compile target IDs that arrived during spawn. Dedup via addIfAbsent. */
   private val pendingCompileTargetIds = new CopyOnWriteArrayList[BuildTargetIdentifier]()
   
-  private val PingTimeoutSec = 2L
+  private val PingTimeoutSec = 3L
   private val ShutdownTimeoutSec = 2L
 
   def ensureConnected(): Unit = {
@@ -55,13 +55,16 @@ class BspConnection private (
       if (spawning) return        // another thread started spawn between our check and lock
       spawning = true
       try {
+        eventSink.onConnectionStarted(spec)
         spawnAndHandshake()
         process.onExit().thenRun(() => alive = false)
         alive = true
         compiledOnce = false
+        eventSink.onConnectionSucceeded(spec, sourceDirsByTarget.size)
       } catch {
         case e: Exception =>
           pendingCompileTargetIds.clear()   // discard queued work
+          eventSink.onConnectionFailed(spec, e.getMessage)
           throw e
       } finally {
         spawning = false
@@ -106,10 +109,13 @@ class BspConnection private (
       try {
         val result = buildServer.buildTargetCompile(new CompileParams(targetIds.asJava))
           .get(spec.compileTimeoutSec, TimeUnit.SECONDS)
-        val ok = result.getStatusCode == StatusCode.OK || hasBestEffortFlag(targetIds)
-        if (ok) onAfterCompile(targetIds)
+        if result.getStatusCode == StatusCode.OK || hasBestEffortFlag(targetIds) then
+          onAfterCompile(targetIds)
       } catch {
-        case e: Exception => logger.error(s"compile failed for ${targetIds.map(_.getUri).mkString(", ")}", e)
+        case e: Exception => 
+          logger.error(s"compile failed for ${targetIds.map(_.getUri).mkString(", ")}", e)
+          if hasBestEffortFlag(targetIds) then
+            onAfterCompile(targetIds)
       } finally {
         compiledOnce = true
       }
@@ -225,6 +231,7 @@ class BspConnection private (
       result.getTargets.asScala.toList
     } catch {
       case e: Exception =>
+        logger.warn(s"buildTargetInverseSources failed for $uri: ${e.getMessage}")
         if (!inverseSourcesUnsupported) {
           inverseSourcesUnsupported = true
           logger.info(s"inverseSources unsupported by ${spec.content.name} (${e.getMessage}) — caching, will skip")
