@@ -87,8 +87,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
     val path = os.Path(URI.create(uri))
-    workspaceIndex.onDidSave(path, Option(params.getText))
-    Thread.ofVirtual().start(() => bspManager.poke(uri, compile = true))
+    Thread.ofVirtual().start(() => {
+      bspManager.poke(uri, compile = true)
+      workspaceIndex.onDidSave(path, Option(params.getText))
+    })
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {

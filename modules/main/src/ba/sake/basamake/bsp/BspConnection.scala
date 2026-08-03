@@ -38,7 +38,7 @@ class BspConnection private (
   /** target → source dirs (from handshake SourcesResult). Used by selectTargets. */
   @volatile private var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
   @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
-  /** target → semanticdb dirs (from handshake ScalacOptionsResult). */
+  /** target → semanticdb target dir (from handshake ScalacOptionsResult). */
   @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
 
   private val lock = new Object
@@ -46,7 +46,7 @@ class BspConnection private (
   private val lastFailMs = new AtomicLong(0)
 
   private val MaxRespawnPerCall = 1
-  private val CooldownMs = 5_000L
+  private val CooldownMs = 5_000L // TODO remove ?
   private val MaxConsecutiveFails = 3
   private val PingTimeoutSec = 2L
   private val ShutdownTimeoutSec = 2L

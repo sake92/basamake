@@ -8,10 +8,10 @@ object Main {
     dederutils.greet(name = "World")
   }
 
-  def broken(): Unit = {
+  def brojjjjken(): Unit = {
     // Deliberate compile error: type mismatch + undefined identifier
-    val x = "this is a string"gdg
-    val y = x // nonexistentFunction(x) 
+    val x = "this is a string" 
+    val y = 545 //nonexistentFunggdgction(x) 
     println(y)
   }
 }
