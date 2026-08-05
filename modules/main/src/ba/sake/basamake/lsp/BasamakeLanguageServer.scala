@@ -34,6 +34,12 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setDocumentSymbolProvider(true)
+    // Advertise rename handling so VS Code sends didRenameFiles notifications.
+    val fileOps = new FileOperationsServerCapabilities()
+    fileOps.setDidRename(new FileOperationOptions())
+    val wsCaps = new WorkspaceServerCapabilities()
+    wsCaps.setFileOperations(fileOps)
+    capabilities.setWorkspace(wsCaps)
     val roots = loadSemanticdbRootsFromDataJson()
     try {
       workspaceIndex.initialize(roots)
@@ -69,11 +75,23 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = ()
   override def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
 
+  /** VS Code sends workspace/didRenameFiles when user renames a file.
+    * Clear old diagnostics, re-index new file into WorkspaceIndex,
+    * and trigger BSP compile so diagnostics appear for the new file. */
+  override def didRenameFiles(params: RenameFilesParams): Unit = {
+    params.getFiles.forEach { rename =>
+      bspManager.clearDiagnostics(rename.getOldUri)
+      val newPath = os.Path(URI.create(rename.getNewUri))
+      workspaceIndex.onDidOpen(newPath)
+      Thread.ofVirtual().start(() => bspManager.poke(rename.getNewUri, compile = true))
+    }
+  }
+
   // ----- TextDocumentService
   override def didOpen(params: DidOpenTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
     val path = os.Path(URI.create(uri))
-    workspaceIndex.onDidOpen(path, params.getTextDocument.getText)
+    workspaceIndex.onDidOpen(path)
     Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
   }
 

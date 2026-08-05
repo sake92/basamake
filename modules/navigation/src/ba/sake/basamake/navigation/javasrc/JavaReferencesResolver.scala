@@ -177,6 +177,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val ctors = c.getConstructors.asScala
     if (ctors.nonEmpty) {
       ctors.head.getParameters.asScala.foreach { p =>
+        // TODO: emit param def
       }
     }
 

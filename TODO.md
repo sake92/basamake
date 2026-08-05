@@ -1,4 +1,5 @@
 
+- cleanup workspaceIndex.onDidChange(path, text) no need to pass text, we can read file
 - write config with all BSP defaults, easier to override by user
 - use paths relative to WORKSPACE, not absolute, easier to debug
 

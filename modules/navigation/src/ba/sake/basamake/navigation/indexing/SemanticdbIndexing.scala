@@ -117,7 +117,9 @@ object SemanticdbIndexing extends StrictLogging {
     */
   def parseOccurrences(semPath: os.Path, sourcePath: os.Path): ResolvedFile = {
     val bytes = os.read.bytes(semPath)
-    val doc = TextDocuments.parseFrom(bytes).documents.head
+    val docs = TextDocuments.parseFrom(bytes).documents
+    if (docs.isEmpty) return ResolvedFile(Vector.empty, Vector.empty)
+    val doc = docs.head
     val (references, definitions) = doc.occurrences.toVector
       .filter(_.symbol.nonEmpty)
       .partition(_.role == scala.meta.internal.semanticdb.SymbolOccurrence.Role.REFERENCE)

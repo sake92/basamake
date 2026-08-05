@@ -89,7 +89,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
   }
 
   // ── onDidOpen/Change/Save/Close ──────────────────────────────
-  def onDidOpen(path: os.Path, text: String): Unit = synchronized {
+  def onDidOpen(path: os.Path): Unit = synchronized {
+    val text = try os.read(path) catch { case _: Exception => return }
     openBuffers(path) = text
     refreshOpenBuffer(path)
     dirty.remove(path)

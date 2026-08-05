@@ -34,7 +34,7 @@ class WorkspaceIndexTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, os.read(mainFile))
+      idx.onDidOpen(mainFile)
       val syms = idx.findSymbolsAt(mainFile, 10, 4)
       assert(syms.exists(_ == "_empty_/utils."),
         s"Expected _empty_/utils., got: ${syms}")
@@ -46,7 +46,7 @@ class WorkspaceIndexTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, os.read(mainFile))
+      idx.onDidOpen(mainFile)
       val locs = idx.gotoDefinitions(mainFile, 10, 4)
       assert(locs.nonEmpty, s"Expected locations for utils, got $locs")
       assertEquals(locs.head.path.last, "utils.scala")
@@ -58,7 +58,7 @@ class WorkspaceIndexTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, os.read(mainFile))
+      idx.onDidOpen(mainFile)
       val locs = idx.gotoDefinitions(mainFile, 10, 10)
       assert(locs.nonEmpty, s"Expected locations for getMsg, got $locs")
       assertEquals(locs.head.path.last, "utils.scala")
@@ -71,8 +71,8 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, os.read(mainFile))
-      idx.onDidOpen(utilsFile, os.read(utilsFile))
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(utilsFile)
       val refs = idx.references(utilsFile, 1, 7, includeDeclaration = true)
       assert(refs.nonEmpty, s"Expected references for utils, got $refs")
       val mainRefs = refs.filter(_.path == mainFile)
@@ -108,7 +108,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>add)\(2, 3\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected add definition, got empty")
@@ -123,7 +123,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>siblingVal)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected siblingVal definition, got empty")
@@ -137,7 +137,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>other)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty)
@@ -151,7 +151,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>greet)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected greet definition, got empty")
@@ -166,7 +166,7 @@ class WorkspaceIndexTest extends FunSuite {
       val sibFile = root / "Siblings.scala"
       val sibText = os.read(sibFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(sibFile, sibText)
+      idx.onDidOpen(sibFile)
       val (l, c) = TestPositions.at(sibText, """(?<p>add)\(a""")
       val locs = idx.gotoDefinitions(sibFile, l, c)
       assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
@@ -179,7 +179,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """println\((?<p>local)\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected local definition, got empty")
@@ -198,7 +198,7 @@ class WorkspaceIndexTest extends FunSuite {
       val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>greeting)\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected greeting def, got empty")
@@ -213,7 +213,7 @@ class WorkspaceIndexTest extends FunSuite {
       val utilFile = root / "src" / "main" / "scala" / "com" / "example" / "Util.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>doubled)\(21\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty)
@@ -228,7 +228,7 @@ class WorkspaceIndexTest extends FunSuite {
       val utilFile = root / "src" / "main" / "scala" / "com" / "example" / "Util.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>helper)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected helper def via wrapper scan, got empty")
@@ -243,7 +243,7 @@ class WorkspaceIndexTest extends FunSuite {
       val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """new (?<p>Person)\(""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected Person type/ctor ref, got empty")
@@ -257,7 +257,7 @@ class WorkspaceIndexTest extends FunSuite {
       val modelsFile = root / "src" / "main" / "scala" / "com" / "example" / "Models.scala"
       val modelsText = os.read(modelsFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(modelsFile, modelsText)
+      idx.onDidOpen(modelsFile)
       val (l, c) = TestPositions.at(modelsText, """case (?<p>Red),""")
       val locs = idx.gotoDefinitions(modelsFile, l, c)
       assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
@@ -272,8 +272,8 @@ class WorkspaceIndexTest extends FunSuite {
       val mainText = os.read(mainFile)
       val modelsText = os.read(modelsFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(modelsFile, modelsText)
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(modelsFile)
       val (l, c) = TestPositions.at(modelsText, """val (?<p>greeting):""")
       val refs = idx.references(modelsFile, l, c, includeDeclaration = true)
       assert(refs.exists(_.path == mainFile), s"expected usage in Main.scala, got ${refs.map(_.path.last)}")
@@ -290,7 +290,7 @@ class WorkspaceIndexTest extends FunSuite {
       val outerFile = root / "src" / "main" / "scala" / "com" / "example" / "outer" / "Outer.scala"
       val outerText = os.read(outerFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(outerFile, outerText)
+      idx.onDidOpen(outerFile)
       val (l, c) = TestPositions.at(outerText, """self: (?<p>Outer)\)""")
       val locs = idx.gotoDefinitions(outerFile, l, c)
       assert(locs.nonEmpty, s"expected Outer type ref, got empty")
@@ -304,7 +304,7 @@ class WorkspaceIndexTest extends FunSuite {
       val outerFile = root / "src" / "main" / "scala" / "com" / "example" / "outer" / "Outer.scala"
       val outerText = os.read(outerFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(outerFile, outerText)
+      idx.onDidOpen(outerFile)
       val (l, c) = TestPositions.at(outerText, """def (?<p>m)\(\): Int""")
       val locs = idx.gotoDefinitions(outerFile, l, c)
       assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
@@ -317,7 +317,7 @@ class WorkspaceIndexTest extends FunSuite {
       val pkgFile = root / "src" / "main" / "scala" / "com" / "example" / "pkg.scala"
       val pkgText = os.read(pkgFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(pkgFile, pkgText)
+      idx.onDidOpen(pkgFile)
       val (l, c) = TestPositions.at(pkgText, """println\((?<p>answer)\)""")
       val locs = idx.gotoDefinitions(pkgFile, l, c)
       if (locs.nonEmpty) {
@@ -332,7 +332,7 @@ class WorkspaceIndexTest extends FunSuite {
       val pkgFile = root / "src" / "main" / "scala" / "com" / "example" / "pkg.scala"
       val pkgText = os.read(pkgFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(pkgFile, pkgText)
+      idx.onDidOpen(pkgFile)
       val (l, c) = TestPositions.at(pkgText, """(?<p>hello)\(\)""")
       val locs = idx.gotoDefinitions(pkgFile, l, c)
       assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
@@ -350,7 +350,7 @@ class WorkspaceIndexTest extends FunSuite {
       val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
       val useText = os.read(useFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(useFile, useText)
+      idx.onDidOpen(useFile)
       val (l, c) = TestPositions.at(useText, """import com.lang.(?<p>Greeter)""")
       val locs = idx.gotoDefinitions(useFile, l, c)
       assert(locs.nonEmpty, s"expected Java Greeter type, got empty")
@@ -365,7 +365,7 @@ class WorkspaceIndexTest extends FunSuite {
       val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
       val useText = os.read(useFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(useFile, useText)
+      idx.onDidOpen(useFile)
       val (l, c) = TestPositions.at(useText, """Greeter.(?<p>hello)\(\)""")
       val locs = idx.gotoDefinitions(useFile, l, c)
       assert(locs.nonEmpty, s"expected Greeter.hello method, got empty")
@@ -380,7 +380,7 @@ class WorkspaceIndexTest extends FunSuite {
       val greeterFile = root / "src" / "main" / "java" / "com" / "lang" / "Greeter.java"
       val useText = os.read(useFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(useFile, useText)
+      idx.onDidOpen(useFile)
       val (l, c) = TestPositions.at(useText, """new (?<p>Greeter)\(\)""")
       val locs = idx.gotoDefinitions(useFile, l, c)
       assert(locs.nonEmpty)
@@ -398,7 +398,7 @@ class WorkspaceIndexTest extends FunSuite {
       val sibFile = root / "Siblings.scala"
       val sibText = os.read(sibFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(sibFile, sibText)
+      idx.onDidOpen(sibFile)
       val (l, c) = TestPositions.at(sibText, """object Helper(?<p>:)""")
       val res = idx.findSymbolsAt(sibFile, l, c)
       assert(res.isEmpty, s"expected no symbol at ':' colon, got $res")
@@ -416,7 +416,7 @@ class WorkspaceIndexTest extends FunSuite {
       val bla2File = root / "bla2.scala"
       val blaText = os.read(blaFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(blaFile, blaText)
+      idx.onDidOpen(blaFile)
       val (l, c) = TestPositions.at(blaText, """utils.add\((?<p>a) =""")
       val locs = idx.gotoDefinitions(blaFile, l, c)
       assert(locs.nonEmpty, s"expected named-param `a` to resolve, got empty")
@@ -432,7 +432,7 @@ class WorkspaceIndexTest extends FunSuite {
       val bla2File = root / "bla2.scala"
       val blaText = os.read(blaFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(blaFile, blaText)
+      idx.onDidOpen(blaFile)
       val (l, c) = TestPositions.at(blaText, """(?<p>b) =  3""")
       val locs = idx.gotoDefinitions(blaFile, l, c)
       assert(locs.nonEmpty, s"expected named-param `b` to resolve, got empty")
@@ -448,7 +448,7 @@ class WorkspaceIndexTest extends FunSuite {
       val bla2File = root / "bla2.scala"
       val blaText = os.read(blaFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(blaFile, blaText)
+      idx.onDidOpen(blaFile)
       val (l, c) = TestPositions.at(blaText, """new Bla\(\)\.(?<p>div)\(""")
       val locs = idx.gotoDefinitions(blaFile, l, c)
       assert(locs.nonEmpty, s"expected div to resolve from new Bla().div(), got empty")
@@ -464,7 +464,7 @@ class WorkspaceIndexTest extends FunSuite {
       val dzavaFile = root / "dzava.java"
       val blaText = os.read(blaFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(blaFile, blaText)
+      idx.onDidOpen(blaFile)
       val (l, c) = TestPositions.at(blaText, """new (?<p>Dzava)""")
       val locs = idx.gotoDefinitions(blaFile, l, c)
       assert(locs.nonEmpty, s"expected Dzava type ref from scala to resolve, got empty")
@@ -480,7 +480,7 @@ class WorkspaceIndexTest extends FunSuite {
       val dzavaFile = root / "dzava.java"
       val bla2Text = os.read(bla2File)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(bla2File, bla2Text)
+      idx.onDidOpen(bla2File)
       val (l, c) = TestPositions.at(bla2Text, """new Dzava\(\)\.(?<p>dzava)\(\)""")
       val locs = idx.gotoDefinitions(bla2File, l, c)
       assert(locs.nonEmpty, s"expected dzava method to resolve cross-language, got empty")
@@ -495,7 +495,7 @@ class WorkspaceIndexTest extends FunSuite {
       val bla2File = root / "bla2.scala"
       val bla2Text = os.read(bla2File)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(bla2File, bla2Text)
+      idx.onDidOpen(bla2File)
       val (l, c) = TestPositions.at(bla2Text, """class (?<p>Bla)""")
       val locs = idx.gotoDefinitions(bla2File, l, c)
       assert(locs.isEmpty, s"expected empty from def site (no self-goto), got $locs")
@@ -511,7 +511,7 @@ class WorkspaceIndexTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, os.read(mainFile))
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(os.read(mainFile), """(?<p>utils)\.getMsg""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected utils goto to resolve via semanticdb, got empty")
@@ -524,7 +524,7 @@ class WorkspaceIndexTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, os.read(mainFile))
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected getMsg goto to resolve via semanticdb, got empty")
@@ -541,8 +541,8 @@ class WorkspaceIndexTest extends FunSuite {
       val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(utilsFile, os.read(utilsFile))
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(utilsFile)
       val (l, c) = TestPositions.at(mainText, """utils\.(?<p>getMsg)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected getMsg to resolve via source-only, got empty")
@@ -560,7 +560,7 @@ class WorkspaceIndexTest extends FunSuite {
       val dzavaFile = root / "dzava.java"
       val dzavaText = os.read(dzavaFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(dzavaFile, dzavaText)
+      idx.onDidOpen(dzavaFile)
       val (l, c) = TestPositions.at(dzavaText, """int sum = (?<p>a) \+ b""")
       val locs = idx.gotoDefinitions(dzavaFile, l, c)
       assert(locs.nonEmpty, s"expected local var `a` goto to resolve, got empty")
@@ -573,7 +573,7 @@ class WorkspaceIndexTest extends FunSuite {
       val dzavaFile = root / "dzava.java"
       val dzavaText = os.read(dzavaFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(dzavaFile, dzavaText)
+      idx.onDidOpen(dzavaFile)
       val (l, c) = TestPositions.at(dzavaText, """a \+ (?<p>b);""")
       val locs = idx.gotoDefinitions(dzavaFile, l, c)
       assert(locs.nonEmpty, s"expected local var `b` goto to resolve, got empty")
@@ -592,8 +592,8 @@ class WorkspaceIndexTest extends FunSuite {
       val mainText = os.read(mainFile)
       val sibText = os.read(sibFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(sibFile, sibText)
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(sibFile)
       val (l, c) = TestPositions.at(sibText, """def (?<p>add)\(a""")
       val refs = idx.references(sibFile, l, c, includeDeclaration = true)
       assert(refs.exists(_.path == mainFile), s"expected add usage in Main.scala, got ${refs.map(_.path.last)}")
@@ -607,7 +607,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """val (?<p>local) = add""")
       val refs = idx.references(mainFile, l, c, includeDeclaration = true)
       assert(refs.nonEmpty, s"expected local refs, got empty")
@@ -623,8 +623,8 @@ class WorkspaceIndexTest extends FunSuite {
       val mainText = os.read(mainFile)
       val modelsText = os.read(modelsFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(modelsFile, modelsText)
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(modelsFile)
       val (l, c) = TestPositions.at(modelsText, """val (?<p>greeting):""")
       val refs = idx.references(modelsFile, l, c, includeDeclaration = true)
       assert(refs.exists(_.path == mainFile), s"expected greeting usage in Main.scala, got ${refs.map(_.path.last)}")
@@ -639,8 +639,8 @@ class WorkspaceIndexTest extends FunSuite {
       val mainText = os.read(mainFile)
       val modelsText = os.read(modelsFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(modelsFile, modelsText)
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(modelsFile)
       val (l, c) = TestPositions.at(modelsText, """val (?<p>greeting):""")
       val refsWith = idx.references(modelsFile, l, c, includeDeclaration = true)
       val refsWithout = idx.references(modelsFile, l, c, includeDeclaration = false)
@@ -658,8 +658,8 @@ class WorkspaceIndexTest extends FunSuite {
       val useText = os.read(useFile)
       val greeterText = os.read(greeterFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(useFile, useText)
-      idx.onDidOpen(greeterFile, greeterText)
+      idx.onDidOpen(useFile)
+      idx.onDidOpen(greeterFile)
       val (l, c) = TestPositions.at(greeterText, """class (?<p>Greeter)""")
       val refs = idx.references(greeterFile, l, c, includeDeclaration = true)
       assert(refs.exists(_.path == useFile), s"expected Greeter usage in Use.scala, got ${refs.map(_.path.last)}")
@@ -674,8 +674,8 @@ class WorkspaceIndexTest extends FunSuite {
       val blaText = os.read(blaFile)
       val bla2Text = os.read(bla2File)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(blaFile, blaText)
-      idx.onDidOpen(bla2File, bla2Text)
+      idx.onDidOpen(blaFile)
+      idx.onDidOpen(bla2File)
       val (l, c) = TestPositions.at(bla2Text, """object (?<p>utils)""")
       val refs = idx.references(bla2File, l, c, includeDeclaration = true)
       assert(refs.exists(_.path == blaFile), s"expected utils usage in bla.scala, got ${refs.map(_.path.last)}")
@@ -689,7 +689,7 @@ class WorkspaceIndexTest extends FunSuite {
       val mainFile = root / "Main.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       // Cursor on a line that has only whitespace (line after the last content)
       val refs = idx.references(mainFile, 999, 0, includeDeclaration = true)
       assert(refs.isEmpty, s"expected no refs on empty cursor, got ${refs.size}")
@@ -704,8 +704,8 @@ class WorkspaceIndexTest extends FunSuite {
       val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
       val mainText = os.read(mainFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(utilsFile, os.read(utilsFile))
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(utilsFile)
       val (l, c) = TestPositions.at(mainText, """utils\.(?<p>getMsg)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"expected getMsg to resolve via source-only, got empty")
@@ -726,8 +726,8 @@ class WorkspaceIndexTest extends FunSuite {
       val mainText = os.read(mainFile)
       val utilsText = os.read(utilsFile)
       val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile, mainText)
-      idx.onDidOpen(utilsFile, utilsText)
+      idx.onDidOpen(mainFile)
+      idx.onDidOpen(utilsFile)
       // Cursor on def site of getMsg in utils.scala
       val (l, c) = TestPositions.at(utilsText, """def (?<p>getMsg)""")
       val refs = idx.references(utilsFile, l, c, includeDeclaration = true)
@@ -752,7 +752,7 @@ class WorkspaceIndexTest extends FunSuite {
       Thread.sleep(10) // ensure mtime difference is visible on all filesystems
       val (idx, _) = freshIndexAt(root)
       val mainText = os.read(mainFile)
-      idx.onDidOpen(mainFile, mainText)
+      idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """utils\.(?<p>getMsg)\(\)""")
       val locs = idx.gotoDefinitions(mainFile, l, c)
       assert(locs.nonEmpty, s"stale semanticdb should fall back to source parsing, got empty")

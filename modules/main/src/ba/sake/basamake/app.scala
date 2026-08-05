@@ -4,8 +4,8 @@ import ba.sake.basamake.navigation.*
 import ba.sake.basamake.navigation.scalasrc.*
 import ba.sake.basamake.navigation.indexing.*
 
-@main def app(): Unit = {
-  
+  @main def app(): Unit = {
+    
   val fileName = "bla.scala"
   val filePath = os.pwd / fileName
   val code = 
@@ -17,6 +17,7 @@ import ba.sake.basamake.navigation.indexing.*
        |def add(a: Int, b: Int): Int = a + b
        |""".stripMargin
 
+  os.write.over(filePath, code)
 
   val symbolTable = new SymbolTable
   val extractor = new ScalaDefinitionsExtractor(symbolTable)
@@ -26,7 +27,7 @@ import ba.sake.basamake.navigation.indexing.*
 
 
   val workspaceIndex = new WorkspaceIndex(os.pwd, symbolTable)
-  workspaceIndex.onDidOpen(filePath, code)
+  workspaceIndex.onDidOpen(filePath)
   {
     val definitions = workspaceIndex.gotoDefinitions(filePath, line = 2, char = 14)
     println(s"gotoDefinition: ${definitions}")
