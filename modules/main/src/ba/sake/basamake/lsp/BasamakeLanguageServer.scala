@@ -161,6 +161,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
       val locs = workspaceIndex.gotoDefinitions(path, line, char).map(toLspLocation).asJava
+      logger.debug(s"definition at $line:$char → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
       org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locs)
     }
 
@@ -173,7 +174,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
       val includeDecl = params.getContext.isIncludeDeclaration
-      workspaceIndex.references(path, line, char, includeDecl).map(toLspLocation).asJava
+      val locs = workspaceIndex.references(path, line, char, includeDecl).map(toLspLocation).asJava
+      logger.debug(s"references at $line:$char (includeDecl=$includeDecl) → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
+      locs
     }
 
   // documentSymbol returns empty for v1 — descriptor → SymbolKind map is deferred follow-up

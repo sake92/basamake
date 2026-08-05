@@ -3,6 +3,7 @@ package ba.sake.basamake.bsp
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import ch.epfl.scala.bsp4j.*
+import scala.jdk.CollectionConverters.*
 import munit.FunSuite
 
 /** Base mock BuildServer — returns completed empty futures for all methods.
@@ -310,6 +311,45 @@ class BspConnectionTest extends FunSuite {
     spawnSucceed = false
     try conn.ensureConnected() catch { case _: RuntimeException => () }
     assertEquals(conn.pendingCompileTargetIdsForTesting.size, 0, "pending compiles cleared on spawn failure")
+  }
+
+  // ── sourceRootDirByTarget (semanticdb source-root resolution) ──
+
+  private def scalacOptionsItem(tid: BuildTargetIdentifier, options: List[String]): ScalacOptionsItem =
+    new ScalacOptionsItem(tid, options.asJava, java.util.Collections.emptyList(), "/class/dir")
+
+  test("sourceRootDirByTarget: explicit -sourceroot flag wins over workingDir") {
+    val tid = new BuildTargetIdentifier("//t")
+    val result = new ScalacOptionsResult(java.util.List.of(
+      scalacOptionsItem(tid, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out"))))
+    val map = BspConnection.sourceRootDirByTarget(result, os.Path("/work/dir"))
+    assertEquals(map(tid), os.Path("/flag/root"))
+  }
+
+  test("sourceRootDirByTarget: scala3 colon form -sourceroot:<dir> is recognized") {
+    val tid = new BuildTargetIdentifier("//t")
+    val result = new ScalacOptionsResult(java.util.List.of(
+      scalacOptionsItem(tid, List("-sourceroot:/colon/root"))))
+    val map = BspConnection.sourceRootDirByTarget(result, os.Path("/work/dir"))
+    assertEquals(map(tid), os.Path("/colon/root"))
+  }
+
+  test("sourceRootDirByTarget: falls back to BSP workingDir when no -sourceroot flag (sbt case)") {
+    val tid = new BuildTargetIdentifier("//t")
+    // sbt-semanticdb passes only -Xsemanticdb + -semanticdb-target — no -sourceroot
+    val result = new ScalacOptionsResult(java.util.List.of(
+      scalacOptionsItem(tid, List("-Xsemanticdb", "-semanticdb-target", "/sem/out"))))
+    val map = BspConnection.sourceRootDirByTarget(result, os.Path("/project/base"))
+    assertEquals(map(tid), os.Path("/project/base"))
+  }
+
+  test("sourceRootDirByTarget: empty scalacOptions → empty map (no crash)") {
+    val result = new ScalacOptionsResult(java.util.Collections.emptyList())
+    assertEquals(BspConnection.sourceRootDirByTarget(result, os.Path("/work")), Map.empty)
+  }
+
+  test("BspConnectionSpec: default handshake timeout is 120s (matches BasamakeConfig docs)") {
+    assertEquals(fakeSpec.handshakeTimeoutSec, 120L)
   }
 }
 

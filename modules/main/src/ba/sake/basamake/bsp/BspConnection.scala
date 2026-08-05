@@ -143,7 +143,7 @@ class BspConnection private (
     val result = spawnFn()
     process = result.process
     buildServer = result.buildServer
-    sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions)
+    sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions, spec.workingDir)
     sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
     classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
     semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
@@ -302,11 +302,19 @@ object BspConnection {
     org.eclipse.lsp4j.jsonrpc.JsonRpcException.indicatesStreamClosed(unwrapped)
   }
 
-  private[bsp] def sourceRootDirByTarget(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, os.Path] = {
+  /** Per-target source root for SemanticDB URI resolution.
+    * Chain: explicit `-sourceroot` flag → BSP working dir (the .bsp file's parent —
+    * the project base for sbt, which does NOT pass `-sourceroot` at all).
+    * Callers fall back to the workspace root for targets missing from the map.
+    * Never falls back to os.pwd: the LSP process cwd is unrelated to the build layout. */
+  private[bsp] def sourceRootDirByTarget(
+      opts: ScalacOptionsResult,
+      workingDir: os.Path
+  ): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
       val target = item.getTarget
-      val path = ScalacOptionsUtils.sourceRootDir(Option(item.getOptions).toList.flatMap(_.asScala))
-      target -> path
+      val fromFlag = ScalacOptionsUtils.sourceRootDir(Option(item.getOptions).toList.flatMap(_.asScala))
+      target -> fromFlag.getOrElse(workingDir)
     }.toMap
   }
 

@@ -111,7 +111,28 @@ object BspHandshake extends StrictLogging {
       case e: Exception =>
         val signaled = ProcessUtils.terminateProcessTree(process)
         logger.warn(s"Handshake failed, killed process ${process.pid()} (signaled $signaled nodes)", e)
-        throw e
+        val bspFileRel = try bspFile.path.relativeTo(bspFile.workspaceRoot).toString
+          catch { case _: Exception => bspFile.path.toString }
+        throw new RuntimeException(BspHandshake.describeHandshakeFailure(e, timeoutSec, logDir, bspFileRel), e)
     }
+  }
+
+  /** Human-readable handshake failure. Timeouts get a descriptive message pointing
+    * at the build server's stderr log and the config override — a bare
+    * TimeoutException has a null message which would otherwise surface as
+    * "Failed to connect to X: null". */
+  private[bsp] def describeHandshakeFailure(e: Exception, timeoutSec: Long, logDir: os.Path, bspFileRel: String): String = {
+    val isTimeout = e match {
+      case _: java.util.concurrent.TimeoutException => true
+      case ee: java.util.concurrent.ExecutionException =>
+        ee.getCause.isInstanceOf[java.util.concurrent.TimeoutException]
+      case _ => false
+    }
+    if (isTimeout)
+      s"BSP handshake timed out after ${timeoutSec}s — the build server is slow to start " +
+        s"(see ${logDir / "stderr.log"}). Increase the timeout in .basamake/config.json, " +
+        s"""e.g. {"bspOverrides": [{"bspFile": "$bspFileRel", "handshakeTimeoutSec": 300}]}"""
+    else
+      Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
   }
 }

@@ -759,4 +759,54 @@ class WorkspaceIndexTest extends FunSuite {
       assertEquals(locs.head.path.last, "utils.scala")
     } finally os.remove.all(root)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // semanticdb pairing: initialize with roots + invalidate upgrade
+  // (fresh sbt project flow: compile generates semanticdb → invalidate loads it)
+  // ═══════════════════════════════════════════════════════════════
+
+  test("sbt fixture: initialize with semanticdb roots populates symbols from semanticdb") {
+    val root = TestFixture.copy("sbt", "sbt-semdb-init")
+    try {
+      val st = new SymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      val semDir = root / "target" / "scala-3.8.4" / "meta"
+      idx.initialize(List(SemanticdbDirs(root, semDir)))
+      val getMsgSym = st.get("_empty_/utils.getMsg().")
+      assert(getMsgSym.isDefined, s"expected semanticdb _empty_/utils.getMsg(). in symbol table")
+      assertEquals(getMsgSym.get.path, root / "src" / "main" / "scala" / "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("sbt fixture: invalidate after source-only init upgrades to semanticdb (fresh-project flow)") {
+    val root = TestFixture.copy("sbt", "sbt-semdb-upgrade")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root) // source-only (no data.json on fresh project)
+      idx.onDidOpen(mainFile)
+      val semDir = root / "target" / "scala-3.8.4" / "meta"
+      idx.invalidate(List(SemanticdbDirs(root, semDir)))
+      val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected getMsg to resolve after invalidate, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("sbt fixture: partial semanticdb ref symbols → occurrences fall back to source parse") {
+    val root = TestFixture.copy("sbt", "sbt-semdb-partialrefs")
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(mainFile)
+      val semDir = root / "target" / "scala-3.8.4" / "meta"
+      idx.invalidate(List(SemanticdbDirs(root, semDir)))
+      // The fixture semanticdb emits PARTIAL ref symbols (`getMsg.`, no owner
+      // prefix, e.g. under -Ybest-effort). The fallback must produce FULL symbols
+      // via source parsing so goto-def resolves.
+      val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
+      val syms = idx.findSymbolsAt(mainFile, l, c)
+      assert(syms.contains("_empty_/utils.getMsg()."), s"expected full symbol via source fallback, got $syms")
+    } finally os.remove.all(root)
+  }
 }

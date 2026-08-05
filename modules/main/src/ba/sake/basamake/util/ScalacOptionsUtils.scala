@@ -10,28 +10,42 @@ object ScalacOptionsUtils {
       options.exists(_.startsWith("-P:semanticdb:")) ||
       options.exists(_ == "-Xplugin:semanticdb")
 
-  def sourceRootDir(options: List[String]): os.Path = {
-    val scala3 = options.sliding(2).collect {
+  /** Extracts the source root (`-sourceroot`) from scalac options.
+    * Scala 3 accepts both `-sourceroot <dir>` and `-sourceroot:<dir>` (verified
+    * on 3.7/3.8); Scala 2 semanticdb uses `-P:semanticdb:sourceroot:<dir>`.
+    * None when not specified — callers must choose a sensible fallback
+    * (NOT os.pwd: the LSP process cwd is unrelated to the build's source root). */
+  def sourceRootDir(options: List[String]): Option[os.Path] = {
+    val scala3Space = options.sliding(2).collect {
       case Seq("-sourceroot", path) if !path.startsWith("-") => os.Path(path)
     }.toList
+    val scala3Colon = options.collect {
+      case s if s.startsWith("-sourceroot:") =>
+        os.Path(s.stripPrefix("-sourceroot:"))
+    }
     val scala2 = options.collect {
       case s if s.startsWith("-P:semanticdb:sourceroot:") =>
         os.Path(s.stripPrefix("-P:semanticdb:sourceroot:"))
     }
-    (scala3 ++ scala2).headOption.getOrElse(os.pwd) // fallback to workspace root if not specified
+    (scala3Space ++ scala3Colon ++ scala2).headOption
   }
 
   /** Extracts custom SemanticDB output paths from scalac options.
-    * Scala 3 uses space-separated and Scala 2 is colon-separated). */
+    * Scala 3 accepts both `-semanticdb-target <dir>` and `-semanticdb-target:<dir>`;
+    * Scala 2 uses `-P:semanticdb:targetroot:<dir>`. */
   def semanticdbTargetPath(options: List[String]): Option[os.Path] = {
-    val scala3 = options.sliding(2).collect {
+    val scala3Space = options.sliding(2).collect {
       case Seq("-semanticdb-target", path) if !path.startsWith("-") => os.Path(path)
     }.toList
+    val scala3Colon = options.collect {
+      case s if s.startsWith("-semanticdb-target:") =>
+        os.Path(s.stripPrefix("-semanticdb-target:"))
+    }
     val scala2 = options.collect {
       case s if s.startsWith("-P:semanticdb:targetroot:") =>
         os.Path(s.stripPrefix("-P:semanticdb:targetroot:"))
     }
-    (scala3 ++ scala2).headOption
+    (scala3Space ++ scala3Colon ++ scala2).headOption
   }
 
   /** Checks if -Ybest-effort flag is present (allows indexing when compilation had errors). */

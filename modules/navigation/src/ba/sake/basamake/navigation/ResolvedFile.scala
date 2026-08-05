@@ -8,10 +8,16 @@ import scala.meta.internal.semanticdb.Range
   * `locals` are the document-scoped `local<N>` SymbolDefinitions (params keep
   * `m().(x)` and are NOT in `locals`; method-local vals/objects/classes/type-params
   * get `local<N>` and ARE in `locals`).
+  * `complete` is true when all reference symbols are full SemanticDB symbols.
+  * False signals partial `-Ybest-effort` ref symbols (e.g. `utils.` instead of
+  * `_empty_/utils.`) — the caller should fall back to source parsing for
+  * occurrences (SymbolTable defs stay authoritative). Source parsers always
+  * produce `complete = true`.
   */
 final case class ResolvedFile(
     occurrences: Vector[ReferenceOccurrence],
-    locals: Vector[SymbolDefinition]
+    locals: Vector[SymbolDefinition],
+    complete: Boolean = true
 )
 
 object ResolvedFile {
