@@ -42,20 +42,22 @@ class BspConnectionTest extends FunSuite {
     def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
   }
 
-  test("liveness check failure → killTree + respawn") {
+  test("dead process on ping → respawn (killTree skips already-dead process)") {
     var spawnCount = new AtomicInteger(0)
     var killCalled = new AtomicBoolean(false)
-    var firstCall = true
     val conn = BspConnection.forTesting(
       spec = fakeSpec,
       spawn = () => {
-        spawnCount.incrementAndGet()
-        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
-        val server =
-          if firstCall then { firstCall = false; new MockBuildServer {
-            override def workspaceBuildTargets() = CompletableFuture.failedFuture(new RuntimeException("boom"))
-          }}
-          else new MockBuildServer
+        val n = spawnCount.incrementAndGet()
+        val proc = new FakeProcess {
+          override def isAlive = n > 1   // first spawn's process is dead
+          override def onExit() = CompletableFuture.completedFuture(null)
+        }
+        val server = new MockBuildServer {
+          override def workspaceBuildTargets() =
+            if (n == 1) CompletableFuture.failedFuture(new RuntimeException("boom"))
+            else CompletableFuture.completedFuture(new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()))
+        }
         HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
@@ -66,15 +68,76 @@ class BspConnectionTest extends FunSuite {
     )
 
     conn.poke()  // spawn #1: alive=false → ensureConnected → return (no liveness check yet)
-    conn.poke()  // alive=true → workspaceBuildTargets fails → killTree + respawn
-    assert(spawnCount.get() >= 2, "respawn after a liveness failure")
-    assert(killCalled.get(), "killTree called on the dead process")
-    // Third poke: liveness passes (second spawn's server is fine), no further spawn.
-    killCalled.set(false)
+    conn.poke()  // alive=true but process dead → ping fails → respawn
+    assert(spawnCount.get() >= 2, "respawn after a dead process")
+    assert(!killCalled.get(), "no killTreeFn for an already-dead process (nothing to kill)")
+    // Third poke: alive + healthy process → liveness passes, no further spawn.
     val c = spawnCount.get()
     conn.poke()
     assertEquals(spawnCount.get(), c, "no spawn if alive")
-    assert(!killCalled.get(), "no killTree if alive")
+  }
+
+  test("stream closed with alive process → killTree + respawn (real error)") {
+    var spawnCount = new AtomicInteger(0)
+    var killCalled = new AtomicBoolean(false)
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        val n = spawnCount.incrementAndGet()
+        val proc = new FakeProcess {
+          override def isAlive = true
+          override def onExit() = CompletableFuture.completedFuture(null)
+        }
+        val server = new MockBuildServer {
+          override def workspaceBuildTargets() =
+            if (n == 1) CompletableFuture.failedFuture(
+              new org.eclipse.lsp4j.jsonrpc.JsonRpcException(new java.io.IOException("Stream closed")))
+            else CompletableFuture.completedFuture(new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()))
+        }
+        HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          new SourcesResult(java.util.Collections.emptyList()),
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => { killCalled.set(true); () },
+      eventSink = noopSink
+    )
+
+    conn.poke()  // spawn #1
+    conn.poke()  // stream closed = real error → killTree + respawn
+    assert(spawnCount.get() >= 2, "respawn after stream closed")
+    assert(killCalled.get(), "killTree called when stream is closed")
+  }
+
+  test("ping failure with alive process → no kill, no respawn (busy server)") {
+    var spawnCount = new AtomicInteger(0)
+    var killCalled = new AtomicBoolean(false)
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        spawnCount.incrementAndGet()
+        val proc = new FakeProcess {
+          override def isAlive = true   // healthy process, just slow to answer
+          override def onExit() = CompletableFuture.completedFuture(null)
+        }
+        val server = new MockBuildServer {
+          override def workspaceBuildTargets() =
+            CompletableFuture.failedFuture(new java.util.concurrent.TimeoutException("busy compiling"))
+        }
+        HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          new SourcesResult(java.util.Collections.emptyList()),
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => { killCalled.set(true); () },
+      eventSink = noopSink
+    )
+
+    conn.poke()  // spawn #1: alive=false → ensureConnected → return
+    conn.poke()  // alive=true, ping times out, but process alive → keep connection
+    assert(!killCalled.get(), "no killTree when the process is alive but busy")
+    assertEquals(spawnCount.get(), 1, "no respawn when the process is alive but busy")
+    assert(conn.aliveForTesting, "connection stays alive when the process is alive but busy")
   }
 
   test("spawn failure → next poke triggers fresh spawn") {

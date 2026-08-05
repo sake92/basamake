@@ -1,3 +1,5 @@
+package basamake.sbt
+
 import upickle.default._
 
 @main def hello(): Unit =

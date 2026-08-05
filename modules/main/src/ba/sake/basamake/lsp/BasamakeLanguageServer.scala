@@ -29,14 +29,22 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   // ----- LanguageServer
   override def initialize(params: InitializeParams): CompletableFuture[InitializeResult] = {
+    logger.debug("initialize called")
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setDocumentSymbolProvider(true)
     // Advertise rename handling so VS Code sends didRenameFiles notifications.
+    // MUST declare filters: vscode-languageclient only registers its
+    // workspace/didRenameFiles listener when filters are present
+    // (fileOperations.js: capability?.filters !== undefined).
     val fileOps = new FileOperationsServerCapabilities()
-    fileOps.setDidRename(new FileOperationOptions())
+    val didRenameOpts = new FileOperationOptions()
+    didRenameOpts.setFilters(java.util.List.of(
+      new FileOperationFilter(new FileOperationPattern("**/*.{scala,java,sbt}"))
+    ))
+    fileOps.setDidRename(didRenameOpts)
     val wsCaps = new WorkspaceServerCapabilities()
     wsCaps.setFileOperations(fileOps)
     capabilities.setWorkspace(wsCaps)
@@ -72,13 +80,29 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def getTextDocumentService(): TextDocumentService = this
 
   // ----- WorkspaceService
-  override def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = ()
-  override def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = ()
+  override def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = {
+    logger.debug(s"didChangeConfiguration: ${params.getSettings}")
+  }
+
+  override def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = {
+    val changes = params.getChanges.asScala.toList
+    val events = changes.map(e => s"${e.getType}=${e.getUri}").mkString(", ")
+    logger.debug(s"didChangeWatchedFiles (${changes.size} event(s)): $events")
+    // React to creates/deletes (terminal mv, external tools — these never send
+    // didRenameFiles). Ignore change events: didSave already compiles those.
+    val created = changes.filter(_.getType == FileChangeType.Created).map(_.getUri)
+    val deleted = changes.filter(_.getType == FileChangeType.Deleted).map(_.getUri)
+    if (created.nonEmpty || deleted.nonEmpty) {
+      bspManager.onWatchedFilesChanged(created, deleted)
+    }
+  }
 
   /** VS Code sends workspace/didRenameFiles when user renames a file.
     * Clear old diagnostics, re-index new file into WorkspaceIndex,
     * and trigger BSP compile so diagnostics appear for the new file. */
   override def didRenameFiles(params: RenameFilesParams): Unit = {
+    val renames = params.getFiles.asScala.map(r => s"${r.getOldUri} -> ${r.getNewUri}").mkString(", ")
+    logger.debug(s"didRenameFiles (${params.getFiles.size()} file(s)): $renames")
     params.getFiles.forEach { rename =>
       bspManager.clearDiagnostics(rename.getOldUri)
       val newPath = os.Path(URI.create(rename.getNewUri))
@@ -90,13 +114,16 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   // ----- TextDocumentService
   override def didOpen(params: DidOpenTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
+    logger.debug(s"didOpen: $uri")
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidOpen(path)
     Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
   }
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
-    val path = os.Path(URI.create(params.getTextDocument.getUri))
+    val uri = params.getTextDocument.getUri
+    logger.debug(s"didChange: $uri")
+    val path = os.Path(URI.create(uri))
     val text = params.getContentChanges.asScala.last.getText
     // TODO in new thread?
     workspaceIndex.onDidChange(path, text)
@@ -104,6 +131,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
+    logger.debug(s"didSave: $uri")
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
       bspManager.poke(uri, compile = true)
@@ -114,6 +142,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
     // TODO in new thread?
     val uri = params.getTextDocument.getUri
+    logger.debug(s"didClose: $uri")
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidClose(path)
     bspManager.clearDiagnostics(uri)
@@ -126,6 +155,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       ]] =
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
+      logger.debug(s"definition: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
       Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
@@ -137,6 +167,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
     CompletableFuture.supplyAsync { () =>
       val uri = params.getTextDocument.getUri
+      logger.debug(s"references: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}, includeDecl=${params.getContext.isIncludeDeclaration}")
       Thread.ofVirtual().start(() => bspManager.poke(uri, compile = false))
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
@@ -149,10 +180,12 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def documentSymbol(params: DocumentSymbolParams)
       : CompletableFuture[
         java.util.List[org.eclipse.lsp4j.jsonrpc.messages.Either[SymbolInformation, DocumentSymbol]]
-      ] =
+      ] = {
+    logger.debug(s"documentSymbol: ${params.getTextDocument.getUri}")
     CompletableFuture.completedFuture(
       List.empty.asJava
     )
+  }
 
   private def toLspLocation(loc: SymbolDefinition): Location = {
     val uri = loc.path.toNIO.toUri.toString

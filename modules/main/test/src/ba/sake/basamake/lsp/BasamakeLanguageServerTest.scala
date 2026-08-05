@@ -35,6 +35,21 @@ class BasamakeLanguageServerTest extends FunSuite {
       CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
   }
 
+  /** LanguageClient fake that captures publishDiagnostics calls. */
+  private def capturingClient(captured: java.util.List[PublishDiagnosticsParams]): LanguageClient =
+    new LanguageClient {
+      override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = captured.add(p)
+      override def telemetryEvent(x: Any): Unit = ()
+      override def showMessage(p: MessageParams): Unit = ()
+      override def showMessageRequest(p: ShowMessageRequestParams) =
+        CompletableFuture.completedFuture(null.asInstanceOf[MessageActionItem])
+      override def logMessage(p: MessageParams): Unit = ()
+      override def createProgress(p: WorkDoneProgressCreateParams) =
+        CompletableFuture.completedFuture(null.asInstanceOf[Void])
+      override def applyEdit(p: ApplyWorkspaceEditParams) =
+        CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
+    }
+
   /** Returns (0-indexed line, 0-indexed startCharacter) for the first match of
     * `regex` in `content`. If a named group `p` exists, its start is used. */
   private def posAt(content: String, regex: String): (Int, Int) = {
@@ -48,6 +63,69 @@ class BasamakeLanguageServerTest extends FunSuite {
     val lastNl = before.lastIndexOf('\n')
     val char = if lastNl < 0 then before.length else before.length - lastNl - 1
     (line, char)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // initialize capabilities: rename handling
+  // ═══════════════════════════════════════════════════════════════
+
+  test("initialize: advertises didRename file operations with filters") {
+    val root = copyFixture("sbt", "lsp-rename-caps")
+    try {
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      val result = server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      val didRename = result.getCapabilities.getWorkspace.getFileOperations.getDidRename
+      assert(didRename != null, "server must advertise didRename")
+      assert(didRename.getFilters != null && !didRename.getFilters.isEmpty,
+        "didRename must declare filters — vscode-languageclient ignores filter-less registrations")
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // rename + watched files handling
+  // ═══════════════════════════════════════════════════════════════
+
+  test("didRenameFiles: publishes empty diagnostics for the old uri") {
+    val root = copyFixture("sbt", "lsp-rename-handler")
+    try {
+      val captured = new java.util.concurrent.CopyOnWriteArrayList[PublishDiagnosticsParams]()
+      val server = new BasamakeLanguageServer(root)
+      server.connect(capturingClient(captured))
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+
+      val oldUri = "file:///x/old.scala"
+      val newUri = "file:///x/new.scala"
+      server.didRenameFiles(new RenameFilesParams(
+        java.util.List.of(new FileRename(oldUri, newUri))))
+
+      val cleared = captured.asScala.filter(_.getUri == oldUri)
+      assert(cleared.nonEmpty,
+        s"expected empty publish for old uri, got ${captured.asScala.map(_.getUri)}")
+      assertEquals(cleared.last.getDiagnostics.size(), 0)
+    } finally os.remove.all(root)
+  }
+
+  test("didChangeWatchedFiles: deleted file → empty diagnostics published") {
+    val root = copyFixture("sbt", "lsp-watched")
+    try {
+      val captured = new java.util.concurrent.CopyOnWriteArrayList[PublishDiagnosticsParams]()
+      val server = new BasamakeLanguageServer(root)
+      server.connect(capturingClient(captured))
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+
+      val deletedUri = "file:///x/Deleted.scala"
+      val createdUri = "file:///x/Created.scala"
+      server.didChangeWatchedFiles(new DidChangeWatchedFilesParams(
+        java.util.List.of(
+          new FileEvent(createdUri, FileChangeType.Created),
+          new FileEvent(deletedUri, FileChangeType.Deleted))))
+
+      val cleared = captured.asScala.filter(_.getUri == deletedUri)
+      assert(cleared.nonEmpty,
+        s"expected empty publish for deleted file, got ${captured.asScala.map(_.getUri)}")
+      assertEquals(cleared.last.getDiagnostics.size(), 0)
+    } finally os.remove.all(root)
   }
 
   // ═══════════════════════════════════════════════════════════════

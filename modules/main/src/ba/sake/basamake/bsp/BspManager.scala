@@ -66,13 +66,44 @@ class BspManager private (
     }
   }
 
-  /** Clear diagnostics for a specific URI (e.g., when a file is closed/renamed). */
+  /** Clear diagnostics for a specific URI (e.g., when a file is closed/renamed).
+    * Always publishes an empty list — VS Code keeps showing stale diagnostics
+    * (e.g. published by a previous server session) unless we explicitly clear them. */
   def clearDiagnostics(uri: String): Unit = {
     val removed = synchronized { diagnostics.remove(uri) }
-    if (removed.isDefined && client != null) {
+    logger.debug(s"clearDiagnostics($uri): entry existed=${removed.isDefined}")
+    if (client != null) {
       client.publishDiagnostics(
         new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList()))
     }
+  }
+
+  /** React to filesystem create/delete events (workspace/didChangeWatchedFiles).
+    * Deleted files: clear diagnostics immediately. Created+deleted files: trigger
+    * a compile, once per connection (the client debounces watcher events into a
+    * single batch). Catches renames done outside VS Code's file-operation flow
+    * (e.g. terminal mv), which never send didRenameFiles. */
+  def onWatchedFilesChanged(created: List[String], deleted: List[String]): Unit = {
+    deleted.foreach(clearDiagnostics)
+    val uris = (created ++ deleted).filter(isWatchedSource)
+    if (uris.isEmpty) return
+    Thread.ofVirtual().start(() => {
+      val firstUriByConn = mutable.Map.empty[BspConnection, String]
+      uris.foreach { uri =>
+        router.route(uri).flatMap(id => Option(connections.get(id))).foreach { conn =>
+          if (!firstUriByConn.contains(conn)) firstUriByConn(conn) = uri
+        }
+      }
+      firstUriByConn.foreach { case (conn, uri) =>
+        try conn.compile(uri)
+        catch { case e: Exception => logger.warn(s"watcher-triggered compile failed for $uri: ${e.getMessage}") }
+      }
+    })
+  }
+
+  private def isWatchedSource(uri: String): Boolean = {
+    val lower = uri.toLowerCase(java.util.Locale.ROOT)
+    lower.endsWith(".scala") || lower.endsWith(".java") || lower.endsWith(".sbt")
   }
 
   // ---- BspEventSink: diagnostics ----
@@ -81,6 +112,7 @@ class BspManager private (
     val targetId = Option(params.getBuildTarget).getOrElse(new BuildTargetIdentifier(""))
     val newDiags = Option(params.getDiagnostics).getOrElse(java.util.Collections.emptyList())
       .asScala.map(bspDiagToLsp).toList
+    logger.debug(s"onDiagnostics($uri): ${newDiags.size} diagnostic(s), reset=${params.getReset}")
 
     val perTarget = synchronized {
       val current = diagnostics.getOrElse(uri, Map.empty)

@@ -83,9 +83,18 @@ class BspConnection private (
       buildServer.workspaceBuildTargets().get(PingTimeoutSec, TimeUnit.SECONDS)
     } catch {
       case e: Exception =>
-        logger.warn(s"ping failed, killing process: ${e.getMessage}")
-        spawnLock.synchronized { killTree(); alive = false }
-        if (!spawning) ensureConnected()
+        // Kill ONLY on a real error (stream closed) or when the process is dead.
+        // A live-but-unresponsive process is usually busy compiling — killing it
+        // destroys a healthy build server and forces a slow respawn for nothing.
+        val streamClosed = BspConnection.isStreamClosed(e)
+        val processAlive = process != null && process.isAlive
+        if (streamClosed || !processAlive) {
+          logger.warn(s"ping failed, process dead or stream closed (${e.getMessage}) — killing and respawning")
+          spawnLock.synchronized { killTree(); alive = false }
+          if (!spawning) ensureConnected()
+        } else {
+          logger.debug(s"ping failed but process alive (${e.getMessage}) — keeping connection, server may be busy")
+        }
     }
   }
 
@@ -282,6 +291,16 @@ object BspConnection {
       killTree: java.lang.Process => Unit,
       eventSink: BspEventSink
   ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink)
+
+  /** True when the exception (possibly ExecutionException-wrapped from future.get)
+    * indicates the BSP stream is closed — i.e. a real error, not a busy server. */
+  private[bsp] def isStreamClosed(e: Throwable): Boolean = {
+    val unwrapped = e match {
+      case ee: java.util.concurrent.ExecutionException if ee.getCause != null => ee.getCause
+      case other => other
+    }
+    org.eclipse.lsp4j.jsonrpc.JsonRpcException.indicatesStreamClosed(unwrapped)
+  }
 
   private[bsp] def sourceRootDirByTarget(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
