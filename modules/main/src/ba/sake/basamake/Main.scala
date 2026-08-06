@@ -5,7 +5,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.launch.LSPLauncher
 import mainargs.*
 import ba.sake.basamake.lsp.BasamakeLanguageServer
-import ba.sake.basamake.util.LoggingUtils
+import ba.sake.basamake.util.{LoggingUtils, ProjectRoot}
 
 object Main extends StrictLogging {
 
@@ -21,12 +21,18 @@ object Main extends StrictLogging {
     if rest.value.nonEmpty then
       println(s"Unknown arguments: ${rest.value.mkString(" ")}")
 
-    LoggingUtils.configureFileLogging(os.Path(workspace))
-    logger.info(s"Basamake LSP server starting in workspace: $workspace")
+    val openedDir = os.Path(workspace)
+    val projectRoot = ProjectRoot.resolve(openedDir)
+    val marker =
+      if os.exists(projectRoot / ".git") then ".git"
+      else if os.isDir(projectRoot / ".basamake") then ".basamake"
+      else "fallback (opened folder)"
+    LoggingUtils.configureFileLogging(projectRoot)
+    logger.info(s"Basamake LSP server starting; opened: $openedDir, project root: $projectRoot (marker: $marker)")
     logger.info(s"Java: ${System.getProperty("java.version")}")
 
     val autoFlushOut = PrintStream(System.out, true, "UTF-8")
-    val server = BasamakeLanguageServer(os.Path(workspace))
+    val server = BasamakeLanguageServer(projectRoot)
     val launcher = LSPLauncher.createServerLauncher(server, System.in, autoFlushOut)
     server.connect(launcher.getRemoteProxy)
 
