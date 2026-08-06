@@ -8,8 +8,8 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
-import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable}
-import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
+import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable, CompositeSymbolTable}
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.tupson.{given, *}
 
@@ -17,9 +17,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   @volatile private var client: LanguageClient = uninitialized
 
-  private val symbolTable = new InMemorySymbolTable
+  private val workspaceSymbolTable = new InMemorySymbolTable
+  private val depsSymbolTable = new IndexedSymbolTable
+  private val symbolTable = new CompositeSymbolTable(workspaceSymbolTable, depsSymbolTable)
   private val workspaceIndex = new WorkspaceIndex(workspacePath, symbolTable)
-  private val bspManager = BspManager(workspacePath, workspaceIndex)
+  private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
 
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
@@ -48,12 +50,21 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val wsCaps = new WorkspaceServerCapabilities()
     wsCaps.setFileOperations(fileOps)
     capabilities.setWorkspace(wsCaps)
-    val roots = loadSemanticdbRootsFromDataJson()
+    val (roots, depSources) = loadBspDataFromDataJson()
     try {
       workspaceIndex.initialize(roots)
     } catch {
       case e: Exception =>
         logger.error(s"Failed to initialize workspace index: ${e.getMessage}")
+    }
+    // Warm-start dependency sources (from data.json) + JDK sources — cached indexes
+    // load lazily on first lookup; uncached jars/JDK index in the background.
+    try {
+      depsSymbolTable.ensureIndexed(depSources)
+      depsSymbolTable.ensureJdkIndexed()
+    } catch {
+      case e: Exception =>
+        logger.error(s"Failed to start dependency indexing: ${e.getMessage}")
     }
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client)
@@ -213,31 +224,37 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     new Location(uri, range)
   }
 
-  /** Read .basamake/bsp/.../data.json files and collect (sourceRootDir, semanticdbDir) pairs.
-    * Speeds up subsequent startups by indexing BSP-managed output dirs without
-    * walking the entire workspace. Returns empty list if no data.json files exist. */
-  private def loadSemanticdbRootsFromDataJson(): List[SemanticdbDirs] = {
+  /** Read .basamake/bsp/.../data.json files and collect (sourceRootDir, semanticdbDir)
+    * pairs plus dependency source jar paths. Speeds up subsequent startups by indexing
+    * BSP-managed output dirs + known dep sources without walking the entire workspace.
+    * Returns empty lists if no data.json files exist. */
+  private def loadBspDataFromDataJson(): (List[SemanticdbDirs], List[os.Path]) = {
     val bspDir = workspacePath / ".basamake/bsp"
     if (!os.exists(bspDir) || !os.isDir(bspDir)) {
       logger.debug(s"No BSP data.json files found in ${bspDir}")
-      return Nil
+      return (Nil, Nil)
     }
     try {
       val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
-      dataFiles.flatMap { f =>
+      var roots = List.empty[SemanticdbDirs]
+      var depSources = List.empty[os.Path]
+      dataFiles.foreach { f =>
         try {
           val data = os.read(f).parseJson[BspTargetData]
-          data.targets.map(t => SemanticdbDirs(t.sourceRootDir, t.semanticdbDir))
+          data.targets.foreach { t =>
+            roots = SemanticdbDirs(t.sourceRootDir, t.semanticdbDir) :: roots
+            t.dependencySources.foreach(s => depSources = os.Path(s) :: depSources)
+          }
         } catch {
           case e: Exception =>
             logger.error(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
-            Nil
         }
-      }.toList
+      }
+      (roots, depSources.distinct)
     } catch {
       case e: Exception =>
         logger.error(s"Failed to load data.json files: ${e.getMessage}")
-        Nil
+        (Nil, Nil)
     }
   }
 }
