@@ -62,7 +62,7 @@ root `test_sbt_gotodef.py`) were deleted. Their coverage now lives in Scala test
   through the JSON-RPC transport (initialize → didOpen → definition → shutdown)
   against a fixture copied to `<repo>/tmp/`
 - `BasamakeLanguageServerTest` — LSP handler behavior (rename, watched files, stale semanticdb)
-- `WorkspaceIndexTest` — navigation with committed real-semanticdb fixtures
+- `WorkspaceIndexTest` — navigation with real semanticdb generated at test time (scala-cli compile of a tmp fixture copy)
 
 ## stdout Is Sacred
 
@@ -171,17 +171,21 @@ Two test modules:
 - `SymbolUtilsTest` — SemanticDB symbol encoding
 - `SymbolTableTest` — SymbolTable concurrency
 
-Tests use fixture source files under `test/resources/examples/`. No real build tool needed.
+Tests use fixture source files under `test/resources/examples/`. No real build tool needed —
+except the sbt-fixture semanticdb tests, which compile a tmp fixture copy with scala-cli
+(`SemanticdbFixture`).
 
 ## Test Hygiene
 
 - No hardcoded absolute home paths (`/home/<user>`) in tests, scripts, or source — use
   `System.getProperty("java.home")`, `os.home`, or paths relative to `os.pwd`.
 - Fixtures live under `test/resources/` (including committed binary data: the commons-net
-  sources jar, and the sbt fixture's `target/scala-3.8.4/meta` semanticdb files — generated
-  once, never by tests).
+  sources jar). No `.semanticdb` files are committed — real semanticdb is generated at test
+  time: `SemanticdbFixture` compiles a tmp fixture copy with `scala-cli compile --server=false
+  --semanticdb` and indexes the output.
 - Tests never shell out to build tools and never write into fixture folders: they copy
-  fixtures to `<repo>/tmp/<test>-<timestamp>/` first; any sbt/deder shell-out happens there.
+  fixtures to `<repo>/tmp/<test>-<timestamp>/` first; any build-tool shell-out
+  (scala-cli/sbt/deder) happens there.
 
 ## SemanticDB Reference
 

@@ -768,6 +768,7 @@ class WorkspaceIndexTest extends FunSuite {
   test("sbt fixture: initialize with semanticdb roots populates symbols from semanticdb") {
     val root = TestFixture.copy("sbt", "sbt-semdb-init")
     try {
+      SemanticdbFixture.compile(root) // real semanticdb generated at test time in this copy
       val st = new SymbolTable
       val idx = new WorkspaceIndex(root, st)
       val semDir = root / "target" / "scala-3.8.4" / "meta"
@@ -781,6 +782,7 @@ class WorkspaceIndexTest extends FunSuite {
   test("sbt fixture: invalidate after source-only init upgrades to semanticdb (fresh-project flow)") {
     val root = TestFixture.copy("sbt", "sbt-semdb-upgrade")
     try {
+      SemanticdbFixture.compile(root) // real semanticdb generated at test time in this copy
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root) // source-only (no data.json on fresh project)
       idx.onDidOpen(mainFile)
@@ -796,6 +798,7 @@ class WorkspaceIndexTest extends FunSuite {
   test("sbt fixture: partial semanticdb ref symbols → occurrences fall back to source parse") {
     val root = TestFixture.copy("sbt", "sbt-semdb-partialrefs")
     try {
+      SemanticdbFixture.compile(root) // real semanticdb generated at test time in this copy
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val (idx, _) = freshIndexAt(root)
       idx.onDidOpen(mainFile)
