@@ -158,7 +158,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   // live in SymbolTable (populated by ScalaDefinitionsExtractor); local defs
   // are recorded via `addLocal` into the `locals` Vector. This pass emits
   // REFERENCE occurrences only. WorkspaceIndex queries look up def sites via
-  // SymbolTable / openLocalDefinitions.
+  // SymbolTable / openFilesLocalDefinitions.
 
   private def emitRef(pos: Position, symbol: String): Unit = {
     val range = PositionUtils.toRange(pos)

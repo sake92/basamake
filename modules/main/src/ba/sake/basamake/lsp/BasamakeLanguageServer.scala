@@ -95,6 +95,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     if (created.nonEmpty || deleted.nonEmpty) {
       bspManager.onWatchedFilesChanged(created, deleted)
     }
+    // purge index state for files actually removed from disk
+    if (deleted.nonEmpty) {
+      val deletedPaths = deleted.flatMap { uri =>
+        try Some(os.Path(URI.create(uri))) catch { case _: Exception => None }
+      }.toSet
+      if (deletedPaths.nonEmpty) workspaceIndex.onFilesDeleted(deletedPaths)
+    }
   }
 
   /** VS Code sends workspace/didRenameFiles when user renames a file.
@@ -105,6 +112,8 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     logger.debug(s"didRenameFiles (${params.getFiles.size()} file(s)): $renames")
     params.getFiles.forEach { rename =>
       bspManager.clearDiagnostics(rename.getOldUri)
+      val oldPath = try Some(os.Path(URI.create(rename.getOldUri))) catch { case _: Exception => None }
+      oldPath.foreach(p => workspaceIndex.onFilesDeleted(Set(p)))
       val newPath = os.Path(URI.create(rename.getNewUri))
       workspaceIndex.onDidOpen(newPath)
       Thread.ofVirtual().start(() => bspManager.poke(rename.getNewUri, compile = true))
@@ -124,9 +133,8 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val uri = params.getTextDocument.getUri
     logger.debug(s"didChange: $uri")
     val path = os.Path(URI.create(uri))
-    val text = params.getContentChanges.asScala.last.getText
     // TODO in new thread?
-    workspaceIndex.onDidChange(path, text)
+    workspaceIndex.onDidChange(path)
   }
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
@@ -135,7 +143,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
       bspManager.poke(uri, compile = true)
-      workspaceIndex.onDidSave(path, Option(params.getText))
+      workspaceIndex.onDidSave(path)
     })
   }
 

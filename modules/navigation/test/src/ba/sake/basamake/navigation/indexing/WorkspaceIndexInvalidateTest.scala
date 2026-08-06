@@ -187,4 +187,42 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       assert(after.contains(".semanticdb"), s"dump must show semanticdb pairs:\n$after")
     } finally os.remove.all(root)
   }
+
+  // ── close vs delete semantics ────────────────────────────────
+
+  test("closing an open buffer does not lose semanticdb pairing or definitions") {
+    val root = buildSbtLikeFixture()
+    try {
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val (idx, st) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(st.get("_empty_/utils.getMsg().").isDefined, "defs loaded after invalidate")
+
+      idx.onDidOpen(utilsFile)
+      idx.onDidClose(utilsFile) // tab close (e.g. VS Code preview-tab switch)
+
+      assert(st.get("_empty_/utils.getMsg().").isDefined,
+        "definitions must survive closing a tab (only disk events purge them)")
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(!dump.contains("<<NO SEMANTICDB>>"), s"dump must still show pairs after close:\n$dump")
+    } finally os.remove.all(root)
+  }
+
+  test("onFilesDeleted purges pairing and definitions for deleted files") {
+    val root = buildSbtLikeFixture()
+    try {
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val (idx, st) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(st.get("_empty_/utils.getMsg().").isDefined, "defs loaded after invalidate")
+
+      os.remove(utilsFile) // file gone from disk (external delete / rename)
+      idx.onFilesDeleted(Set(utilsFile))
+
+      assert(st.get("_empty_/utils.getMsg().").isEmpty,
+        "definitions must be purged when the file is deleted")
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(dump.contains("<<NO SEMANTICDB>>"), s"dump must show NO SEMANTICDB after deletion:\n$dump")
+    } finally os.remove.all(root)
+  }
 }
