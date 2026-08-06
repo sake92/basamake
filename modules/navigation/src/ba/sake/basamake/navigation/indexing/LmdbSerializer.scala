@@ -6,14 +6,21 @@ import scala.meta.internal.semanticdb.Range
 import java.io.{ByteArrayOutputStream, ByteArrayInputStream, DataOutputStream, DataInputStream}
 import java.nio.ByteBuffer
 
+/** LMDB persistence for dependency indexes. `save` writes to a sibling `.tmp`
+  * directory first and renames into place — a crash mid-write can never corrupt
+  * an existing index (worst case: metadata is stale and we reindex). */
 object LmdbSerializer {
 
+  private val MapSize = 100L * 1024 * 1024 // 100MB
+
   def save(table: SymbolTable, path: os.Path): Unit = {
-    os.makeDir.all(path)
+    val tmpPath = path / os.up / (path.last + ".tmp")
+    os.remove.all(tmpPath)
+    os.makeDir.all(tmpPath)
     val env = Env.create()
-      .setMapSize(100L * 1024 * 1024) // 100MB
+      .setMapSize(MapSize)
       .setMaxDbs(1)
-      .open(path.toIO)
+      .open(tmpPath.toIO)
 
     try {
       val db = env.openDbi("symbols", DbiFlags.MDB_CREATE)
@@ -33,12 +40,15 @@ object LmdbSerializer {
     } finally {
       env.close()
     }
+    // rename into place: remove the old dir first (rename can't replace non-empty dirs)
+    os.remove.all(path)
+    os.move(tmpPath, path)
   }
 
-  def load(path: os.Path): SymbolTable = {
+  def load(path: os.Path): InMemorySymbolTable = {
     val table = new InMemorySymbolTable()
     val env = Env.create()
-      .setMapSize(100L * 1024 * 1024)
+      .setMapSize(MapSize)
       .setMaxDbs(1)
       .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
 
