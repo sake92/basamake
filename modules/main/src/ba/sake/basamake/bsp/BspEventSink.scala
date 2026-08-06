@@ -26,3 +26,10 @@ trait BspEventSink {
 trait BspAfterCompileSink {
   def onAfterCompile(roots: List[SemanticdbDirs]): Unit
 }
+
+/** After-handshake hook for dependency source jars. Implemented by BspManager — fired by
+  * BspConnection.ensureConnected once the handshake's DependencySourcesResult is available,
+  * forwards the source jar paths to the dependency index for background caching. */
+trait BspDependencySourcesSink {
+  def onDependencySources(paths: List[os.Path]): Unit
+}

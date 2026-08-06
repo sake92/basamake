@@ -10,14 +10,14 @@ class SymbolTableTest extends FunSuite {
   private val sentinel = new Range(0, 0, 0, 0)
 
   test("add then get returns same SymbolDefinition") {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     val sd = SymbolDefinition("_empty_/Foo#", "Foo", isType = true, sentinel, path1)
     table.add(sd)
     assertEquals(table.get("_empty_/Foo#"), Some(sd))
   }
 
   test("removeByPath removes only that path's symbols") {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     val sd1 = SymbolDefinition("_empty_/Foo#", "Foo", isType = true, sentinel, path1)
     val sd2 = SymbolDefinition("_empty_/Bar#", "Bar", isType = true, sentinel, path2)
     table.add(sd1)
@@ -31,7 +31,7 @@ class SymbolTableTest extends FunSuite {
   }
 
   test("two files adding same symbol: last-write-wins, removeByPath(fileB) then re-add restores") {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     val sdA = SymbolDefinition("_empty_/X#", "X", isType = true, new Range(1, 0, 1, 1), path1)
     val sdB = SymbolDefinition("_empty_/X#", "X", isType = true, sentinel, path2)
 
@@ -53,7 +53,7 @@ class SymbolTableTest extends FunSuite {
   }
 
   test("all returns all added definitions") {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     val sd1 = SymbolDefinition("_empty_/Foo#", "Foo", isType = true, sentinel, path1)
     val sd2 = SymbolDefinition("_empty_/Bar#", "Bar", isType = true, sentinel, path2)
     table.add(sd1)
@@ -64,7 +64,7 @@ class SymbolTableTest extends FunSuite {
   }
 
   test("keys returns all symbol keys") {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     table.add(SymbolDefinition("_empty_/Foo#", "Foo", isType = true, sentinel, path1))
     table.add(SymbolDefinition("_empty_/Bar#", "Bar", isType = true, sentinel, path2))
     assertEquals(table.keys, Set("_empty_/Foo#", "_empty_/Bar#"))

@@ -110,5 +110,19 @@ object SymbolUtils {
   def isTypeSymbol(symbol: String): Boolean =
     symbol.endsWith("#")
 
+  /** Dotted package of a global symbol, or None for the default (_empty_) package
+    * and local symbols.
+    * Example: `packageOf("org/apache/commons/net/FTPClient#")` → `Some("org.apache.commons.net")`
+    * Example: `packageOf("Foo#")` → `None`
+    * Example: `packageOf("_empty_/Foo#")` → `None`
+    */
+  def packageOf(symbol: String): Option[String] = {
+    val withoutPkg = symbol.startsWith("_empty_/") || !symbol.contains('/')
+    if withoutPkg then None
+    else {
+      val pkg = symbol.substring(0, symbol.lastIndexOf('/')).replace('/', '.')
+      Some(pkg)
+    }
+  }
 
 }

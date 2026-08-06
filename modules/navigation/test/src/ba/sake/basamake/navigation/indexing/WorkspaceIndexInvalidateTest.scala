@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.SymbolTable
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable}
 import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
 
 /** Integration tests for WorkspaceIndex.invalidate / initialize semanticdb pairing.
@@ -14,7 +14,7 @@ import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocum
 class WorkspaceIndexInvalidateTest extends FunSuite {
 
   private def freshIndexAt(root: os.Path): (WorkspaceIndex, SymbolTable) = {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val idx = new WorkspaceIndex(root, st)
     idx.initialize(List.empty)
     (idx, st)
@@ -145,7 +145,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
   test("invalidate: no-op on empty roots and on nonexistent dirs") {
     val root = buildSbtLikeFixture()
     try {
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
       idx.invalidate(Nil) // must not throw
       idx.invalidate(List(SemanticdbDirs("/no/such/source", "/no/such/sem"))) // must not throw
@@ -158,7 +158,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
     val root = buildSbtLikeFixture()
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
       idx.initialize(List(SemanticdbDirs(root, semanticdbDirOf(root))))
       idx.onDidOpen(mainFile)

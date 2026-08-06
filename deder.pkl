@@ -12,6 +12,7 @@ local const navigationModules =
         "com.github.javaparser:javaparser-core:3.28.2"
         "com.lihaoyi::os-lib:0.11.9-M8"
         "org.lmdbjava:lmdbjava:0.9.1"
+        "ba.sake::tupson:0.20.0"
       }
     }
     testTemplate = (template.asTest()) {

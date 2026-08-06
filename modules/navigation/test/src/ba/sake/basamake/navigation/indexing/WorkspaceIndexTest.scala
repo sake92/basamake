@@ -7,7 +7,7 @@ import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocum
 class WorkspaceIndexTest extends FunSuite {
 
   private def freshIndexAt(root: os.Path): (WorkspaceIndex, SymbolTable) = {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val idx = new WorkspaceIndex(root, st)
     idx.initialize(List.empty)
     (idx, st)
@@ -91,7 +91,7 @@ class WorkspaceIndexTest extends FunSuite {
       val utilsFile = srcDir / "utils.scala"
       os.copy(sbtSrc / "Main.scala", mainFile)
       os.copy(sbtSrc / "utils.scala", utilsFile)
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
       idx.initialize(List.empty)
       val utilsSym = st.get("_empty_/utils.")
@@ -769,7 +769,7 @@ class WorkspaceIndexTest extends FunSuite {
     val root = TestFixture.copy("sbt", "sbt-semdb-init")
     try {
       SemanticdbFixture.compile(root) // real semanticdb generated at test time in this copy
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
       val semDir = root / "target" / "scala-3.8.4" / "meta"
       idx.initialize(List(SemanticdbDirs(root, semDir)))

@@ -1,13 +1,13 @@
 package ba.sake.basamake.navigation.indexing
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition}
 import scala.meta.internal.semanticdb.Range
 
 class LmdbSerializerTest extends FunSuite {
 
   test("roundtrip save/load") {
-    val table = new SymbolTable()
+    val table = new InMemorySymbolTable()
     table.add(SymbolDefinition(
       symbol = "foo.Bar#",
       shortName = "Bar",
@@ -35,7 +35,7 @@ class LmdbSerializerTest extends FunSuite {
   }
 
   test("empty table roundtrip") {
-    val table = new SymbolTable()
+    val table = new InMemorySymbolTable()
     val path = os.temp.dir() / "empty.lmdb"
     LmdbSerializer.save(table, path)
     val loaded = LmdbSerializer.load(path)
@@ -43,7 +43,7 @@ class LmdbSerializerTest extends FunSuite {
   }
 
   test("special characters in symbol") {
-    val table = new SymbolTable()
+    val table = new InMemorySymbolTable()
     table.add(SymbolDefinition(
       symbol = "foo.Bar.`<init>`().",
       shortName = "<init>",

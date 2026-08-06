@@ -23,6 +23,7 @@ final case class BspTargetInfo(
     id: String,               // BuildTargetIdentifier URI
     sourceRootDir: os.Path,    // URI string of the source root (from BuildTarget)
     //sourceDirs: List[os.Path], // URI strings
-    semanticdbDir: os.Path     // URI string from scalacOptions, or class directory fallback
+    semanticdbDir: os.Path,    // URI string from scalacOptions, or class directory fallback
+    dependencySources: List[String] = Nil  // absolute paths of source jars (from dependencySources)
 ) derives JsonRW
 
