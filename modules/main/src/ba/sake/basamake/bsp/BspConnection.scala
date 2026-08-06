@@ -37,6 +37,8 @@ class BspConnection private (
   @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
   /** target → semanticdb target dir (from handshake ScalacOptionsResult). */
   @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
+  /** target → dependency source jars (from handshake DependencySourcesResult). */
+  @volatile private var dependencySourcesByTarget: Map[BuildTargetIdentifier, List[os.Path]] = Map.empty
 
   private val spawnLock = new Object
   /** True while spawnAndHandshake is in progress. Volatile for fast-path checks. */
@@ -66,6 +68,9 @@ class BspConnection private (
         // paired without waiting for each target to be compiled on demand.
         try onAfterCompile(semanticdbDirByTarget.keySet.toList)
         catch { case e: Exception => logger.warn(s"Index catch-up failed: ${e.getMessage}", e) }
+        // Dependency source jars are known right after the handshake — notify the
+        // dependency index so it can cache them in the background.
+        notifyDependencySources()
       } catch {
         case e: Exception =>
           pendingCompileTargetIds.clear()   // discard queued work
@@ -152,6 +157,7 @@ class BspConnection private (
     sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
     classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
     semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
+    dependencySourcesByTarget = BspConnection.extractTargetDependencySources(result.dependencySources)
   }
 
   private def drainPendingCompiles(): Unit = {
@@ -178,6 +184,15 @@ class BspConnection private (
     writeTargetData()
   }
 
+  /** Fires the dependency-source sink once per connection (after handshake). */
+  private def notifyDependencySources(): Unit = {
+    val paths = dependencySourcesByTarget.values.flatten.toList.distinct
+    if (paths.nonEmpty) eventSink match {
+      case s: BspDependencySourcesSink => s.onDependencySources(paths)
+      case _ => ()
+    }
+  }
+
   /** Writes .basamake/bsp/<name>_<hash>/data.json with target metadata
     * (source dirs + semanticdb dirs) for fast WorkspaceIndex startup. */
   private def writeTargetData(): Unit = {
@@ -191,7 +206,8 @@ class BspConnection private (
             id = tid.getUri,
             sourceRootDir = sourceRootDirByTarget(tid),
           //  sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
-            semanticdbDir = semanticdbDirByTarget(tid)
+            semanticdbDir = semanticdbDirByTarget(tid),
+            dependencySources = dependencySourcesByTarget.getOrElse(tid, Nil).map(_.toString)
           )
         }
       val bspFileRel = try spec.path.relativeTo(spec.workspaceRoot).toString
@@ -359,6 +375,26 @@ object BspConnection {
       val fallback = classDirectoryByTarget(target) // fall back to class directory if no explicit semanticdb-target
       target -> path.getOrElse(fallback)
     }.toMap
+  }
+
+  /** target → dependency source jars (absolute paths), from the handshake
+    * DependencySourcesResult. Lenient: non-file URIs / unparseable entries are skipped. */
+  private[bsp] def extractTargetDependencySources(result: DependencySourcesResult): Map[BuildTargetIdentifier, List[os.Path]] = {
+    Option(result.getItems).toList.flatMap(_.asScala).map { item =>
+      val paths = Option(item.getSources).toList.flatMap(_.asScala).flatMap(BspConnection.toSourcePath)
+      item.getTarget -> paths
+    }.toMap
+  }
+
+  /** Converts a dependency-source URI (possibly a `jar:` URI) to an absolute path. */
+  private[bsp] def toSourcePath(uri: String): Option[os.Path] = {
+    try {
+      val cleaned = if (uri.startsWith("jar:")) uri.stripPrefix("jar:") else uri
+      val noEntry = cleaned.takeWhile(_ != '!') // drop any "!/entry" suffix
+      Some(os.Path(URI.create(noEntry)))
+    } catch {
+      case _: Exception => None
+    }
   }
 
   private[bsp] def targetIdsForUri(

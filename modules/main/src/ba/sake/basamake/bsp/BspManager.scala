@@ -12,12 +12,13 @@ import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.config.{BasamakeConfig, BspOverride}
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
-import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 
 class BspManager private (
     workspaceRoot: os.Path,
-    workspaceIndex: WorkspaceIndex
-) extends BspEventSink with BspAfterCompileSink with StrictLogging {
+    workspaceIndex: WorkspaceIndex,
+    depsSymbolTable: IndexedSymbolTable
+) extends BspEventSink with BspAfterCompileSink with BspDependencySourcesSink with StrictLogging {
 
   private val connections = new ConcurrentHashMap[BspConnectionId, BspConnection]()
   private val router = new BspRouter
@@ -135,7 +136,13 @@ class BspManager private (
   override def onAfterCompile(roots: List[SemanticdbDirs]): Unit =
     try workspaceIndex.invalidate(roots)
     catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
-    
+
+  // ---- BspDependencySourcesSink: forward to the dependency index ----
+  override def onDependencySources(paths: List[os.Path]): Unit = {
+    if (depsSymbolTable == null) return
+    try depsSymbolTable.ensureIndexed(paths)
+    catch { case e: Exception => logger.warn(s"ensureIndexed failed: ${e.getMessage}", e) }
+  }
 
   override def onTargetChanged(params: DidChangeBuildTarget): Unit =
     logger.debug(s"buildTargetDidChange: ${params.getChanges.size()} events — no-op in v1")
@@ -377,8 +384,8 @@ class BspManager private (
 }
 
 object BspManager {
-  def apply(workspaceRoot: os.Path, workspaceIndex: WorkspaceIndex): BspManager =
-    new BspManager(workspaceRoot, workspaceIndex)
+  def apply(workspaceRoot: os.Path, workspaceIndex: WorkspaceIndex, depsSymbolTable: IndexedSymbolTable = null): BspManager =
+    new BspManager(workspaceRoot, workspaceIndex, depsSymbolTable)
 
   private[bsp] def classifyBspChanges(
       known: Set[os.Path], current: Set[os.Path], changed: Set[os.Path]
@@ -390,7 +397,7 @@ object BspManager {
   }
 
   private[bsp] def forTesting(root: os.Path, index: WorkspaceIndex = null): BspManager =
-    new BspManager(root, index)
+    new BspManager(root, index, null)
 
   private[bsp] def forTestingWithCapturedDiagnostics(
       root: os.Path = os.temp.dir(prefix = "bsp-diag-test-")
@@ -406,7 +413,7 @@ object BspManager {
       override def createProgress(x$0: org.eclipse.lsp4j.WorkDoneProgressCreateParams): java.util.concurrent.CompletableFuture[Void] = java.util.concurrent.CompletableFuture.completedFuture(null)
       override def applyEdit(x$0: org.eclipse.lsp4j.ApplyWorkspaceEditParams): java.util.concurrent.CompletableFuture[org.eclipse.lsp4j.ApplyWorkspaceEditResponse] = java.util.concurrent.CompletableFuture.completedFuture(new org.eclipse.lsp4j.ApplyWorkspaceEditResponse(false))
     }
-    val mgr = new BspManager(root, null)
+    val mgr = new BspManager(root, null, null)
     mgr.client = fakeClient
     (mgr, captured, capturedLog)
   }
