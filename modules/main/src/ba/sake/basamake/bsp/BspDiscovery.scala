@@ -2,13 +2,16 @@ package ba.sake.basamake.bsp
 
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.tupson.{given, *}
+import ba.sake.basamake.navigation.indexing.GitIgnoreEngine
 
 object BspDiscovery extends StrictLogging {
 
   /** Discover ALL .bsp JSON files recursively under workspace root.
-    */
-  def discover(workspaceRoot: os.Path): List[BspConnectionSpec] = {
-    val jsonFiles = findBspJsonFiles(workspaceRoot)
+    * Gitignored directories are pruned, EXCEPT `.bsp` dirs themselves — they are
+    * typically gitignored but essential. Pass an engine built with
+    * `exemptLastNames = Set(".bsp")`. */
+  def discover(workspaceRoot: os.Path, engine: GitIgnoreEngine): List[BspConnectionSpec] = {
+    val jsonFiles = findBspJsonFiles(workspaceRoot, engine)
     if jsonFiles.isEmpty then
       logger.warn(s"No .bsp directories found under $workspaceRoot")
     jsonFiles.toList.sortBy(_.toString).flatMap(parseBspSpec(_, workspaceRoot))
@@ -18,15 +21,15 @@ object BspDiscovery extends StrictLogging {
   def parseSingleSpec(jsonPath: os.Path, workspaceRoot: os.Path): Option[BspConnectionSpec] =
     parseBspSpec(jsonPath, workspaceRoot)
 
-  private def findBspJsonFiles(workspaceRoot: os.Path): Set[os.Path] =
-    findBspDirs(workspaceRoot).flatMap { bspDir =>
+  private def findBspJsonFiles(workspaceRoot: os.Path, engine: GitIgnoreEngine): Set[os.Path] =
+    findBspDirs(workspaceRoot, engine).flatMap { bspDir =>
       logger.debug(s"Searching for .bsp JSON files in $bspDir")
       os.list(bspDir).filter(p => p.last.endsWith(".json"))
     }
     .toSet
 
-  private def findBspDirs(root: os.Path): List[os.Path] =
-    os.walk(root, maxDepth = 10)
+  private def findBspDirs(root: os.Path, engine: GitIgnoreEngine): List[os.Path] =
+    os.walk(root, maxDepth = 10, skip = p => os.isDir(p) && engine.isIgnored(p, isDir = true))
       .filter(p => os.isDir(p) && p.last == ".bsp")
       .toList
 

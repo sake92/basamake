@@ -13,7 +13,7 @@ import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.config.{BasamakeConfig, BspOverride}
 import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
-import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, GitIgnoreEngine}
 
 class BspManager private (
     workspaceRoot: os.Path,
@@ -39,7 +39,7 @@ class BspManager private (
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient): Unit = {
     this.client = lspClient
-    val discovered = BspDiscovery.discover(workspaceRoot)
+    val discovered = BspDiscovery.discover(workspaceRoot, new GitIgnoreEngine(workspaceRoot, exemptLastNames = Set(".bsp")))
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
 
@@ -232,7 +232,7 @@ class BspManager private (
   }
 
   private def handleBspChanges(changed: Set[os.Path]): Unit = synchronized {
-    val current = BspDiscovery.discover(workspaceRoot).map(_.path).toSet
+    val current = BspDiscovery.discover(workspaceRoot, new GitIgnoreEngine(workspaceRoot, exemptLastNames = Set(".bsp"))).map(_.path).toSet
     val (newFiles, deletedFiles, modifiedFiles) =
       BspManager.classifyBspChanges(knownBspFiles, current, changed)
 
@@ -353,7 +353,7 @@ class BspManager private (
 
   private[bsp] def routeForTesting(uri: String): Option[BspConnectionId] = router.route(uri)
   private[bsp] def initializeForTestingOnlyDiscover(): Unit = {
-    val discovered = BspDiscovery.discover(workspaceRoot)
+    val discovered = BspDiscovery.discover(workspaceRoot, new GitIgnoreEngine(workspaceRoot, exemptLastNames = Set(".bsp")))
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
   }
