@@ -1,6 +1,6 @@
 package ba.sake.basamake.navigation.indexing
 
-import scala.collection.mutable
+import java.util.concurrent.ConcurrentHashMap
 
 /** Directory names that never contain project sources — skipped by the workspace
   * walk regardless of gitignore rules (deder's ignoredDirNames + basamake extras). */
@@ -40,8 +40,9 @@ object GitIgnoreEngine {
   * `exemptLastNames`: path segments that are NEVER ignored (e.g. ".bsp" — gitignored
   * but required by BspDiscovery and the file watcher).
   *
-  * Used from a single thread per instance (watcher thread / synchronized initialize),
-  * so the rules cache needs no synchronization. */
+  * The rules cache is thread-safe (ConcurrentHashMap), so concurrent `isIgnored`
+  * calls (file-watcher thread + BSP debounce timer) are safe. `baseLayers` is written
+  * only at construction; `reload()` is not synchronized and is intended for tests. */
 final class GitIgnoreEngine(
     root: os.Path,
     extraRootPatterns: Vector[String] = Vector.empty,
@@ -52,7 +53,7 @@ final class GitIgnoreEngine(
 
   private var baseLayers: Vector[Layer] = computeBaseLayers()
 
-  private val rulesCache = mutable.Map.empty[os.Path, Vector[Layer]]
+  private val rulesCache = new ConcurrentHashMap[os.Path, Vector[Layer]]()
 
   private def computeBaseLayers(): Vector[Layer] = {
     val chain = GitIgnoreEngine.ancestorChain(root)
@@ -66,11 +67,12 @@ final class GitIgnoreEngine(
   }
 
   /** Rules that apply to paths inside `dir`: base layers + nested .gitignore files
-    * from the root down to `dir`. Memoized — each .gitignore parsed once. */
+    * from the root down to `dir`. Memoized — each .gitignore parsed once.
+    * Recursion goes strictly upward (different keys), so computeIfAbsent is safe. */
   private def rulesFor(dir: os.Path): Vector[Layer] =
-    rulesCache.getOrElseUpdate(dir, {
-      if dir == root then baseLayers
-      else if dir.startsWith(root) then rulesFor(dir / os.up) ++ ownLayer(dir)
+    rulesCache.computeIfAbsent(dir, { d =>
+      if d == root then baseLayers
+      else if d.startsWith(root) then rulesFor(d / os.up) ++ ownLayer(d)
       else baseLayers
     })
 
@@ -85,8 +87,8 @@ final class GitIgnoreEngine(
     * Exempted names (and exempted ancestor dirs) are never ignored.
     * Paths outside the root are treated as ignored (safe for watcher filters). */
   def isIgnored(path: os.Path, isDir: Boolean): Boolean = {
-    if exemptLastNames.contains(path.last) then return false
     if !path.startsWith(root) then return true
+    if exemptLastNames.contains(path.last) then return false
     var cur = path / os.up
     while cur.startsWith(root) && cur != root do {
       if !exemptLastNames.contains(cur.last) && ignoredByRules(cur, isDir = true) then return true

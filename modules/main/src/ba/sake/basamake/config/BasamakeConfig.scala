@@ -6,7 +6,9 @@ final case class BasamakeConfig(
     bspOverrides: List[BspOverride] = Nil,
     /** Extra ignore patterns in gitignore syntax, relative to the project root.
       * Merged AFTER .gitignore rules — last match wins, so they can override or
-      * negate .gitignore entries. Mirrors deder's watchIgnore. */
+      * negate .gitignore entries. Mirrors deder's watchIgnore. Note: patterns in
+      * a nested .gitignore (deeper than the project root) are applied after these,
+      * so they take precedence over config patterns. */
     ignorePatterns: List[String] = Nil
 ) derives JsonRW
 

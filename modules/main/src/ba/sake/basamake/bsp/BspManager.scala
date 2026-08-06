@@ -25,7 +25,9 @@ class BspManager private (
   private var client: LanguageClient = uninitialized
   private var watcher: FileChangeWatcher = uninitialized
   /** Gitignore engine for the file watcher. Built in initialize(); rebuilt on
-    * .gitignore changes. Exempts .bsp so watcher events for build servers pass. */
+    * .gitignore changes. Exempts .bsp so watcher events for build servers pass.
+    * Note: .gitignore files ABOVE the workspace root (repo boundary chain) are
+    * loaded at build time, but their changes are not watched (only the root is). */
   @volatile private var ignoreEngine: Option[GitIgnoreEngine] = None
   private var knownBspFiles: Set[os.Path] = Set.empty
   private val config = BasamakeConfig.load(workspaceRoot)

@@ -141,4 +141,11 @@ class GitIgnoreEngineTest extends FunSuite {
       assert(engine.isIgnored(root / os.up / "elsewhere" / "x.scala", isDir = false))
     }
   }
+
+  test("outside-root check wins over exemption (exempt names only apply inside the root)") {
+    withRoot { root =>
+      val engine = new GitIgnoreEngine(root, exemptLastNames = Set(".bsp"))
+      assert(engine.isIgnored(root / os.up / "elsewhere" / ".bsp", isDir = true))
+    }
+  }
 }

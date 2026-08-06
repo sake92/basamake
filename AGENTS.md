@@ -172,7 +172,7 @@ The extension registers `.scala`/`.sbt` file associations. If you also have Meta
 Two test modules:
 
 **modules/main-test** (`deder exec -t test -m main-test`):
-- `WorkspaceIndexTest` — 27 integration tests covering goto-def, references, cross-file, cross-language (Scala↔Java), no-packages, packages, nested scopes, sbt+semanticdb, scalacli
+- `WorkspaceIndexTest` — 31 integration tests covering goto-def, references, cross-file, cross-language (Scala↔Java), no-packages, packages, nested scopes, sbt+semanticdb, scalacli, gitignore-aware walk
 
 **modules/navigation-test** (`deder exec -t test -m navigation-test`):
 - `ScalaDefinitionsExtractorTest` — Pass 1 Scala definition extraction
