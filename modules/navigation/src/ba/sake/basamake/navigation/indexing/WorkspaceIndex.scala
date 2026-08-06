@@ -7,7 +7,7 @@ import ba.sake.basamake.navigation.*
 import ba.sake.basamake.navigation.scalasrc.{ScalaDefinitionsExtractor, ScalaReferencesResolver }
 import ba.sake.basamake.navigation.javasrc.{JavaDefinitionsExtractor, JavaReferencesResolver}
 
-class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends StrictLogging {
+class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty) extends StrictLogging {
 
   // source path → .semanticdb path (built once at initialize)
   private val semanticdbBySource = mutable.Map.empty[os.Path, os.Path]
@@ -25,11 +25,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable) extends S
   // ── initialize ──────────────────────────────────────────────
   def initialize(roots: List[SemanticdbDirs]): Unit = synchronized {
     logger.info(s"Initializing workspace index at $workspacePath")
-    val skipDirNames = Set(".git", ".basamake", ".metals", ".bsp", "node_modules")
+    val engine = new GitIgnoreEngine(workspacePath, ignorePatterns)
     val relevantExtensions = Set("scala", "java")
     def skip(p: os.Path): Boolean =
-      if os.isDir(p) then skipDirNames.contains(p.last)
-      else if os.isFile(p) then !relevantExtensions.contains(p.ext)
+      if os.isDir(p) then GitIgnoreEngine.alwaysSkipDirNames.contains(p.last) || engine.isIgnored(p, isDir = true)
+      else if os.isFile(p) then !relevantExtensions.contains(p.ext) || engine.isIgnored(p, isDir = false)
       else true
 
     val sources = os.walk(workspacePath, skip = skip)

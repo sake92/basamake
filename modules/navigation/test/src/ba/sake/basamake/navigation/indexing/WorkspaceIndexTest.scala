@@ -809,4 +809,75 @@ class WorkspaceIndexTest extends FunSuite {
       assert(syms.contains("_empty_/utils.getMsg()."), s"expected full symbol via source fallback, got $syms")
     } finally os.remove.all(root)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // gitignore-aware source walk
+  // ═══════════════════════════════════════════════════════════════
+
+  test("gitignore: node_modules/.worktrees/target are not indexed") {
+    val root = os.temp.dir(prefix = "ws-gitignore-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.write(root / ".gitignore", "node_modules/\n.worktrees/\ntarget/\n")
+      os.makeDir.all(root / "src")
+      os.write(root / "src" / "Main.scala", "class RealMain\n")
+      os.makeDir.all(root / "node_modules" / "dep")
+      os.write(root / "node_modules" / "dep" / "Dep.scala", "class NodeDep\n")
+      os.makeDir.all(root / ".worktrees" / "wt")
+      os.write(root / ".worktrees" / "wt" / "Other.scala", "class WorktreeOther\n")
+      os.makeDir.all(root / "target" / "gen")
+      os.write(root / "target" / "gen" / "Gen.scala", "class GeneratedThing\n")
+      val (_, st) = freshIndexAt(root)
+      assert(st.get("_empty_/RealMain#").isDefined, "src/Main.scala should be indexed")
+      assert(st.get("_empty_/NodeDep#").isEmpty, "node_modules should be skipped")
+      assert(st.get("_empty_/WorktreeOther#").isEmpty, ".worktrees should be skipped")
+      assert(st.get("_empty_/GeneratedThing#").isEmpty, "target should be skipped")
+    } finally os.remove.all(root)
+  }
+
+  test("gitignore: negation re-includes a file") {
+    val root = os.temp.dir(prefix = "ws-gitignore-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.write(root / ".gitignore", "*.generated.scala\n!keep.generated.scala\n")
+      os.write(root / "a.generated.scala", "class GenA\n")
+      os.write(root / "keep.generated.scala", "class KeepGen\n")
+      val (_, st) = freshIndexAt(root)
+      assert(st.get("_empty_/GenA#").isEmpty, "*.generated.scala should be skipped")
+      assert(st.get("_empty_/KeepGen#").isDefined, "!keep.generated.scala should be re-included")
+    } finally os.remove.all(root)
+  }
+
+  test("gitignore: nested .gitignore applies relative to its own dir") {
+    val root = os.temp.dir(prefix = "ws-gitignore-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "src")
+      os.write(root / "src" / ".gitignore", "build/\n")
+      os.write(root / "src" / "Main.scala", "class SubMain\n")
+      os.makeDir.all(root / "src" / "build")
+      os.write(root / "src" / "build" / "B.scala", "class SubBuild\n")
+      os.makeDir.all(root / "build")
+      os.write(root / "build" / "RootB.scala", "class RootBuild\n")
+      val (_, st) = freshIndexAt(root)
+      assert(st.get("_empty_/SubMain#").isDefined, "src/Main.scala should be indexed")
+      assert(st.get("_empty_/SubBuild#").isEmpty, "src/build should be skipped (nested rule)")
+      assert(st.get("_empty_/RootBuild#").isDefined, "root build/ must NOT be skipped by nested rule")
+    } finally os.remove.all(root)
+  }
+
+  test("gitignore: ignorePatterns constructor param is honored") {
+    val root = os.temp.dir(prefix = "ws-gitignore-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "src")
+      os.write(root / "src" / "Main.scala", "class RealMain\n")
+      os.write(root / "src" / "Gen.scala", "class GenByConfig\n")
+      val st = new SymbolTable
+      val idx = new WorkspaceIndex(root, st, ignorePatterns = Vector("src/Gen.scala"))
+      idx.initialize(List.empty)
+      assert(st.get("_empty_/RealMain#").isDefined)
+      assert(st.get("_empty_/GenByConfig#").isEmpty, "config pattern should skip src/Gen.scala")
+    } finally os.remove.all(root)
+  }
 }
