@@ -24,6 +24,9 @@ class BspManager private (
   private val router = new BspRouter
   private var client: LanguageClient = uninitialized
   private var watcher: FileChangeWatcher = uninitialized
+  /** Gitignore engine for the file watcher. Built in initialize(); rebuilt on
+    * .gitignore changes. Exempts .bsp so watcher events for build servers pass. */
+  @volatile private var ignoreEngine: Option[GitIgnoreEngine] = None
   private var knownBspFiles: Set[os.Path] = Set.empty
   private val config = BasamakeConfig.load(workspaceRoot)
 
@@ -39,7 +42,8 @@ class BspManager private (
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient): Unit = {
     this.client = lspClient
-    val discovered = BspDiscovery.discover(workspaceRoot, new GitIgnoreEngine(workspaceRoot, exemptLastNames = Set(".bsp")))
+    ignoreEngine = Some(newEngine())
+    val discovered = BspDiscovery.discover(workspaceRoot, ignoreEngine.get)
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
 
@@ -47,6 +51,9 @@ class BspManager private (
     watcher.start()
     logger.debug(s"File watcher started for workspace $workspaceRoot")
   }
+
+  private def newEngine(): GitIgnoreEngine =
+    new GitIgnoreEngine(workspaceRoot, config.ignorePatterns.toVector, exemptLastNames = Set(".bsp"))
 
   // ---- poke: the one entry point from LSP handlers ----
   // makes sure BSP connection is alive, respawns if needed, and triggers compile if requested.
@@ -199,9 +206,14 @@ class BspManager private (
   }
 
   // ---- File watcher ----
-  private def onFileChanged(changedPaths: Set[os.Path]): Unit = {
+  private[bsp] def onFileChanged(changedPaths: Set[os.Path]): Unit = {
     val watched = changedPaths.filterNot(watchIgnored)
     val changedBspFiles = watched.filter(_.segments.toSeq.contains(".bsp"))
+    val gitignoreChanges = watched.filter(_.last == ".gitignore")
+    if (gitignoreChanges.nonEmpty) {
+      logger.info(s"Detected .gitignore change(s): ${gitignoreChanges.mkString(", ")} — reloading ignore engine")
+      ignoreEngine = Some(newEngine())
+    }
     if (changedBspFiles.nonEmpty) {
       logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
       enqueueBspChangeBatch(changedBspFiles)
@@ -232,7 +244,7 @@ class BspManager private (
   }
 
   private def handleBspChanges(changed: Set[os.Path]): Unit = synchronized {
-    val current = BspDiscovery.discover(workspaceRoot, new GitIgnoreEngine(workspaceRoot, exemptLastNames = Set(".bsp"))).map(_.path).toSet
+    val current = BspDiscovery.discover(workspaceRoot, ignoreEngine.getOrElse(newEngine())).map(_.path).toSet
     val (newFiles, deletedFiles, modifiedFiles) =
       BspManager.classifyBspChanges(knownBspFiles, current, changed)
 
@@ -312,18 +324,21 @@ class BspManager private (
     }
   }
 
-  private def watchIgnored(path: os.Path): Boolean = {
+  private[bsp] def watchIgnored(path: os.Path): Boolean = {
     val relOpt = try Some(path.relativeTo(workspaceRoot)) catch { case _: Exception => None }
     relOpt match {
       case None => true
       case Some(rel) if rel.segments.isEmpty => false
       case Some(rel) =>
-        val segs = rel.segments.toSeq
-        segs.sliding(2).exists(_.toSeq == Seq(".basamake", "logs")) ||
-          segs.head == "target" ||
-          segs.head == "out" ||
-          segs.head == ".deder" ||
-          segs.head == ".metals"
+        if (rel.segments.toSeq.sliding(2).exists(_.toSeq == Seq(".basamake", "logs"))) true
+        else ignoreEngine match {
+          case Some(engine) => engine.isIgnored(path, os.isDir(path))
+          // pre-initialize (tests): keep the legacy hardcoded top-level list
+          case None =>
+            val segs = rel.segments.toSeq
+            segs.head == "target" || segs.head == "out" ||
+            segs.head == ".deder" || segs.head == ".metals"
+        }
     }
   }
 
@@ -353,7 +368,8 @@ class BspManager private (
 
   private[bsp] def routeForTesting(uri: String): Option[BspConnectionId] = router.route(uri)
   private[bsp] def initializeForTestingOnlyDiscover(): Unit = {
-    val discovered = BspDiscovery.discover(workspaceRoot, new GitIgnoreEngine(workspaceRoot, exemptLastNames = Set(".bsp")))
+    ignoreEngine = Some(newEngine())
+    val discovered = BspDiscovery.discover(workspaceRoot, ignoreEngine.get)
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
   }
