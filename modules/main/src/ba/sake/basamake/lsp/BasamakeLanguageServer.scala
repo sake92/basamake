@@ -95,14 +95,19 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     if (created.nonEmpty || deleted.nonEmpty) {
       bspManager.onWatchedFilesChanged(created, deleted)
     }
-    // purge index state for files actually removed from disk
-    if (deleted.nonEmpty) {
-      val deletedPaths = deleted.flatMap { uri =>
-        try Some(os.Path(URI.create(uri))) catch { case _: Exception => None }
-      }.toSet
-      if (deletedPaths.nonEmpty) workspaceIndex.onFilesDeleted(deletedPaths)
-    }
+    // keep the workspace source list live for created/deleted source files
+    val createdPaths = created.flatMap(uriToSourcePath)
+    val deletedPaths = deleted.flatMap(uriToSourcePath)
+    if (createdPaths.nonEmpty) workspaceIndex.onFilesCreated(createdPaths.toSet)
+    if (deletedPaths.nonEmpty) workspaceIndex.onFilesDeleted(deletedPaths.toSet)
   }
+
+  /** Convert a watched-file URI to a source path (.scala/.java only). */
+  private def uriToSourcePath(uri: String): Option[os.Path] =
+    try {
+      val p = os.Path(URI.create(uri))
+      if (p.ext == "scala" || p.ext == "java") Some(p) else None
+    } catch { case _: Exception => None }
 
   /** VS Code sends workspace/didRenameFiles when user renames a file.
     * Clear old diagnostics, re-index new file into WorkspaceIndex,
@@ -115,6 +120,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val oldPath = try Some(os.Path(URI.create(rename.getOldUri))) catch { case _: Exception => None }
       oldPath.foreach(p => workspaceIndex.onFilesDeleted(Set(p)))
       val newPath = os.Path(URI.create(rename.getNewUri))
+      if (newPath.ext == "scala" || newPath.ext == "java") workspaceIndex.onFilesCreated(Set(newPath))
       workspaceIndex.onDidOpen(newPath)
       Thread.ofVirtual().start(() => bspManager.poke(rename.getNewUri, compile = true))
     }

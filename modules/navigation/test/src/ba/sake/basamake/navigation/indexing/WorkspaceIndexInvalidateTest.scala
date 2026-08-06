@@ -222,7 +222,23 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       assert(st.get("_empty_/utils.getMsg().").isEmpty,
         "definitions must be purged when the file is deleted")
       val dump = os.read(root / ".basamake" / "index_sources.txt")
-      assert(dump.contains("<<NO SEMANTICDB>>"), s"dump must show NO SEMANTICDB after deletion:\n$dump")
+      assert(!dump.contains("utils.scala"),
+        s"deleted file must disappear from the dump entirely:\n$dump")
+    } finally os.remove.all(root)
+  }
+
+  test("onFilesCreated adds post-initialize files to the source list") {
+    val root = buildSbtLikeFixture()
+    try {
+      val (idx, _) = freshIndexAt(root)
+      val newFile = root / "src" / "main" / "scala" / "NewThing.scala"
+      os.write(newFile, "object NewThing\n")
+
+      idx.onFilesCreated(Set(newFile))
+
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(dump.contains("NewThing.scala"),
+        s"dump must list files created after initialize:\n$dump")
     } finally os.remove.all(root)
   }
 }
