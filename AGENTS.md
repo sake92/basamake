@@ -105,11 +105,25 @@ Core index in `modules/main`. On `initialize()`:
 - Walks workspace, discovers `.semanticdb` files via `SemanticdbIndexing`
 - When SemanticDB available: uses `.semanticdb` for definitions + references (preferred — more accurate)
 - When SemanticDB unavailable: falls back to source parsing (Pass 1 + Pass 2)
-- Skips directories: `.git`, `.basamake`, `.metals`, `.bsp`, `node_modules`
+- Skips directories: always-skip set (`.git`, `.basamake`, `.deder`, `.metals`, `.bsp`,
+  `.scala-build`, `target`, `out`, `.github`, `.idea`, `.vscode`, `node_modules`) plus
+  everything matched by `.gitignore` rules (nested `.gitignore` files included, plus
+  `ignorePatterns` from `.basamake/config.json` — last match wins). SemanticDB dirs
+  come only from `data.json`, never from the walk
 
 On open buffer change (`onDidChange`):
 - Re-extracts occurrences for the changed file
 - Prefers SemanticDB when text matches disk, falls back to source parse
+
+### Project root resolution
+
+`.basamake/` (logs, config, data.json, source walk, `.bsp` discovery) lives at the
+**project root**, resolved in `Main.run` by climbing from the opened folder to the
+first ancestor containing `.git` (dir or file — a file marks a git worktree) or an
+existing `.basamake/` dir. Non-git folders without a marker fall back to the opened
+folder. So `examples/hello/sbt` reuses `examples/hello/.basamake`, while each
+`.worktrees/<branch>` gets its own. `.bsp` dirs are gitignored in most repos but are
+exempted from ignore checks in BspDiscovery and the file watcher.
 
 ### LSP handlers
 
@@ -141,7 +155,7 @@ succeeds. On spawn failure the queue is cleared; no cooldown, no retry limits, n
 
 Configured programmatically in `LoggingUtils.configureFileLogging()` — no `logback.xml` on classpath. One appender:
 
-- **File → `.basamake/logs/basamake.log`** in the workspace root
+- **File → `.basamake/logs/basamake.log`** in the project root (see Project root resolution)
 
 Called from `Main.run()` with the workspace path. Reconfiguration-safe (detaches old FILE appender if re-invoked).
 

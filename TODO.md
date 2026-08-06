@@ -3,7 +3,7 @@
 - write config with all BSP defaults, easier to override by user
 - use paths relative to WORKSPACE, not absolute, easier to debug
 
-- ignore .gitignore-d folders, hmm we need target/ for semanticdb files, but ignore .worktrees/ ..???
+- [x] ignore .gitignore-d folders (engine + config ignorePatterns; semanticdb still from data.json)
 - poke should compile always.. say i open file, then only do "deder bsp install", currently it wont compile
 - invalidation of wsIndex doesnt pick up newly-generated semantcdbs?
 - cover getreferences in tests.. and fix it..
