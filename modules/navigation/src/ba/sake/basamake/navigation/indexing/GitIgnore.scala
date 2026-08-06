@@ -16,7 +16,7 @@ object GitIgnore {
     * Strips comments (lines starting with #) and empty lines.
     * Preserves `!` prefix for negation support.
     * Returns empty Vector if the file does not exist. */
-  def readGitignorePatterns(file: os.Path): Vector[String] =
+  def readGitignorePatterns(file: os.Path): Vector[String] = {
     if os.exists(file) && os.isFile(file) then
       os.read.lines(file)
         .map(_.trim)
@@ -24,6 +24,7 @@ object GitIgnore {
         .toVector
     else
       Vector.empty
+  }
 
   /** Matches a single gitignore pattern (WITHOUT the `!` prefix) against a path
     * relative to the gitignore file's own directory. */
@@ -41,7 +42,7 @@ object GitIgnore {
     if p.contains("/") then
       // Pattern has path separator — match against full relative path
       val pClean = if p.startsWith("/") then p.stripPrefix("/") else p
-      if pClean.contains("**") || pClean.contains("*") || pClean.contains("?") then
+      if pClean.contains("*") || pClean.contains("?") then
         // Strip trailing / from normalized dir paths for regex matching
         val regexPath = if normalizedPath.endsWith("/") then normalizedPath.stripSuffix("/") else normalizedPath
         globToRegex(pClean).matches(regexPath)
@@ -53,7 +54,7 @@ object GitIgnore {
     else
       // No separator — match against filename (last non-empty segment, so
       // bare patterns like "build" also match directories)
-      val filename = normalizedPath.split("/").filter(_.nonEmpty).last
+      val filename = normalizedPath.split("/").filter(_.nonEmpty).lastOption.getOrElse("")
       simpleGlobMatch(p, filename)
   }
 
@@ -83,8 +84,7 @@ object GitIgnore {
             // ** followed by / should match zero or more directories
             if i + 2 < pattern.length && pattern.charAt(i + 2) == '/' then
               sb.append("(.*/)?")
-              i += 2 // skip second * and the following /
-              // skip the / (the i += 1 at end of loop will advance past it)
+              i += 2 // advance past both stars; the loop's i += 1 consumes the /
             else
               sb.append(".*")
               i += 1
@@ -92,6 +92,7 @@ object GitIgnore {
             sb.append("[^/]*")
         case '?' => sb.append("[^/]")
         case '.' => sb.append("\\.")
+        case c if "()[]{}^$|\\+".contains(c) => sb.append("\\").append(c)
         case c   => sb.append(c)
       i += 1
     sb.append("$")
@@ -101,9 +102,20 @@ object GitIgnore {
   /** Simple glob match for filename-only patterns (no / in pattern). */
   private def simpleGlobMatch(pattern: String, str: String): Boolean = {
     val regex = pattern
+      .replace("\\", "\\\\")
       .replace(".", "\\.")
       .replace("*", ".*")
       .replace("?", ".")
+      .replace("+", "\\+")
+      .replace("(", "\\(")
+      .replace(")", "\\)")
+      .replace("[", "\\[")
+      .replace("]", "\\]")
+      .replace("{", "\\{")
+      .replace("}", "\\}")
+      .replace("^", "\\^")
+      .replace("$", "\\$")
+      .replace("|", "\\|")
     str.matches(regex)
   }
 }

@@ -127,4 +127,20 @@ class GitIgnoreTest extends FunSuite {
     assert(GitIgnore.isIgnoredByGitignore("build", isDir = false, patterns))
     assert(!GitIgnore.isIgnoredByGitignore("builder", isDir = true, patterns))
   }
+
+  test("isIgnoredByGitignore: ? matches a single character") {
+    val patterns = Seq("foo?.scala")
+    assert(GitIgnore.isIgnoredByGitignore("foo1.scala", isDir = false, patterns))
+    assert(!GitIgnore.isIgnoredByGitignore("foo.scala", isDir = false, patterns))
+    assert(!GitIgnore.isIgnoredByGitignore("foo12.scala", isDir = false, patterns))
+  }
+
+  test("isIgnoredByGitignore: regex metacharacters match literally") {
+    val patterns = Seq("dir(1)", "file+", "a[b]")
+    assert(GitIgnore.isIgnoredByGitignore("dir(1)", isDir = false, patterns))
+    assert(!GitIgnore.isIgnoredByGitignore("dir1", isDir = false, patterns))
+    assert(GitIgnore.isIgnoredByGitignore("file+", isDir = false, patterns))
+    assert(!GitIgnore.isIgnoredByGitignore("filee", isDir = false, patterns))
+    assert(GitIgnore.isIgnoredByGitignore("a[b]", isDir = false, patterns))
+  }
 }
