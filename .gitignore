@@ -2,9 +2,16 @@
 *.jar
 *.log
 
+# committed test fixtures
+!modules/navigation/test/resources/jars/*.jar
+
 *.DS_Store
 
 target/
+# committed semanticdb fixture for the sbt example (real sbt output layout)
+# regenerate: copy fixture src + examples/hello/sbt/{build.sbt,project/build.properties} into tmp/, sbt compile there, harvest target/scala-3.8.4/meta
+!modules/main/test/resources/examples/sbt/target/
+!modules/main/test/resources/examples/sbt/target/**
 .bloop/
 .bsp/
 .metals/

@@ -1,14 +1,7 @@
 
-- cleanup workspaceIndex.onDidChange(path, text) no need to pass text, we can read file
+- concurrent indexing with VTs
 - write config with all BSP defaults, easier to override by user
 - use paths relative to WORKSPACE, not absolute, easier to debug
-
-- ignore .gitignore-d folders, hmm we need target/ for semanticdb files, but ignore .worktrees/ ..???
-- poke should compile always.. say i open file, then only do "deder bsp install", currently it wont compile
-- invalidation of wsIndex doesnt pick up newly-generated semantcdbs?
-- cover getreferences in tests.. and fix it..
-
-- keep last 10 (or ALL?) open-files parsed ASTs/semanticdbs, use hash/timestamp to avoid reparsing..
 
 - cache deps/JDK indices GLOBALLY !!!
    - metadata.json (full_path, defines_packages:["java.lang"] for faster filtering/decision)

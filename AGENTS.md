@@ -55,14 +55,14 @@ object WorkspaceIndex {
 
 ## Smoke Test
 
-```bash
-cd examples/hello
-deder clean        # clear cache so Deder actually recompiles
-python3 smoke_test.py
-```
+The python smoke scripts (`examples/hello/smoke_test.py`, `bsp_smoke_test.py`,
+root `test_sbt_gotodef.py`) were deleted. Their coverage now lives in Scala tests:
 
-Checks LSP flow: initialize → didOpen → capability verification.
-**Note:** smoke_test.py still expects diagnostics from old BSP compile flow — needs rewrite to test navigation features (definition/references).
+- `LspTransportTest` (modules/main-test) — drives the real `BasamakeLanguageServer`
+  through the JSON-RPC transport (initialize → didOpen → definition → shutdown)
+  against a fixture copied to `<repo>/tmp/`
+- `BasamakeLanguageServerTest` — LSP handler behavior (rename, watched files, stale semanticdb)
+- `WorkspaceIndexTest` — navigation with committed real-semanticdb fixtures
 
 ## stdout Is Sacred
 
@@ -173,6 +173,16 @@ Two test modules:
 
 Tests use fixture source files under `test/resources/examples/`. No real build tool needed.
 
+## Test Hygiene
+
+- No hardcoded absolute home paths (`/home/<user>`) in tests, scripts, or source — use
+  `System.getProperty("java.home")`, `os.home`, or paths relative to `os.pwd`.
+- Fixtures live under `test/resources/` (including committed binary data: the commons-net
+  sources jar, and the sbt fixture's `target/scala-3.8.4/meta` semanticdb files — generated
+  once, never by tests).
+- Tests never shell out to build tools and never write into fixture folders: they copy
+  fixtures to `<repo>/tmp/<test>-<timestamp>/` first; any sbt/deder shell-out happens there.
+
 ## SemanticDB Reference
 
 Spec summary + basamake consumer notes: **`agents/semanticdb.md`** — symbol format, descriptor suffixes, occurrences, SUID encoding, TextDocument layout, Scala 2 vs 3 differences.
@@ -195,4 +205,4 @@ Spec summary + basamake consumer notes: **`agents/semanticdb.md`** — symbol fo
 | `modules/main/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, `spawnLock`, `spawning` flag, pending-compile queue |
 | `modules/main/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, queue-free, eventSink-based build client |
 | `modules/main/src/ba/sake/basamake/bsp/BspRouter.scala` | Two-phase URI routing (ground-truth + bootstrap heuristic) |
-| `examples/hello/` | Test project + smoke_test.py |
+| `examples/hello/` | Test project (manual testing via vscode extension; `.bsp` configs generated per machine via README flow) |

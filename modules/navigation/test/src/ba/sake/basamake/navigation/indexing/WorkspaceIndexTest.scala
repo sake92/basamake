@@ -2,6 +2,7 @@ package ba.sake.basamake.navigation.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.navigation.*
+import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
 
 class WorkspaceIndexTest extends FunSuite {
 
@@ -747,9 +748,8 @@ class WorkspaceIndexTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val original = os.read(mainFile)
-      // Edit source AFTER semanticdb was generated (mtime check will detect staleness)
+      // Edit the source after the fixture was copied (index here is source-only — no semanticdb roots)
       os.write.over(mainFile, "// edited after compile\n" + original)
-      Thread.sleep(10) // ensure mtime difference is visible on all filesystems
       val (idx, _) = freshIndexAt(root)
       val mainText = os.read(mainFile)
       idx.onDidOpen(mainFile)
@@ -800,10 +800,26 @@ class WorkspaceIndexTest extends FunSuite {
       val (idx, _) = freshIndexAt(root)
       idx.onDidOpen(mainFile)
       val semDir = root / "target" / "scala-3.8.4" / "meta"
+
+      // Overwrite the real semanticdb with one emitting PARTIAL ref symbols
+      // (`utils.`, no owner prefix — what Scala 3 -Ybest-effort emits under
+      // compile errors). The fallback must produce FULL symbols via source
+      // parsing so goto-def resolves.
+      val mainDoc = TextDocument(
+        schema = Schema.SEMANTICDB4,
+        uri = "src/main/scala/Main.scala",
+        text = os.read(mainFile),
+        language = Language.SCALA,
+        symbols = Nil,
+        occurrences = List(
+          SymbolOccurrence(symbol = "utils.", range = Some(SdbRange(10, 2, 10, 7)), role = SymbolOccurrence.Role.REFERENCE),
+          SymbolOccurrence(symbol = "utils.getMsg().", range = Some(SdbRange(10, 8, 10, 14)), role = SymbolOccurrence.Role.REFERENCE)
+        )
+      )
+      val semPath = semDir / "META-INF" / "semanticdb" / "src" / "main" / "scala" / "Main.scala.semanticdb"
+      os.write.over(semPath, TextDocuments(List(mainDoc)).toByteArray)
+
       idx.invalidate(List(SemanticdbDirs(root, semDir)))
-      // The fixture semanticdb emits PARTIAL ref symbols (`getMsg.`, no owner
-      // prefix, e.g. under -Ybest-effort). The fallback must produce FULL symbols
-      // via source parsing so goto-def resolves.
       val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
       val syms = idx.findSymbolsAt(mainFile, l, c)
       assert(syms.contains("_empty_/utils.getMsg()."), s"expected full symbol via source fallback, got $syms")

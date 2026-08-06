@@ -34,14 +34,6 @@ deder exec -t test
 deder clean && deder exec
 ```
 
-## Smoke Test
-
-```bash
-cd examples/hello
-deder clean
-python3 smoke_test.py
-```
-
 ## Stale Process Cleanup
 
 If necessary, between relaunches, kill leftover processes:
