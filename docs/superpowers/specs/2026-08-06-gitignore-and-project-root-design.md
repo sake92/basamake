@@ -86,6 +86,10 @@ FileWatchUtils" in the file header):
   - `isIgnored(path, isDir): Boolean` — used by walk pruning, discovery, watcher.
   - **Exemption set** (e.g. `{".bsp"}`) for consumers that need gitignored things.
 
+`WorkspaceIndex` and `BspManager` each construct their own engine from the same
+resolved root (construction is cheap; `.gitignore` files are parsed once per walk
+via memoization). No shared singleton.
+
 ### 3. Integration map
 
 | Consumer | Change |
@@ -104,8 +108,9 @@ deder's pkl `watchIgnore`. Lives in `.basamake/config.json` at the resolved root
 
 `BspManager.onFileChanged` already receives all change events; when a changed path's
 last segment is `.gitignore`, rebuild the engine (invalidate rules cache). Index
-refresh is not re-triggered (index only refreshes via didSave/invalidate) — the
-reload affects the watcher filter and future walks.
+refresh is not re-triggered (the walk happens only at initialize; the index refreshes
+via didSave/invalidate) — the reload affects the watcher filter immediately and the
+next server start's walk.
 
 ### Edge cases / non-goals (v1)
 
