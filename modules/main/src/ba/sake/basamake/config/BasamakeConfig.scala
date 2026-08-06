@@ -3,7 +3,11 @@ package ba.sake.basamake.config
 import ba.sake.tupson.{given, *}
 
 final case class BasamakeConfig(
-    bspOverrides: List[BspOverride] = Nil
+    bspOverrides: List[BspOverride] = Nil,
+    /** Extra ignore patterns in gitignore syntax, relative to the project root.
+      * Merged AFTER .gitignore rules — last match wins, so they can override or
+      * negate .gitignore entries. Mirrors deder's watchIgnore. */
+    ignorePatterns: List[String] = Nil
 ) derives JsonRW
 
 object BasamakeConfig {
