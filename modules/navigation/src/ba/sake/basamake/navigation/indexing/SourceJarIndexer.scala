@@ -25,7 +25,7 @@ object SourceJarIndexer extends StrictLogging {
     val indexPath = cacheDir / "index.lmdb"
 
     CacheMetadata.load(cacheDir) match {
-      case Some(meta) if CacheMetadata.isValid(meta, source) && os.exists(indexPath) =>
+      case Some(meta) if CacheMetadata.isValid(meta, source) && os.isDir(indexPath) =>
         logger.debug(s"Loading cached index for $source ($fingerprint)")
         return LmdbSerializer.load(indexPath)
       case _ => ()

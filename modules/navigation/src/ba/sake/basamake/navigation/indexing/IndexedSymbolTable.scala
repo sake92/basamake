@@ -45,14 +45,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
         if isCached(fp, src) then register(fp, src)
         else if indexing.add(fp) then {
           logger.info(s"Indexing dependency source ${src.last} in background")
-          Thread.ofVirtual().start(() => {
-            try {
-              SourceJarIndexer.index(src, fp)
-              register(fp, src)
-            } catch {
-              case NonFatal(e) => logger.warn(s"Failed to index $src: ${e.getMessage}")
-            } finally indexing.remove(fp)
-          })
+          indexInBackground(src, fp)
         }
       }
     }
@@ -119,7 +112,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private def isCached(fp: String, source: os.Path): Boolean =
     val dir = SourceJarIndexer.cacheRoot / fp
     CacheMetadata.load(dir).exists(meta =>
-      CacheMetadata.isValid(meta, source) && os.exists(dir / "index.lmdb")
+      CacheMetadata.isValid(meta, source) && os.isDir(dir / "index.lmdb")
     )
 
   private def register(fp: String, source: os.Path): Unit = {
@@ -147,12 +140,32 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
           Some(table)
         } catch {
           case NonFatal(e) =>
+            // Wipe + reindex at most ONCE per fingerprint: a concurrent reindex must
+            // not be killed by repeated wipes from polling lookups.
             logger.warn(s"Corrupt index at $dir — wiping and reindexing: ${e.getMessage}")
-            os.remove.all(dir)
-            Option(sourcesByFp.get(fp)).foreach(src => ensureIndexed(List(src)))
+            if indexing.add(fp) then {
+              os.remove.all(dir)
+              Option(sourcesByFp.get(fp)) match {
+                case Some(src) => indexInBackground(src, fp)
+                case None      => indexing.remove(fp)
+              }
+            }
             None
         }
       }
     }
+  }
+
+  /** Index one source in the background (virtual thread). Caller must have claimed
+    * the fingerprint in `indexing`; the claim is released when the thread finishes. */
+  private def indexInBackground(src: os.Path, fp: String): Unit = {
+    Thread.ofVirtual().start(() => {
+      try {
+        SourceJarIndexer.index(src, fp)
+        register(fp, src)
+      } catch {
+        case NonFatal(e) => logger.warn(s"Failed to index $src: ${e.getMessage}")
+      } finally indexing.remove(fp)
+    })
   }
 }
