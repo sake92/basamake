@@ -6,27 +6,32 @@ import java.io.FileOutputStream
 
 class SourceJarIndexerTest extends FunSuite {
 
+  // committed fixture — see modules/navigation/test/resources/jars/
+  private val commonsNetSourcesJar =
+    os.pwd / "modules" / "navigation" / "test" / "resources" / "jars" / "commons-net-3.9.0-sources.jar"
+
+  // JDK sources — resolved from the running JVM, never a hardcoded path
+  private val jdkSrcZip =
+    os.Path(System.getProperty("java.home")) / "lib" / "src.zip"
+
   test("index commons-net source jar") {
-    val jar = os.Path("/home/sake/.cache/coursier/v1/https/repo1.maven.org/maven2/commons-net/commons-net/3.9.0/commons-net-3.9.0-sources.jar")
+    val jar = commonsNetSourcesJar
+    require(os.exists(jar), s"Fixture jar missing: $jar")
 
-    if (!os.exists(jar)) {
-      println(s"Skipping test: $jar not found")
-    } else {
-      val fingerprint = "commons-net_3.9.0_bd5a1"
-      cleanCache(fingerprint)
-      val table = SourceJarIndexer.index(jar, fingerprint)
+    val fingerprint = "commons-net_3.9.0_bd5a1"
+    cleanCache(fingerprint)
+    val table = SourceJarIndexer.index(jar, fingerprint)
 
-      assert(table.all.nonEmpty, "Should have indexed some definitions")
-      val hasApacheSymbols = table.all.exists(_.symbol.contains("apache"))
-      assert(hasApacheSymbols, "Should have indexed apache symbols")
+    assert(table.all.nonEmpty, "Should have indexed some definitions")
+    val hasApacheSymbols = table.all.exists(_.symbol.contains("apache"))
+    assert(hasApacheSymbols, "Should have indexed apache symbols")
 
-      println(s"Indexed ${table.all.size} symbols from commons-net")
-    }
+    println(s"Indexed ${table.all.size} symbols from commons-net")
   }
 
   // JDK src.zip indexing takes >30s — skip in CI, use manual verification
   test("index JDK src.zip".ignore) {
-    val srcZip = os.Path("/home/sake/.sdkman/candidates/java/current/lib/src.zip")
+    val srcZip = jdkSrcZip
 
     if (!os.exists(srcZip)) {
       println(s"Skipping test: $srcZip not found")
@@ -43,20 +48,17 @@ class SourceJarIndexerTest extends FunSuite {
   }
 
   test("reload from existing index") {
-    val jar = os.Path("/home/sake/.cache/coursier/v1/https/repo1.maven.org/maven2/commons-net/commons-net/3.9.0/commons-net-3.9.0-sources.jar")
+    val jar = commonsNetSourcesJar
+    require(os.exists(jar), s"Fixture jar missing: $jar")
 
-    if (!os.exists(jar)) {
-      println(s"Skipping test: $jar not found")
-    } else {
-      val fingerprint = "commons-net_reload_bd5a1"
-      cleanCache(fingerprint)
+    val fingerprint = "commons-net_reload_bd5a1"
+    cleanCache(fingerprint)
 
-      val table1 = SourceJarIndexer.index(jar, fingerprint)
-      val table2 = SourceJarIndexer.index(jar, fingerprint) // should load from cache
+    val table1 = SourceJarIndexer.index(jar, fingerprint)
+    val table2 = SourceJarIndexer.index(jar, fingerprint) // should load from cache
 
-      assert(table1.all.nonEmpty, "First index should have definitions")
-      assertEquals(table1.all.size, table2.all.size)
-    }
+    assert(table1.all.nonEmpty, "First index should have definitions")
+    assertEquals(table1.all.size, table2.all.size)
   }
 
   private def cleanCache(fingerprint: String): Unit = {

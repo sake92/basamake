@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
 import org.lmdbjava.*
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition}
 import scala.meta.internal.semanticdb.Range
 import java.io.{ByteArrayOutputStream, ByteArrayInputStream, DataOutputStream, DataInputStream}
 import java.nio.ByteBuffer
@@ -36,7 +36,7 @@ object LmdbSerializer {
   }
 
   def load(path: os.Path): SymbolTable = {
-    val table = new SymbolTable()
+    val table = new InMemorySymbolTable()
     val env = Env.create()
       .setMapSize(100L * 1024 * 1024)
       .setMaxDbs(1)

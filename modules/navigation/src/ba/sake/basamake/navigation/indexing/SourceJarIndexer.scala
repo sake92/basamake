@@ -1,6 +1,6 @@
 package ba.sake.basamake.navigation.indexing
 
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition}
 import ba.sake.basamake.navigation.scalasrc.ScalaDefinitionsExtractor
 import ba.sake.basamake.navigation.javasrc.JavaDefinitionsExtractor
 import java.util.zip.ZipFile
@@ -15,7 +15,7 @@ object SourceJarIndexer {
       return LmdbSerializer.load(indexPath)
     }
 
-    val table = new SymbolTable()
+    val table = new InMemorySymbolTable()
     val scalaExtractor = new ScalaDefinitionsExtractor(table)
     val javaExtractor = new JavaDefinitionsExtractor(table)
     val zip = new ZipFile(jar.toIO)

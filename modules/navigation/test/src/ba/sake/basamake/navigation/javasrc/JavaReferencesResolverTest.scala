@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.javasrc
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ResolvedFile}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition, ResolvedFile}
 import scala.meta.internal.semanticdb.Range
 
 class JavaReferencesResolverTest extends FunSuite {
@@ -16,7 +16,7 @@ class JavaReferencesResolverTest extends FunSuite {
     new JavaReferencesResolver(st).resolveFromContent("test.java", code, os.pwd)
 
   private def resolve(code: String): ResolvedFile =
-    resolveWith(new SymbolTable, code)
+    resolveWith(new InMemorySymbolTable, code)
 
   private def occ(symbol: String): String = symbol
 
@@ -49,7 +49,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.1 bare type ref same-package (no import) ───────────────
 
   test("R.1 bare type ref same-package") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("a/b/C#", "C", isType = true))
     val code = """package a.b; class D { C field; }"""
     val rf = resolveWith(st, code)
@@ -59,7 +59,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.2 explicit import ──────────────────────────────────────
 
   test("R.2 explicit import") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("a/b/C#", "C", isType = true))
     val code = """package x; import a.b.C; class D { C field; }"""
     val rf = resolveWith(st, code)
@@ -69,7 +69,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.3 on-demand import ─────────────────────────────────────
 
   test("R.3 on-demand import") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("a/b/C#", "C", isType = true))
     val code = """package x; import a.b.*; class D { C field; }"""
     val rf = resolveWith(st, code)
@@ -79,7 +79,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.4 qualified type ref ───────────────────────────────────
 
   test("R.4 qualified type ref") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/C#", "C", isType = true))
     val code = """package x; import pkg.C; class D { pkg.C field; }"""
     val rf = resolveWith(st, code)
@@ -89,7 +89,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.5 new C() ──────────────────────────────────────────────
 
   test("R.5 new C()") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/C#", "C", isType = true))
     st.add(defn("pkg/C#`<init>`().", "<init>", isType = false))
     val code = """package pkg; class Test { Object m() { return new C(); } }"""
@@ -101,7 +101,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.6 static call Class.method() ───────────────────────────
 
   test("R.6 static call Class.method()") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/Util#", "Util", isType = true))
     st.add(defn("pkg/Util#doStuff().", "doStuff", isType = false))
     val code = """package pkg; class Test { void m() { Util.doStuff(); } }"""
@@ -112,7 +112,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.7 field access obj.f ───────────────────────────────────
 
   test("R.7 field access obj.f") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/Foo#", "Foo", isType = true))
     st.add(defn("pkg/Foo#f.", "f", isType = false))
     val code = """package pkg; class Test { int m(Foo obj) { return obj.f; } }"""
@@ -136,7 +136,7 @@ class JavaReferencesResolverTest extends FunSuite {
 
   test("R.9 method param defs + reference inside body") {
     val code = """package pkg; class C { int m(int p) { return p; } }"""
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val rf = resolveWith(st, code)
     // ref occurrence to param (def in SymbolTable now, not occurrences)
     assertHasOccurrence(rf, "pkg/C#m().(p)")
@@ -161,7 +161,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.12 enum constant ref ───────────────────────────────────
 
   test("R.12 enum constant ref") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/Color#", "Color", isType = true))
     st.add(defn("pkg/Color#RED.", "RED", isType = false))
     val code = """package pkg; class Test { Color c = Color.RED; }"""
@@ -172,7 +172,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.13 method called on resolved qual ─────────────────────
 
   test("R.13 method called on resolved qual — v1 chained call unresolved") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/Obj#", "Obj", isType = true))
     st.add(defn("pkg/Obj#method().", "method", isType = false))
     val code = """package pkg; class Test { void m(Obj obj) { obj.method(); } }"""
@@ -184,7 +184,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.14 record accessor call ───────────────────────────────
 
   test("R.14 record accessor call — v1 chained call unresolved") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/R#", "R", isType = true))
     st.add(defn("pkg/R#x().", "x", isType = false))
     val code = """package pkg; class Test { int m(R r) { return r.x(); } }"""
@@ -196,7 +196,7 @@ class JavaReferencesResolverTest extends FunSuite {
   // ── R.15 ref to nested class ─────────────────────────────────
 
   test("R.15 ref to nested class") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(defn("pkg/Outer#", "Outer", isType = true))
     st.add(defn("pkg/Outer#Inner#", "Inner", isType = true))
     val code = """package pkg; class Test { Outer.Inner v; }"""

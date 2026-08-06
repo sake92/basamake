@@ -19,7 +19,7 @@ import ba.sake.basamake.navigation.indexing.*
 
   os.write.over(filePath, code)
 
-  val symbolTable = new SymbolTable
+  val symbolTable = new InMemorySymbolTable
   val extractor = new ScalaDefinitionsExtractor(symbolTable)
   extractor.extractFromContent(fileName, code, filePath)
   println(s"extracted symbols:\n${symbolTable.all.toSeq.sortBy(_.symbol).mkString("\n")}")

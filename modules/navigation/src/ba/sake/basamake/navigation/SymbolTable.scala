@@ -14,13 +14,29 @@ case class SymbolDefinition(
   path: os.Path    // mandatory — absolute path to the source file declaring this symbol
 )
 
-// global symbol → definition
-class SymbolTable extends StrictLogging {
+/** Symbol lookup interface shared by the workspace table, the dependency/JDK index
+  * and their composition.
+  *
+  * `keys`/`all` are WORKSPACE-scoped by convention: implementations that aggregate
+  * multiple tables (CompositeSymbolTable, IndexedSymbolTable) must not leak
+  * dependency symbols into them — consumers (e.g. ScalaReferencesResolver.wrapperScan)
+  * scan `keys` on every unresolved name, so dep keys would blow up per-keystroke cost. */
+trait SymbolTable {
+  def get(symbol: String): Option[SymbolDefinition]
+  def byPath(path: os.Path): Set[SymbolDefinition]
+  def add(symDef: SymbolDefinition): Unit
+  def removeByPath(path: os.Path): Unit
+  def keys: Set[String]
+  def all: Set[SymbolDefinition]
+}
+
+// global symbol → definition (workspace sources)
+class InMemorySymbolTable extends SymbolTable with StrictLogging {
 
   private val definitions = new ConcurrentHashMap[String, SymbolDefinition]()
   private val pathSymbols = new ConcurrentHashMap[os.Path, java.util.Set[String]]()
 
-  def add(symDef: SymbolDefinition): Unit = {
+  override def add(symDef: SymbolDefinition): Unit = {
     if SymbolUtils.isLocalSymbol(symDef.symbol) then
       logger.warn(s"Attempted to add local symbol ${symDef.symbol} to global SymbolTable; skipping")
       return
@@ -28,7 +44,7 @@ class SymbolTable extends StrictLogging {
     pathSymbols.computeIfAbsent(symDef.path, _ => ConcurrentHashMap.newKeySet[String]()).add(symDef.symbol)
   }
 
-  def removeByPath(path: os.Path): Unit = {
+  override def removeByPath(path: os.Path): Unit = {
     val symbols = pathSymbols.remove(path)
     if (symbols != null) {
       symbols.forEach { symbol =>
@@ -37,16 +53,35 @@ class SymbolTable extends StrictLogging {
     }
   }
 
-  def get(symbol: String): Option[SymbolDefinition] =
+  override def get(symbol: String): Option[SymbolDefinition] =
     Option(definitions.get(symbol))
 
-  def keys: Set[String] = definitions.keySet().asScala.toSet
+  override def keys: Set[String] = definitions.keySet().asScala.toSet
 
-  def all: Set[SymbolDefinition] = definitions.values().asScala.toSet
+  override def all: Set[SymbolDefinition] = definitions.values().asScala.toSet
 
-  def byPath(path: os.Path): Set[SymbolDefinition] = {
+  override def byPath(path: os.Path): Set[SymbolDefinition] = {
     val symbols = pathSymbols.get(path)
     if (symbols == null) Set.empty
     else symbols.asScala.flatMap(sym => Option(definitions.get(sym))).toSet
   }
+}
+
+/** Two-level composition: workspace table first, dependency index as fallback.
+  * Writes, `keys` and `all` only touch the workspace table. */
+class CompositeSymbolTable(
+    workspaceSymbolTable: SymbolTable,
+    depsSymbolTable: SymbolTable
+) extends SymbolTable {
+
+  override def get(symbol: String): Option[SymbolDefinition] =
+    workspaceSymbolTable.get(symbol).orElse(depsSymbolTable.get(symbol))
+
+  override def byPath(path: os.Path): Set[SymbolDefinition] =
+    workspaceSymbolTable.byPath(path) ++ depsSymbolTable.byPath(path)
+
+  override def add(symDef: SymbolDefinition): Unit = workspaceSymbolTable.add(symDef)
+  override def removeByPath(path: os.Path): Unit = workspaceSymbolTable.removeByPath(path)
+  override def keys: Set[String] = workspaceSymbolTable.keys
+  override def all: Set[SymbolDefinition] = workspaceSymbolTable.all
 }

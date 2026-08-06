@@ -2,14 +2,14 @@ package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
 import scala.meta.internal.semanticdb.Range
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ScopeStack, OwnerScope, LocalScope, ImportScopeData}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition, ScopeStack, OwnerScope, LocalScope, ImportScopeData}
 
 class ScopeStackTest extends FunSuite {
 
-  private def stack(): ScopeStack = new ScopeStack(new SymbolTable)
+  private def stack(): ScopeStack = new ScopeStack(new InMemorySymbolTable)
 
   test("local shadows owner") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     // Push owner first, then local (local is later = top of stack = checked first)
@@ -19,7 +19,7 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("owner shadows import") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/other/Bar#", "Bar", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
@@ -31,7 +31,7 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("explicit import shadows wildcard") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/other/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
@@ -45,7 +45,7 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("wildcard resolves via symbolTable") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
@@ -58,7 +58,7 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("import shadows predef") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("my/custom/List#", "List", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
     s.push(ImportScopeData(
@@ -74,7 +74,7 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("inner wildcard shadows outer wildcard") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("inner/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("outer/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
@@ -93,7 +93,7 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("unimport excludes from wildcard resolution") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/wild/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/wild/Bar#", "Bar", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val s = new ScopeStack(st)
@@ -110,14 +110,14 @@ class ScopeStackTest extends FunSuite {
   }
 
   test("local shadows predef") {
-    val s = new ScopeStack(new SymbolTable)
+    val s = new ScopeStack(new InMemorySymbolTable)
     s.push(LocalScope(collection.mutable.Map("println" -> "localPrintln")))
     val result = s.lookup("println", isType = false, inCallContext = true)
     assertEquals(result, Some("localPrintln"))
   }
 
   test("lookup returns None when nothing in scope") {
-    val s = new ScopeStack(new SymbolTable)
+    val s = new ScopeStack(new InMemorySymbolTable)
     assertEquals(s.lookup("UnknownThing", isType = true, inCallContext = false), None)
     assertEquals(s.lookup("unknownMethod", isType = false, inCallContext = true), None)
   }

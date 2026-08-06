@@ -8,7 +8,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
-import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
+import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable}
 import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.tupson.{given, *}
@@ -17,7 +17,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   @volatile private var client: LanguageClient = uninitialized
 
-  private val symbolTable = new SymbolTable
+  private val symbolTable = new InMemorySymbolTable
   private val workspaceIndex = new WorkspaceIndex(workspacePath, symbolTable)
   private val bspManager = BspManager(workspacePath, workspaceIndex)
 

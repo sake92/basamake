@@ -1,12 +1,12 @@
 package ba.sake.basamake.navigation.javasrc
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition, SymbolUtils}
 
 class JavaDefinitionsExtractorTest extends FunSuite {
 
   private def extract(code: String): Set[SymbolDefinition] = {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     val extractor = new JavaDefinitionsExtractor(table)
     extractor.extractFromContent("test.java", code, os.pwd)
     table.all
