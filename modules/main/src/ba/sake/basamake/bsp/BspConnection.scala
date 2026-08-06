@@ -61,6 +61,11 @@ class BspConnection private (
         alive = true
         compiledOnce = false
         eventSink.onConnectionSucceeded(spec, sourceDirsByTarget.size)
+        // Index catch-up: push ALL targets' semanticdb dirs to the index right after
+        // handshake, so pre-existing semanticdb output (e.g. from earlier builds) is
+        // paired without waiting for each target to be compiled on demand.
+        try onAfterCompile(semanticdbDirByTarget.keySet.toList)
+        catch { case e: Exception => logger.warn(s"Index catch-up failed: ${e.getMessage}", e) }
       } catch {
         case e: Exception =>
           pendingCompileTargetIds.clear()   // discard queued work

@@ -57,4 +57,23 @@ class BspRouterTest extends FunSuite {
       assertEquals(router.route(fileUri), None)
     }
   }
+
+  test("unregisterBspRoot tolerates a deleted .bsp directory") {
+    withTempDir { root =>
+      val bspDir = Files.createDirectory(root.resolve(".bsp"))
+      val connId = BspConnectionId("sbt-conn")
+      val router = BspRouter()
+      router.registerBspRoot(bspDir.toRealPath(), Set(connId))
+
+      Files.createDirectories(root.resolve("a/b"))
+      val fileUri = root.resolve("a/b/Test.scala").toUri.toString
+      assertEquals(router.route(fileUri), Some(connId), "route should find BSP before deletion")
+
+      // whole .bsp directory removed (e.g. test-fixture cleanup)
+      Files.delete(bspDir)
+      router.unregisterBspRoot(bspDir, connId) // must not throw NoSuchFileException
+
+      assertEquals(router.route(fileUri), None, "no .bsp root left after unregister")
+    }
+  }
 }

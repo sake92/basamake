@@ -1,8 +1,7 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{ConcurrentHashMap, CopyOnWriteArrayList}
+import java.util.concurrent.{ConcurrentHashMap, CopyOnWriteArrayList, Executors, ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.{Timer, TimerTask}
 import scala.collection.mutable
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
@@ -31,10 +30,16 @@ class BspManager private (
   private val diagnostics = mutable.Map.empty[String, Map[BuildTargetIdentifier, List[Diagnostic]]]
 
   private val DebounceMs = 500L
-  private val debounceTimer = new Timer("basamake-bsp-watcher-debounce", true)
+  // ScheduledExecutorService survives task exceptions (unlike java.util.Timer,
+  // whose thread dies forever on an uncaught exception in a task).
+  private val debounceExecutor = Executors.newSingleThreadScheduledExecutor((r: Runnable) => {
+    val t = new Thread(r, "basamake-bsp-watcher-debounce")
+    t.setDaemon(true)
+    t
+  })
   private val debounceLock = new Object
   private var pendingBspChanges: Set[os.Path] = Set.empty
-  private var pendingDebounceTask: Option[TimerTask] = None
+  private var pendingDebounceTask: Option[ScheduledFuture[?]] = None
   private val shuttingDown = new AtomicBoolean(false)
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient): Unit = {
@@ -187,11 +192,11 @@ class BspManager private (
     logger.info("BspManager shutdown started...")
     if (watcher != null) watcher.stop()
     debounceLock.synchronized {
-      pendingDebounceTask.foreach(_.cancel())
+      pendingDebounceTask.foreach(_.cancel(false))
       pendingDebounceTask = None
       pendingBspChanges = Set.empty
     }
-    debounceTimer.cancel()
+    debounceExecutor.shutdownNow()
     connections.values().asScala.foreach(_.shutdown())
     connections.clear()
     val killed = ProcessUtils.terminateProcessHandleTree(java.lang.ProcessHandle.current())
@@ -199,7 +204,7 @@ class BspManager private (
   }
 
   // ---- File watcher ----
-  private def onFileChanged(changedPaths: Set[os.Path]): Unit = {
+  private[bsp] def onFileChanged(changedPaths: Set[os.Path]): Unit = {
     val watched = changedPaths.filterNot(watchIgnored)
     val changedBspFiles = watched.filter(_.segments.toSeq.contains(".bsp"))
     if (changedBspFiles.nonEmpty) {
@@ -211,23 +216,23 @@ class BspManager private (
   private def enqueueBspChangeBatch(changedBspFiles: Set[os.Path]): Unit = {
     debounceLock.synchronized {
       pendingBspChanges = pendingBspChanges ++ changedBspFiles
-      pendingDebounceTask.foreach(_.cancel())
-      val task = new TimerTask {
-        override def run(): Unit = {
-          val batch = debounceLock.synchronized {
-            val toHandle = pendingBspChanges
-            pendingBspChanges = Set.empty
-            pendingDebounceTask = None
-            toHandle
-          }
-          if (batch.nonEmpty) {
-            router.invalidateBootstrapCache()
-            handleBspChanges(batch)
-          }
+      pendingDebounceTask.foreach(_.cancel(false))
+      val task: Runnable = () => {
+        val batch = debounceLock.synchronized {
+          val toHandle = pendingBspChanges
+          pendingBspChanges = Set.empty
+          pendingDebounceTask = None
+          toHandle
+        }
+        if (batch.nonEmpty) {
+          router.invalidateBootstrapCache()
+          // never let a failing batch kill the debounce executor
+          try handleBspChanges(batch)
+          catch { case e: Exception => logger.error(s"Failed to process .bsp changes: ${e.getMessage}", e) }
         }
       }
-      pendingDebounceTask = Some(task)
-      debounceTimer.schedule(task, DebounceMs)
+      val future = debounceExecutor.schedule(task, DebounceMs, TimeUnit.MILLISECONDS)
+      pendingDebounceTask = Some(future)
     }
   }
 
@@ -237,31 +242,43 @@ class BspManager private (
       BspManager.classifyBspChanges(knownBspFiles, current, changed)
 
     for (p <- deletedFiles) {
-      logger.info(s"BSP config deleted: $p")
-      knownBspFiles -= p
-      detachConnection(BspConnectionId(p.toString))
+      try {
+        logger.info(s"BSP config deleted: $p")
+        knownBspFiles -= p
+        detachConnection(BspConnectionId(p.toString))
+      } catch {
+        case e: Exception => logger.warn(s"Failed to process deleted BSP config $p: ${e.getMessage}", e)
+      }
     }
     for (p <- newFiles) {
-      logger.info(s"New BSP config detected: $p")
-      knownBspFiles += p
-      BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach(spec => applyOverrides(spec).foreach(attachConnection))
+      try {
+        logger.info(s"New BSP config detected: $p")
+        knownBspFiles += p
+        BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach(spec => applyOverrides(spec).foreach(attachConnection))
+      } catch {
+        case e: Exception => logger.warn(s"Failed to process new BSP config $p: ${e.getMessage}", e)
+      }
     }
     for (p <- modifiedFiles) {
-      BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach { spec =>
-        val connId = BspConnectionId(spec.path.toString)
-        Option(connections.get(connId)) match {
-          case Some(existingConn) =>
-            val sameContent = existingConn.spec.content.name == spec.content.name
-              && existingConn.spec.content.argv == spec.content.argv
-            if (!sameContent) {
-              logger.info(s"BSP config modified: $p — content changed, detach + re-attach")
-              detachConnection(connId)
-              attachConnection(spec)
-            } else {
-              logger.debug(s"BSP config modified: $p — content unchanged, skip re-attach")
-            }
-          case None => attachConnection(spec)
+      try {
+        BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach { spec =>
+          val connId = BspConnectionId(spec.path.toString)
+          Option(connections.get(connId)) match {
+            case Some(existingConn) =>
+              val sameContent = existingConn.spec.content.name == spec.content.name
+                && existingConn.spec.content.argv == spec.content.argv
+              if (!sameContent) {
+                logger.info(s"BSP config modified: $p — content changed, detach + re-attach")
+                detachConnection(connId)
+                attachConnection(spec)
+              } else {
+                logger.debug(s"BSP config modified: $p — content unchanged, skip re-attach")
+              }
+            case None => attachConnection(spec)
+          }
         }
+      } catch {
+        case e: Exception => logger.warn(s"Failed to process modified BSP config $p: ${e.getMessage}", e)
       }
     }
   }
