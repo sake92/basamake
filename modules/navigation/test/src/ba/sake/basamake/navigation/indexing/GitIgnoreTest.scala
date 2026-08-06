@@ -119,4 +119,12 @@ class GitIgnoreTest extends FunSuite {
     assert(GitIgnore.isIgnoredByGitignore("foo/x/bar", isDir = false, patterns))
     assert(!GitIgnore.isIgnoredByGitignore("foo/x/y/bar", isDir = false, patterns))
   }
+
+  test("isIgnoredByGitignore: no-slash pattern matches directory name") {
+    val patterns = Seq("build")
+    assert(GitIgnore.isIgnoredByGitignore("build", isDir = true, patterns))
+    assert(GitIgnore.isIgnoredByGitignore("foo/build", isDir = true, patterns))
+    assert(GitIgnore.isIgnoredByGitignore("build", isDir = false, patterns))
+    assert(!GitIgnore.isIgnoredByGitignore("builder", isDir = true, patterns))
+  }
 }

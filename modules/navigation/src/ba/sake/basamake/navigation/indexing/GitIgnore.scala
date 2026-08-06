@@ -51,8 +51,9 @@ object GitIgnore {
         normalizedPath.startsWith(pClean)
         && (normalizedPath.length == pClean.length || normalizedPath.charAt(pClean.length) == '/')
     else
-      // No separator — match against filename
-      val filename = normalizedPath.split("/").last
+      // No separator — match against filename (last non-empty segment, so
+      // bare patterns like "build" also match directories)
+      val filename = normalizedPath.split("/").filter(_.nonEmpty).last
       simpleGlobMatch(p, filename)
   }
 
