@@ -7,7 +7,7 @@ import java.io.FileOutputStream
 
 /** Integration: goto-def from a workspace file into a dependency source jar
   * (through CompositeSymbolTable → IndexedSymbolTable → ~/.basamake cache). */
-class DepsGotoDefTest extends FunSuite {
+class DepsGotoDefTest extends FunSuite, TestCacheRoot {
 
   test("gotoDefinitions resolves a jar type into the extracted source") {
     val workspace = os.temp.dir(prefix = "deps-gotodef-ws-")
@@ -52,7 +52,7 @@ class DepsGotoDefTest extends FunSuite {
       assert(locs.nonEmpty, s"expected jar def for Foo, got empty (depsReady=${depsTable.get("com/example/Foo#").isDefined})")
       val loc = locs.head
       assertEquals(loc.symbol, "com/example/Foo#")
-      assert(loc.path.toString.contains(".basamake/deps/"), s"expected path under ~/.basamake/deps, got ${loc.path}")
+      assert(loc.path.startsWith(SourceJarIndexer.cacheRoot), s"expected path under test cache root, got ${loc.path}")
       assert(loc.path.last == "Foo.java", s"expected Foo.java, got ${loc.path.last}")
       assert(os.exists(loc.path), s"extracted source must exist on disk: ${loc.path}")
 

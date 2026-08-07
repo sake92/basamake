@@ -7,18 +7,24 @@ import ba.sake.tupson.{given, *}
   * `sourceSize`/`sourceMtime` validate the cache against the source file on disk
   * (cheap staleness check — no content hashing). `packages` lists every dotted
   * package found in the index, used to route symbol lookups to the right indexes
-  * without opening them (see IndexedSymbolTable).
+  * without opening them (see IndexedSymbolTable). `formatVersion` guards the LMDB
+  * on-disk format — mismatched/absent versions reindex instead of misreading.
   */
 final case class CacheMetadata(
     sourcePath: String,
     sourceSize: Long,
     sourceMtime: Long,
-    packages: List[String]
+    packages: List[String],
+    formatVersion: Int
 ) derives JsonRW
 
 object CacheMetadata {
 
   val FileName = "metadata.json"
+
+  /** Bump when LmdbSerializer's on-disk value format changes (see LmdbSerializer).
+    * No backward compat — a mismatch invalidates the cache and triggers a reindex. */
+  val FormatVersion = 1
 
   /** Read metadata from the cache dir. None when missing or corrupt. */
   def load(cacheDir: os.Path): Option[CacheMetadata] = {
@@ -38,10 +44,12 @@ object CacheMetadata {
     os.move(tmp, target, replaceExisting = true)
   }
 
-  /** True when the cached index for `source` is still valid: metadata exists and the
-    * source file on disk has the same size and mtime we indexed. */
+  /** True when the cached index for `source` is still valid: metadata exists, the
+    * LMDB format version matches, and the source file on disk has the same size
+    * and mtime we indexed. */
   def isValid(meta: CacheMetadata, source: os.Path): Boolean =
-    os.exists(source) && os.size(source) == meta.sourceSize && os.mtime(source) == meta.sourceMtime
+    meta.formatVersion == FormatVersion &&
+      os.exists(source) && os.size(source) == meta.sourceSize && os.mtime(source) == meta.sourceMtime
 
   /** Dotted packages of all global symbols in a table, sorted + distinct.
     * Symbols in the default package are skipped (they aren't routable). */

@@ -8,7 +8,7 @@ class CacheMetadataTest extends FunSuite {
 
   test("save/load roundtrip") {
     val dir = tempDir()
-    val meta = CacheMetadata("/some/path.jar", 12345L, 67890L, List("com.example", "org.apache"))
+    val meta = CacheMetadata("/some/path.jar", 12345L, 67890L, List("com.example", "org.apache"), CacheMetadata.FormatVersion)
     CacheMetadata.save(dir, meta)
     assertEquals(CacheMetadata.load(dir), Some(meta))
   }
@@ -27,7 +27,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello world")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, CacheMetadata.FormatVersion)
     assert(CacheMetadata.isValid(meta, src))
   }
 
@@ -35,7 +35,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, CacheMetadata.FormatVersion)
     os.write.over(src, "hello world longer")
     assert(!CacheMetadata.isValid(meta, src))
   }
@@ -44,7 +44,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, CacheMetadata.FormatVersion)
     Thread.sleep(10)
     os.write.over(src, "hello")
     assert(!CacheMetadata.isValid(meta, src))
@@ -52,8 +52,16 @@ class CacheMetadataTest extends FunSuite {
 
   test("isValid: missing source → false") {
     val dir = tempDir()
-    val meta = CacheMetadata((dir / "gone.jar").toString, 1L, 2L, Nil)
+    val meta = CacheMetadata((dir / "gone.jar").toString, 1L, 2L, Nil, CacheMetadata.FormatVersion)
     assert(!CacheMetadata.isValid(meta, dir / "gone.jar"))
+  }
+
+  test("isValid: formatVersion mismatch → false (old-format cache must reindex)") {
+    val dir = tempDir()
+    val src = dir / "lib-sources.jar"
+    os.write.over(src, "hello world")
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, formatVersion = 0)
+    assert(!CacheMetadata.isValid(meta, src))
   }
 
   test("packagesOf: dotted packages sorted+distinct, default pkg skipped") {

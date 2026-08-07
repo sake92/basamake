@@ -5,17 +5,20 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 import com.typesafe.scalalogging.StrictLogging
-import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition, SymbolUtils}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 
 /** Read-only dependency/JDK symbol index over `~/.basamake/deps/<fingerprint>/` caches.
   *
   * Routing: a package → fingerprints map (built from each cache's metadata.json) decides
-  * which indexes could contain a symbol before any table is loaded. Tables load lazily
-  * into memory on first hit (single-flight per fingerprint) — LMDB stays the durable
-  * format, lookups stay pure hashmap gets.
+  * which indexes could contain a symbol. Lookups are live LMDB point queries
+  * (`LmdbSerializer.get`) — nothing is ever loaded into memory, the env is opened
+  * per query. The RAM saving is the whole point of LMDB here.
   *
-  * `keys` is intentionally empty (workspace-scoped semantics) and `add`/`removeByPath`
-  * are no-ops — dependency symbols are immutable once indexed. `ensureIndexed` /
+  * `keys`, `byPath` and `all` are intentionally empty (workspace-scoped semantics)
+  * and `add`/`removeByPath` are no-ops — dep/JDK references only matter for user
+  * code, which lives in the workspace in-memory table; dependency symbols are
+  * resolved by symbol only. Since the index is immutable (`removeByPath` is a
+  * no-op), an always-empty result can never go stale. `ensureIndexed` /
   * `ensureJdkIndexed` kick off background indexing on virtual threads.
   */
 class IndexedSymbolTable extends SymbolTable with StrictLogging {
@@ -24,9 +27,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private val route = new ConcurrentHashMap[String, java.util.Set[String]]()
   // fingerprint → source path (for reindex after corruption)
   private val sourcesByFp = new ConcurrentHashMap[String, os.Path]()
-  // fingerprint → loaded in-memory table
-  private val loaded = new ConcurrentHashMap[String, InMemorySymbolTable]()
-  // per-fingerprint single-flight load locks
+  // per-fingerprint single-flight locks (per-file extraction only)
   private val fpLocks = new ConcurrentHashMap[String, Object]()
   // fingerprints currently being indexed (dedupe across targets/calls)
   private val indexing = ConcurrentHashMap.newKeySet[String]()
@@ -87,15 +88,26 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
         var result: Option[SymbolDefinition] = None
         val it = fps.asScala.toList.sorted.iterator // deterministic first-wins
         while result.isEmpty && it.hasNext do {
-          ensureLoaded(it.next()).flatMap(_.get(symbol)).foreach(d => result = Some(d))
+          val fp = it.next()
+          try {
+            LmdbSerializer.get(indexPath(fp), symbol).foreach { d =>
+              ensureEntryExtracted(fp, d.path)
+              result = Some(d)
+            }
+          } catch {
+            case NonFatal(e) => handleCorrupt(fp, e)
+          }
         }
         result
       }
     }
   }
 
-  override def byPath(path: os.Path): Set[SymbolDefinition] =
-    loaded.values().asScala.iterator.flatMap(_.byPath(path)).toSet
+  override def byPath(path: os.Path): Set[SymbolDefinition] = Set.empty
+  // Dep/JDK references only matter for user code, which lives in the workspace
+  // in-memory table (CompositeSymbolTable.byPath covers that). Dependency symbols
+  // are resolved by symbol only (get). The index is immutable (removeByPath is a
+  // no-op), so an always-empty result can never go stale.
 
   override def add(symDef: SymbolDefinition): Unit =
     logger.warn(s"IndexedSymbolTable is read-only — ignoring add of ${symDef.symbol}")
@@ -104,8 +116,10 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
 
   override def keys: Set[String] = Set.empty
 
-  override def all: Set[SymbolDefinition] =
-    loaded.values().asScala.iterator.flatMap(_.all).toSet
+  override def all: Set[SymbolDefinition] = Set.empty
+  // Nothing enumerates dep/JDK symbols in production: CompositeSymbolTable.all
+  // reads only the workspace table (debug dumps, packagesOf run at index time on
+  // the in-memory build table). Lookups are symbol-based point queries.
 
   // ── internals ─────────────────────────────────────────────────
 
@@ -125,36 +139,23 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
     }
   }
 
-  private def ensureLoaded(fp: String): Option[InMemorySymbolTable] = {
-    val existing = loaded.get(fp)
-    if existing != null then Some(existing)
-    else fpLocks.computeIfAbsent(fp, _ => new Object).synchronized {
-      val again = loaded.get(fp)
-      if again != null then Some(again)
-      else {
-        val dir = SourceJarIndexer.cacheRoot / fp
-        try {
-          val table = LmdbSerializer.load(dir / "index.lmdb")
-          loaded.put(fp, table)
-          logger.info(s"Loaded dep index $fp (${table.all.size} symbols)")
-          Some(table)
-        } catch {
-          case NonFatal(e) =>
-            // Wipe + reindex at most ONCE per fingerprint: a concurrent reindex must
-            // not be killed by repeated wipes from polling lookups.
-            logger.warn(s"Corrupt index at $dir — wiping and reindexing: ${e.getMessage}")
-            if indexing.add(fp) then {
-              os.remove.all(dir)
-              Option(sourcesByFp.get(fp)) match {
-                case Some(src) => indexInBackground(src, fp)
-                case None      => indexing.remove(fp)
-              }
-            }
-            None
-        }
+  /** Corrupt/missing LMDB env surfaced by a query — wipe + reindex at most ONCE
+    * per fingerprint: a concurrent reindex must not be killed by repeated wipes
+    * from polling lookups. */
+  private def handleCorrupt(fp: String, e: Throwable): Unit = {
+    val dir = SourceJarIndexer.cacheRoot / fp
+    logger.warn(s"Corrupt index at $dir — wiping and reindexing: ${e.getMessage}")
+    if indexing.add(fp) then {
+      os.remove.all(dir)
+      Option(sourcesByFp.get(fp)) match {
+        case Some(src) => indexInBackground(src, fp)
+        case None      => indexing.remove(fp)
       }
     }
   }
+
+  private def indexPath(fp: String): os.Path =
+    SourceJarIndexer.cacheRoot / fp / "index.lmdb"
 
   /** Index one source in the background (virtual thread). Caller must have claimed
     * the fingerprint in `indexing`; the claim is released when the thread finishes. */
@@ -167,5 +168,26 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
         case NonFatal(e) => logger.warn(s"Failed to index $src: ${e.getMessage}")
       } finally indexing.remove(fp)
     })
+  }
+
+  /** Lazy per-file unpacking: indexes are built eagerly (LMDB only), but individual
+    * source files are written to disk on first lookup hit — the LSP Location must
+    * point at a real file for the editor to open it. Idempotent + single-flight per fp. */
+  private def ensureEntryExtracted(fp: String, defPath: os.Path): Unit = {
+    val srcRoot = SourceJarIndexer.cacheRoot / fp / "src"
+    if (!defPath.startsWith(srcRoot)) return
+    if (os.exists(defPath)) return
+    fpLocks.computeIfAbsent(fp, _ => new Object).synchronized {
+      if (!os.exists(defPath)) {
+        Option(sourcesByFp.get(fp)) match {
+          case Some(src) =>
+            val entryPath = defPath.relativeTo(srcRoot).toString
+            try SourceJarIndexer.extractEntry(src, fp, entryPath)
+            catch { case NonFatal(e) => logger.warn(s"Failed to extract $entryPath for $fp: ${e.getMessage}") }
+          case None =>
+            logger.warn(s"No source known for $fp — cannot extract")
+        }
+      }
+    }
   }
 }

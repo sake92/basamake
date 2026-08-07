@@ -4,7 +4,7 @@ import munit.FunSuite
 import java.util.zip.{ZipOutputStream, ZipEntry}
 import java.io.FileOutputStream
 
-class IndexedSymbolTableTest extends FunSuite {
+class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
   private def cacheDir(fp: String) = SourceJarIndexer.cacheRoot / fp
 
@@ -72,7 +72,7 @@ object Baz {
     assertEquals(deps.get("Foo#"), None)
   }
 
-  test("lazy load: tables load into memory on first hit") {
+  test("lazy lookups: env queried on first hit, file extracted on demand") {
     val tempDir = os.temp.dir()
     val jar = buildJar(tempDir, "test-sources.jar")
     val fp = Fingerprint.fromJarPath(jar)
@@ -82,10 +82,12 @@ object Baz {
     deps.ensureIndexed(List(jar))
     assert(eventually(deps.get("com/example/Foo#").isDefined))
 
-    // loaded table must be visible via byPath on the extracted source
+    // get() must have extracted the file the def lives in
     val srcFile = cacheDir(fp) / "src" / "Foo.java"
     assert(os.exists(srcFile), "extracted source should exist on disk")
-    assert(deps.byPath(srcFile).exists(_.symbol == "com/example/Foo#"), "byPath should hit the loaded table")
+    // dep byPath is intentionally empty — references only matter for user code
+    assertEquals(deps.byPath(srcFile), Set.empty[ba.sake.basamake.navigation.SymbolDefinition],
+      "dep byPath must be empty (workspace table covers user-code references)")
   }
 
   test("keys is empty and mutations are no-ops") {
@@ -160,11 +162,31 @@ object Baz {
     os.remove.all(indexPath)
     os.write.over(indexPath, "garbage not an lmdb")
 
-    // fresh instance to force reload (loaded cache is per-instance)
+    // fresh instance to force re-registration
     val deps2 = new IndexedSymbolTable
     deps2.ensureIndexed(List(jar)) // re-register routing
     assertEquals(deps2.get("com/example/Foo#"), None, "corrupt index must not crash the lookup")
     assert(eventually(deps2.get("com/example/Foo#").isDefined), "background reindex should repair the cache")
+    assert(os.exists(indexPath / "data.mdb"), "LMDB should be rebuilt as a directory")
+  }
+
+  test("corrupt index during a live lookup wipes and reindexes") {
+    val tempDir = os.temp.dir()
+    val jar = buildJar(tempDir, "test-sources.jar")
+    val fp = Fingerprint.fromJarPath(jar)
+    cleanCache(fp)
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jar))
+    assert(eventually(deps.get("com/example/Foo#").isDefined))
+
+    // corrupt the LMDB AFTER routing is registered — the query itself must recover
+    val indexPath = cacheDir(fp) / "index.lmdb"
+    os.remove.all(indexPath)
+    os.write.over(indexPath, "garbage not an lmdb")
+
+    assertEquals(deps.get("com/example/Foo#"), None, "corrupt index must not crash the lookup")
+    assert(eventually(deps.get("com/example/Foo#").isDefined), "lookup failure should trigger wipe + reindex")
     assert(os.exists(indexPath / "data.mdb"), "LMDB should be rebuilt as a directory")
   }
 }
