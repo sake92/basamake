@@ -67,8 +67,8 @@ class FingerprintTest extends FunSuite {
         |</project>""".stripMargin)
 
     val fp = Fingerprint.fromJarPath(jar)
-    assert(fp.startsWith("com_fasterxml_jackson_core-jackson-core_2.12.1_"), s"unexpected fingerprint: $fp")
-    assert(fp.matches("""^com_fasterxml_jackson_core-jackson-core_2\.12\.1_[0-9a-f]{8}$"""), s"unexpected fingerprint: $fp")
+    assert(fp.startsWith("com_fasterxml_jackson_core/jackson-core_2.12.1_"), s"unexpected fingerprint: $fp")
+    assert(fp.matches("""^com_fasterxml_jackson_core/jackson-core_2\.12\.1_[0-9a-f]{8}$"""), s"unexpected fingerprint: $fp")
   }
 
   test("pom with only parent groupId → fallback to filename scheme") {

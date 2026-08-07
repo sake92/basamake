@@ -6,7 +6,7 @@ import java.io.FileOutputStream
 
 class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
-  private def cacheDir(fp: String) = SourceJarIndexer.cacheRoot / fp
+  private def cacheDir(fp: String) = SourceJarIndexer.cacheRoot / os.RelPath(fp)
 
   private def cleanCache(fp: String): Unit = {
     if (os.exists(cacheDir(fp))) os.remove.all(cacheDir(fp))

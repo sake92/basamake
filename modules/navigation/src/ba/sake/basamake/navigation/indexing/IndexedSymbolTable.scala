@@ -124,13 +124,13 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   // ── internals ─────────────────────────────────────────────────
 
   private def isCached(fp: String, source: os.Path): Boolean =
-    val dir = SourceJarIndexer.cacheRoot / fp
+    val dir = SourceJarIndexer.cacheRoot / os.RelPath(fp)
     CacheMetadata.load(dir).exists(meta =>
       CacheMetadata.isValid(meta, source) && os.isDir(dir / "index.lmdb")
     )
 
   private def register(fp: String, source: os.Path): Unit = {
-    CacheMetadata.load(SourceJarIndexer.cacheRoot / fp) match {
+    CacheMetadata.load(SourceJarIndexer.cacheRoot / os.RelPath(fp)) match {
       case Some(meta) if CacheMetadata.isValid(meta, source) =>
         meta.packages.foreach { pkg =>
           route.computeIfAbsent(pkg, _ => ConcurrentHashMap.newKeySet[String]()).add(fp)
@@ -143,7 +143,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
     * per fingerprint: a concurrent reindex must not be killed by repeated wipes
     * from polling lookups. */
   private def handleCorrupt(fp: String, e: Throwable): Unit = {
-    val dir = SourceJarIndexer.cacheRoot / fp
+    val dir = SourceJarIndexer.cacheRoot / os.RelPath(fp)
     logger.warn(s"Corrupt index at $dir — wiping and reindexing: ${e.getMessage}")
     if indexing.add(fp) then {
       os.remove.all(dir)
@@ -155,7 +155,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   }
 
   private def indexPath(fp: String): os.Path =
-    SourceJarIndexer.cacheRoot / fp / "index.lmdb"
+    SourceJarIndexer.cacheRoot / os.RelPath(fp) / "index.lmdb"
 
   /** Index one source in the background (virtual thread). Caller must have claimed
     * the fingerprint in `indexing`; the claim is released when the thread finishes. */
@@ -174,7 +174,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
     * source files are written to disk on first lookup hit — the LSP Location must
     * point at a real file for the editor to open it. Idempotent + single-flight per fp. */
   private def ensureEntryExtracted(fp: String, defPath: os.Path): Unit = {
-    val srcRoot = SourceJarIndexer.cacheRoot / fp / "src"
+    val srcRoot = SourceJarIndexer.cacheRoot / os.RelPath(fp) / "src"
     if (!defPath.startsWith(srcRoot)) return
     if (os.exists(defPath)) return
     fpLocks.computeIfAbsent(fp, _ => new Object).synchronized {

@@ -111,10 +111,14 @@ On open buffer change (`onDidChange`):
 - Re-extracts occurrences for the changed file
 - Prefers SemanticDB when text matches disk, falls back to source parse
 
-### Dependency/JDK index cache (`~/.basamake/deps`)
+### Dependency/JDK index cache (`~/.cache/basamake/deps`)
 
 `IndexedSymbolTable` (via `SourceJarIndexer`) caches dependency sources + the JDK
-`src.zip` under `~/.basamake/deps/<fingerprint>/`:
+`src.zip` under the XDG-compliant cache root (`~/.cache/basamake/deps` on
+Linux/mac — `$XDG_CACHE_HOME` honored; `%LOCALAPPDATA%\basamake\deps` on
+Windows). One directory per source, nested by maven groupId:
+`com_lihaoyi/upickle_3_4.0.0_<hash>/`; jars without a POM stay flat
+(`antlr4-runtime_4.7.2_<hash>/`, `jdk-21.0.10_<hash>/`):
 
 - **Index eagerly, unpack lazily.** `ensureIndexed`/`ensureJdkIndexed` (called from
   `initialize()` and every BSP `dependencySources` handshake) build the LMDB symbol
@@ -137,8 +141,8 @@ On open buffer change (`onDidChange`):
   stored src-relative (`java.base/java/lang/Object.java`). JDK index ~120MB, down
   from ~230MB.
 - Cache dir fingerprints embed the maven groupId from the sibling POM in the
-  coursier cache (`com_fasterxml_jackson_core-jackson-core_2.12.1_<hash>` —
-  JDK DOM parser, direct `<project>` child only); filename-derived names
+  coursier cache as a directory (`com_fasterxml_jackson_core/jackson-core_2.12.1_<hash>`
+  — JDK DOM parser, direct `<project>` child only); filename-derived flat names
   (`antlr4-runtime_4.7.2_...`) when no POM exists (e.g. scala-lang jars).
 - `SourceJarIndexer.cacheRoot` is a `@volatile var` — tests override it to
   `./tmp/deps-cache-*` (trait `TestCacheRoot`); never write into the real home cache.

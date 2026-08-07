@@ -3,22 +3,22 @@ package ba.sake.basamake.navigation.indexing
 import java.security.MessageDigest
 import scala.util.control.NonFatal
 
-/** Cache-key derivation for `~/.basamake/deps/<fingerprint>/` index directories.
+/** Cache-key derivation for `~/.cache/basamake/deps/<fingerprint>/` index directories.
   *
-  * The readable part comes from the maven coordinates: the groupId is read from the
-  * sibling POM in the maven/coursier cache (`<artifact>-<version>.pom` next to the
-  * sources jar, dots→underscores), the artifact/version from the jar filename. So
-  * cache dirs are semi-readable when browsing `~/.basamake/deps/`. When no POM
-  * exists (e.g. scala-lang published jars), it falls back to the filename-derived
-  * scheme (`<artifact>_<version>`). The hash part is the first 8 hex chars of SHA-1
-  * of the absolute path — guarantees uniqueness even when two repos/layouts share
-  * coordinates.
+  * The fingerprint is the cache dir RELATIVE to the cache root (joined with
+  * `os.RelPath`, never parsed back). The groupId — read from the sibling POM in
+  * the maven/coursier cache (`<artifact>-<version>.pom` next to the sources jar,
+  * dots→underscores) — becomes a directory: `com_lihaoyi/upickle_3_4.0.0_<hash>`.
+  * When no POM exists (e.g. scala-lang published jars), it stays flat:
+  * `antlr4-runtime_4.7.2_<hash>`. The hash part is the first 8 hex chars of SHA-1
+  * of the absolute jar path — guarantees uniqueness even when two repos/layouts
+  * share coordinates.
   */
 object Fingerprint {
 
   private val MavenName = "^(.+)-(\\d.*)$".r
 
-  /** Fingerprint for a source jar / zip (e.g. a coursier-cached `-sources.jar`). */
+  /** Relative cache dir for a source jar / zip (e.g. a coursier-cached `-sources.jar`). */
   def fromJarPath(jarPath: os.Path): String = {
     val name = jarPath.last
     val stripped = name.stripSuffix("-sources.jar").stripSuffix(".jar")
@@ -26,8 +26,12 @@ object Fingerprint {
       case MavenName(artifact, version) => s"${artifact}_$version"
       case _                            => stripped
     }
-    val groupPrefix = mavenGroupId(jarPath).map(_.replace('.', '_') + "-").getOrElse("")
-    s"${groupPrefix}${readable}_${hash8(jarPath.toString)}"
+    val group = mavenGroupId(jarPath).map(_.replace('.', '_'))
+    val hashed = s"${readable}_${hash8(jarPath.toString)}"
+    group match {
+      case Some(g) => s"$g/$hashed"
+      case None    => hashed
+    }
   }
 
   /** Fingerprint for the JDK source archive, derived from the runtime home.

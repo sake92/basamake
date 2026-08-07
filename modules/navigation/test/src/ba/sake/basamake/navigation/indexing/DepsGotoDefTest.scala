@@ -61,7 +61,7 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
     } finally {
       os.remove.all(workspace)
       os.remove.all(jarDir)
-      os.remove.all(SourceJarIndexer.cacheRoot / Fingerprint.fromJarPath(jarPath))
+      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jarPath)))
     }
   }
 }

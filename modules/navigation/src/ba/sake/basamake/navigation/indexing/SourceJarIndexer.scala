@@ -8,7 +8,7 @@ import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 import com.typesafe.scalalogging.StrictLogging
 
-/** Builds the `~/.basamake/deps/<fingerprint>/` cache for one source jar/zip:
+/** Builds the `~/.cache/basamake/deps/<fingerprint>/` cache for one source jar/zip:
   * indexes definitions into `index.lmdb` and records staleness metadata in
   * `metadata.json`. Source files are NOT unpacked here — `extractEntry` writes
   * individual files into `src/` lazily, on first lookup hit (the LSP Location
@@ -20,13 +20,24 @@ import com.typesafe.scalalogging.StrictLogging
 object SourceJarIndexer extends StrictLogging {
 
   // overridable in tests — they must never write into the real home cache
-  @volatile var cacheRoot: os.Path = os.home / ".basamake" / "deps"
+  @volatile var cacheRoot: os.Path = defaultCacheRoot
+
+  /** XDG-compliant cache root: `$XDG_CACHE_HOME/basamake/deps` on Linux/mac
+    * (default `~/.cache/basamake/deps`), `%LOCALAPPDATA%\basamake\deps` on Windows. */
+  def defaultCacheRoot: os.Path = {
+    val base =
+      if (scala.util.Properties.isWin)
+        Option(System.getenv("LOCALAPPDATA")).map(os.Path(_)).getOrElse(os.home / "AppData" / "Local")
+      else
+        Option(System.getenv("XDG_CACHE_HOME")).map(os.Path(_)).getOrElse(os.home / ".cache")
+    base / "basamake" / "deps"
+  }
 
   /** Index `source` under `fingerprint`, writing `index.lmdb` + `metadata.json`.
     * Returns nothing — lookups go through `LmdbSerializer.get` point queries,
     * the in-memory build table is dropped after `save`. */
   def index(source: os.Path, fingerprint: String): Unit = {
-    val cacheDir = cacheRoot / fingerprint
+    val cacheDir = cacheRoot / os.RelPath(fingerprint)
     val indexPath = cacheDir / "index.lmdb"
 
     CacheMetadata.load(cacheDir) match {
@@ -85,7 +96,7 @@ object SourceJarIndexer extends StrictLogging {
   /** Unpack ONE source entry into `<cacheDir>/src/<entryPath>`. Idempotent — no-op
     * when the file already exists. Atomic per-file write (tmp sibling + rename). */
   def extractEntry(source: os.Path, fingerprint: String, entryPath: String): Unit = {
-    val target = cacheRoot / fingerprint / "src" / os.RelPath(entryPath)
+    val target = cacheRoot / os.RelPath(fingerprint) / "src" / os.RelPath(entryPath)
     if (os.exists(target)) return
 
     val zip = new ZipFile(source.toIO)
