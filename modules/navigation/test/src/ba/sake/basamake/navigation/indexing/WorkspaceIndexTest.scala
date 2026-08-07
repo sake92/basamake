@@ -892,7 +892,7 @@ class WorkspaceIndexTest extends FunSuite {
       os.makeDir.all(root / "src")
       os.write(root / "src" / "Main.scala", "class RealMain\n")
       os.write(root / "src" / "Gen.scala", "class GenByConfig\n")
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st, ignorePatterns = Vector("src/Gen.scala"))
       idx.initialize(List.empty)
       assert(st.get("_empty_/RealMain#").isDefined)
