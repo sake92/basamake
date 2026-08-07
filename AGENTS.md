@@ -1,275 +1,79 @@
-# AGENTS.md — Basamake LSP Server
+# Basamake — Agent Instructions
 
-## Libraries
-- os-lib for file paths
-- scalameta for Scala source parsing (definitions + references)
-- javaparser for Java source parsing (definitions + references)
-- lsp4j 0.24.0 for LSP protocol
+## Stack
 
-## Build & Test
+- Scala 3.7.4, **JDK 21+**; build tool: **deder** (config `deder.pkl`)
+- LSP protocol: **lsp4j 1.0.0**; BSP client protocol: **bsp4j 2.2.0-M2**
+- Parsing: scalameta (Scala), javaparser (Java); os-lib paths, lmdbjava, tupson, logback, munit
+- Deep architecture (navigation model, dep/JDK LMDB cache, BSP lifecycle): **`.agents/AGENTS.md`**
 
-```bash
-# Compile
-deder exec
+## Commands
 
-# Run tests (munit)
-deder exec -t test
+| Task | Command |
+|------|---------|
+| Compile | `deder exec` |
+| Test navigation module | `deder exec -t test -m modules-navigation-test` |
+| Test main module | `deder exec -t test -m modules-main-test` |
+| All tests | `deder exec -t test` |
+| Fat JAR (for VS Code) | `deder exec -t assembly -m modules-main` → `.deder/out/modules-main/assembly/out.jar` |
+| Clean build state | `deder clean && deder exec` |
 
-# Build fat JAR
-deder exec -t assembly -m modules-main
+## Deder hygiene
 
-# Clean build state (when things get stuck)
-deder clean && deder exec
-```
+- Run `deder shutdown` when finished working — stale server processes block new connections and linger in git worktree dirs; also run it before branch switches or deleting the project
+- Kill stale basamake/deder processes: `pkill -9 -f "deder bsp"; pkill -9 -f "basamake.*jar"`
 
-**Deder server** keeps socket files in `.deder/`. Run `deder shutdown` when finished working, especially after using git worktrees — stale server processes block new connections and linger in worktree directories. Also run before branch switches or deleting the project.
+## Code style
 
-## JDK
+- **Avoid braceless syntax for bodies longer than 3 lines.** Short bodies (≤3 lines) may keep the colon; longer bodies must use curly braces `{}`
+- os-lib for file paths; no hardcoded absolute home paths — use `System.getProperty("java.home")`, `os.home`, or `os.pwd`-relative paths
 
-Requires **JDK 21+**. Scala 3.7.4.
+## stdout is sacred
 
-## Code Style
-
-**Avoid braceless syntax for bodies longer than 3 lines.** Short bodies (≤3 lines) can keep the colon. Longer bodies must use curly braces `{}`.
-
-```scala
-// Good — short body, colon is fine
-case class Position(line: Int, char: Int):
-  def offset: Int = line + char
-
-// Bad — longer body, should use curlies
-object WorkspaceIndex:
-  def initialize(workspacePath: os.Path): Unit = {
-    // lines 1-5...
-    // lines 6-10...
-  }
-
-// Good — curlies for longer body
-object WorkspaceIndex {
-  def initialize(workspacePath: os.Path): Unit = {
-    // lines 1-5...
-    // lines 6-10...
-  }
-}
-```
-
-## Smoke Test
-
-The python smoke scripts (`examples/hello/smoke_test.py`, `bsp_smoke_test.py`,
-root `test_sbt_gotodef.py`) were deleted. Their coverage now lives in Scala tests:
-
-- `LspTransportTest` (modules/main-test) — drives the real `BasamakeLanguageServer`
-  through the JSON-RPC transport (initialize → didOpen → definition → shutdown)
-  against a fixture copied to `<repo>/tmp/`
-- `BasamakeLanguageServerTest` — LSP handler behavior (rename, watched files, stale semanticdb)
-- `WorkspaceIndexTest` — navigation with real semanticdb generated at test time (scala-cli compile of a tmp fixture copy)
-
-## stdout Is Sacred
-
-The LSP transport rides on stdout. **Nothing else may write to it.** Three guards:
-
-1. Logback console appender targets `System.err` — explicitly: `consoleAppender.setTarget("System.err")`
-2. Before passing stdout to `LSPLauncher`, wrap in auto-flush: `new PrintStream(System.out, true, "UTF-8")` — lsp4j output buffers otherwise
-3. Logback root logger calls `detachAndStopAllAppenders()` at startup to kill any default stdout appender
-
-**How to verify:** `strace -e write -f java -jar ...` — check that fd 1 (stdout) only has JSON-RPC, never text.
-
-## LSP Stack
-
-**lsp4j 0.24.0** for editor protocol. No bsp4j — navigation runs entirely in-process.
-
-### Capabilities
-
-Server advertises: `DefinitionProvider`, `ReferencesProvider`, `DocumentSymbolProvider`.
-`documentSymbol` returns empty for v1 — deferred to follow-up.
-
-### Text document sync
-
-`TextDocumentSyncKind.Full` — `didChange` receives the whole document each keystroke.
-`didOpen`/`didChange`/`didSave`/`didClose` delegated to `WorkspaceIndex`.
-
-## Architecture
-
-### Navigation model
-
-Two-pass source extraction for Scala and Java:
-
-1. **Pass 1 — Definitions** (`ScalaDefinitionsExtractor` / `JavaDefinitionsExtractor`): parse source ASTs, extract global definitions (classes, objects, methods, vals, vars) into `SymbolTable`
-2. **Pass 2 — References** (`ScalaReferencesResolver` / `JavaReferencesResolver`): second AST walk, emit reference occurrences + local definitions into `ResolvedFile`
-
-`SymbolTable` is a `ConcurrentHashMap[String, SymbolDefinition]` — keyed by SemanticDB-style symbol. Thread-safe for concurrent reads during LSP requests.
-
-### WorkspaceIndex
-
-Core index in `modules/main`. On `initialize()`:
-- Walks workspace, discovers `.semanticdb` files via `SemanticdbIndexing`
-- When SemanticDB available: uses `.semanticdb` for definitions + references (preferred — more accurate)
-- When SemanticDB unavailable: falls back to source parsing (Pass 1 + Pass 2)
-- Skips directories: always-skip set (`.git`, `.basamake`, `.deder`, `.metals`, `.bsp`,
-  `.scala-build`, `target`, `out`, `.github`, `.idea`, `.vscode`, `node_modules`) plus
-  everything matched by `.gitignore` rules (nested `.gitignore` files included, plus
-  `ignorePatterns` from `.basamake/config.json` — last match wins). The same ignore
-  rules guard the LSP entry points (`didOpen`/`didChange`/`didSave`, watcher-created
-  files): gitignored paths never enter `sourcesMap`, the SymbolTable, or the debug
-  dump. Paths outside the workspace (deps/JDK files opened via goto-def) are exempt.
-  SemanticDB dirs come only from `data.json`, never from the walk
-
-On open buffer change (`onDidChange`):
-- Re-extracts occurrences for the changed file
-- Prefers SemanticDB when text matches disk, falls back to source parse
-
-### Dependency/JDK index cache (`~/.cache/basamake/deps`)
-
-`IndexedSymbolTable` (via `SourceJarIndexer`) caches dependency sources + the JDK
-`src.zip` under the XDG-compliant cache root (`~/.cache/basamake/deps` on
-Linux/mac — `$XDG_CACHE_HOME` honored; `%LOCALAPPDATA%\basamake\deps` on
-Windows). One directory per source, nested by maven groupId:
-`com_lihaoyi/upickle_3_4.0.0_<hash>/`; jars without a POM stay flat
-(`antlr4-runtime_4.7.2_<hash>/`, `jdk-21.0.10_<hash>/`):
-
-- **Index eagerly, unpack lazily.** `ensureIndexed`/`ensureJdkIndexed` (called from
-  `initialize()` and every BSP `dependencySources` handshake) build the LMDB symbol
-  index in the background, but source files are NOT written to disk. Individual
-  files are extracted on first lookup hit (`IndexedSymbolTable.get` →
-  `ensureEntryExtracted` → `SourceJarIndexer.extractEntry`), so the LSP Location
-  always points at a real file while untouched deps stay lean (one click into the
-  JDK unpacks only that one file, not all 15k).
-- **Lookups are live LMDB point queries** (`LmdbSerializer.get`: open env per call,
-  `db.get` B-tree lookup, deserialize one entry) — nothing is ever loaded into
-  memory. The RAM saving is the whole point of LMDB here. `byPath`/`all`/`keys`
-  are intentionally empty on `IndexedSymbolTable`: dep/JDK references only matter
-  for user code (workspace in-memory table), dep symbols are resolved by symbol
-  only, and the index is immutable so empty results never go stale.
-- Each `index.lmdb/` dir holds `data.mdb` + `lock.mdb` (LMDB-managed). `MapSize` is
-  1GB — the JDK index is ~570k symbols and exceeds 100MB.
-- LMDB value format v1 (guarded by `CacheMetadata.FormatVersion`, no backward
-  compat — mismatch reindexes): the symbol is the key only (not duplicated in the
-  value), shortName is derived from the symbol at read (not stored), and paths are
-  stored src-relative (`java.base/java/lang/Object.java`). JDK index ~120MB, down
-  from ~230MB.
-- **Background indexing is bounded** (`IndexedSymbolTable.indexLimiter`, 2 permits):
-  parsing ~90 source jars concurrently on startup used to spike the committed heap
-  past 1GB — and G1 never returned it (idle RSS stayed ~1.7GB until a Full GC).
-  The semaphore keeps the peak low. Note G1 still holds committed heap after any
-  big spike: to have idle memory returned automatically, set `basamake.jvmArgs` in
-  the VS Code extension config to `["-XX:G1PeriodicGCInterval=30000"]`.
-- Cache dir fingerprints embed the maven groupId from the sibling POM in the
-  coursier cache as a directory (`com_fasterxml_jackson_core/jackson-core_2.12.1_<hash>`
-  — JDK DOM parser, direct `<project>` child only); filename-derived flat names
-  (`antlr4-runtime_4.7.2_...`) when no POM exists (e.g. scala-lang jars).
-- `SourceJarIndexer.cacheRoot` is a `@volatile var` — tests override it to
-  `./tmp/deps-cache-*` (trait `TestCacheRoot`); never write into the real home cache.
-- **Known limitation:** scalameta (both Scala 3 and Scala 2.13 dialects) cannot
-  parse a few dotty compiler sources (e.g. `dotty/tools/dotc/ast/Desugar.scala`) —
-  those files' definitions are skipped from the dep index. scala-library sources
-  like `scala/util/Try.scala` parse fine via the Scala 2.13 fallback.
-
-### Project root resolution
-
-`.basamake/` (logs, config, data.json, source walk, `.bsp` discovery) lives at the
-**project root**, resolved in `Main.run` by climbing from the opened folder to the
-first ancestor containing `.git` (dir or file — a file marks a git worktree) or an
-existing `.basamake/` dir. Non-git folders without a marker fall back to the opened
-folder. So `examples/hello/sbt` reuses `examples/hello/.basamake`, while each
-`.worktrees/<branch>` gets its own. `.bsp` dirs are gitignored in most repos but are
-exempted from ignore checks in BspDiscovery and the file watcher.
-
-### LSP handlers
-
-`BasamakeLanguageServer` implements `LanguageClientAware`, `LanguageServer`, `TextDocumentService`, `WorkspaceService`:
-- `initialize()`: builds workspace index, returns capabilities
-- `definition()`: `CompletableFuture.supplyAsync` → `workspaceIndex.gotoDefinitions(path, line, char)`
-- `references()`: `CompletableFuture.supplyAsync` → `workspaceIndex.references(path, line, char, includeDecl)`
-- `documentSymbol()`: returns empty (v1)
-- Text doc lifecycle: `didOpen`/`didChange`/`didSave`/`didClose` → delegates to `WorkspaceIndex`
-
-All work runs on `supplyAsync` — no blocking on lsp4j threads.
-
-### Concurrency
-
-`Main.run()` blocks on `future.get()` (returns when stdin EOF). No virtual threads, no actor model, no process supervision.
-
-### BSP lifecycle (v2)
-
-`BspManager` discovers `.bsp/*.json` at `initialize()` but spawns no processes (lazy). The first
-`poke(uri, compile)` LSP-side — from `didOpen`/`didSave`/`definition`/`references` — calls
-`BspConnection.ensureConnected()` which spawns + handshakes. `spawnLock` serializes
-`spawnAndHandshake` (preventing concurrent process starts). A volatile `spawning` flag lets
-fast-path callers detect an in-progress spawn: pokes return immediately (no-op), compiles
-are queued in a `CopyOnWriteArrayList` (dedup via `addIfAbsent`) and drained after spawn
-succeeds. On spawn failure the queue is cleared; no cooldown, no retry limits, no
-`BspUnavailable` — every user action is a fresh attempt.
-
-## Logging
-
-Configured programmatically in `LoggingUtils.configureFileLogging()` — no `logback.xml` on classpath. One appender:
-
-- **File → `.basamake/logs/basamake.log`** in the project root (see Project root resolution)
-
-Called from `Main.run()` with the workspace path. Reconfiguration-safe (detaches old FILE appender if re-invoked).
-
-## VS Code Extension
-
-Separate directory: `../basamake-vscode/` (sibling to basamake repo). Symlinked into `~/.vscode/extensions/basamake.local`. No `.vsix` needed for dev.
-
-**To update:** copy the fat JAR into the extension dir, then **Reload Window** in VS Code (`Ctrl+Shift+P` → "Developer: Reload Window"). VS Code may accumulate zombie basamake processes — kill them manually if you see stale entries in `jps -vlm`.
-
-The extension registers `.scala`/`.sbt` file associations. If you also have Metals installed, VS Code prompts which LSP to use.
+- The LSP transport rides on stdout; nothing else may write to it. Logging is file-only (`.basamake/logs/basamake.log`); lsp4j gets an auto-flush wrapper (`PrintStream(System.out, true, "UTF-8")`) since its output buffers otherwise
+- Verify with `strace -e write -f java -jar ...` — fd 1 must carry only JSON-RPC, never text
 
 ## Tests
 
-Two test modules:
+- Layout: `modules/<m>/test/src/...`; module ids `modules-navigation-test` / `modules-main-test`; munit
+- `modules-navigation-test`: extractors + resolvers (Pass 1/Pass 2), import/scope, indexing (`WorkspaceIndexTest`, GitIgnore*, LmdbSerializer, SourceJarIndexer, DepsGotoDef)
+- `modules-main-test`: real JSON-RPC transport (`LspTransportTest`), server behavior (`BasamakeLanguageServerTest`), BSP lifecycle, config
+- Integration tests copy fixtures to `<repo>/tmp/<test>-<timestamp>/` first; never write into `test/resources`; no `.semanticdb` committed — `SemanticdbFixture` compiles a tmp copy with `scala-cli compile --server=false --semanticdb`
+- No build-tool shell-outs in tests except scala-cli inside tmp copies
 
-**modules/main-test** (`deder exec -t test -m main-test`):
-- `WorkspaceIndexTest` — 31 integration tests covering goto-def, references, cross-file, cross-language (Scala↔Java), no-packages, packages, nested scopes, sbt+semanticdb, scalacli, gitignore-aware walk
+## VS Code extension (dev)
 
-**modules/navigation-test** (`deder exec -t test -m navigation-test`):
-- `ScalaDefinitionsExtractorTest` — Pass 1 Scala definition extraction
-- `ScalaReferencesResolverTest` — Pass 2 Scala reference resolution
-- `ImportScopeTest` — Import scope parsing
-- `ScopeStackTest` — Scope stack traversal
-- `JavaDefinitionsExtractorTest` — Pass 1 Java definition extraction
-- `JavaReferencesResolverTest` — Pass 2 Java reference resolution
-- `JavaLangSymbolsTest` — java.lang.* default-import symbols
-- `SymbolUtilsTest` — SemanticDB symbol encoding
-- `SymbolTableTest` — SymbolTable concurrency
+- Sibling repo `../basamake-vscode/` (symlinked to `~/.vscode/extensions/basamake.local`); no `.vsix` needed
+- Rebuild the fat JAR → copy into the extension dir → **Reload Window** (`Ctrl+Shift+P` → Developer: Reload Window)
+- VS Code may accumulate zombie basamake processes — kill them manually (`jps -vlm`)
+- Registers `.scala`/`.sbt` associations; with Metals installed, VS Code prompts which LSP to use
 
-Tests use fixture source files under `test/resources/examples/`. No real build tool needed —
-except the sbt-fixture semanticdb tests, which compile a tmp fixture copy with scala-cli
-(`SemanticdbFixture`).
+## External references
 
-## Test Hygiene
+| Need | File |
+|------|------|
+| Architecture (navigation, cache, BSP, logging) | `.agents/AGENTS.md` |
+| SemanticDB spec + consumer notes | `agents/semanticdb.md` |
+| Dev setup / contributing | `CONTRIBUTING.md` |
 
-- No hardcoded absolute home paths (`/home/<user>`) in tests, scripts, or source — use
-  `System.getProperty("java.home")`, `os.home`, or paths relative to `os.pwd`.
-- Fixtures live under `test/resources/` (including committed binary data: the commons-net
-  sources jar). No `.semanticdb` files are committed — real semanticdb is generated at test
-  time: `SemanticdbFixture` compiles a tmp fixture copy with `scala-cli compile --server=false
-  --semanticdb` and indexes the output.
-- Tests never shell out to build tools and never write into fixture folders: they copy
-  fixtures to `<repo>/tmp/<test>-<timestamp>/` first; any build-tool shell-out
-  (scala-cli/sbt/deder) happens there.
-
-## SemanticDB Reference
-
-Spec summary + basamake consumer notes: **`agents/semanticdb.md`** — symbol format, descriptor suffixes, occurrences, SUID encoding, TextDocument layout, Scala 2 vs 3 differences.
-
-## Key Files for Agents
+## Key files
 
 | File | Why |
 |------|-----|
-| `modules/main/src/ba/sake/basamake/Main.scala` | JVM entry, Logback file config, stdout/lsp4j wiring |
+| `modules/main/src/ba/sake/basamake/Main.scala` | JVM entry, project-root resolution, stdout/lsp4j wiring |
 | `modules/main/src/ba/sake/basamake/lsp/BasamakeLanguageServer.scala` | LSP handlers (definition, references, text doc lifecycle) |
-| `modules/main/src/ba/sake/basamake/lsp/index/WorkspaceIndex.scala` | Core index — goto-def, references, buffer state, SemanticDB fallback |
-| `modules/main/src/ba/sake/basamake/lsp/index/SemanticdbIndexing.scala` | SemanticDB `.semanticdb` file parser |
-| `modules/navigation/src/ba/sake/basamake/navigation/SymbolTable.scala` | Global symbol table (ConcurrentHashMap) |
+| `modules/navigation/src/ba/sake/basamake/navigation/indexing/WorkspaceIndex.scala` | Core index — goto-def, references, buffer state, SemanticDB fallback |
+| `modules/navigation/src/ba/sake/basamake/navigation/indexing/SemanticdbIndexing.scala` | `.semanticdb` file parser |
+| `modules/navigation/src/ba/sake/basamake/navigation/SymbolTable.scala` | Symbol table (ConcurrentHashMap) |
 | `modules/navigation/src/ba/sake/basamake/navigation/SymbolUtils.scala` | SemanticDB symbol encoding |
 | `modules/navigation/src/ba/sake/basamake/navigation/scalasrc/ScalaDefinitionsExtractor.scala` | Pass 1: Scala def extraction |
 | `modules/navigation/src/ba/sake/basamake/navigation/scalasrc/ScalaReferencesResolver.scala` | Pass 2: Scala ref resolution |
 | `modules/navigation/src/ba/sake/basamake/navigation/javasrc/JavaDefinitionsExtractor.scala` | Pass 1: Java def extraction |
 | `modules/navigation/src/ba/sake/basamake/navigation/javasrc/JavaReferencesResolver.scala` | Pass 2: Java ref resolution |
-| `modules/main/src/ba/sake/basamake/bsp/BspManager.scala` | Owns connections, router, watcher, diagnostics accumulator, shutdown |
+| `modules/main/src/ba/sake/basamake/bsp/BspManager.scala` | Owns connections, router, watcher, diagnostics, shutdown |
 | `modules/main/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, `spawnLock`, `spawning` flag, pending-compile queue |
-| `modules/main/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, queue-free, eventSink-based build client |
+| `modules/main/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, eventSink-based build client |
 | `modules/main/src/ba/sake/basamake/bsp/BspRouter.scala` | Two-phase URI routing (ground-truth + bootstrap heuristic) |
-| `examples/hello/` | Test project (manual testing via vscode extension; `.bsp` configs generated per machine via README flow) |
+| `modules/navigation/src/ba/sake/basamake/navigation/indexing/SourceJarIndexer.scala` | Dep/JDK sources cache (LMDB index, lazy unpack) |
+| `modules/navigation/src/ba/sake/basamake/navigation/indexing/IndexedSymbolTable.scala` | Read-only dep/JDK symbol lookups |
+| `examples/hello/` | Manual-test project (VS Code extension; per-machine `.bsp` via README flow) |

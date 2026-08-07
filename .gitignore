@@ -22,7 +22,9 @@ tmp/
 
 # ai
 docs/superpowers/
-.agents/
+.agents/skills/
+.claude/
+skills-lock.json
 .opencode/
 .scalex/
 plans/

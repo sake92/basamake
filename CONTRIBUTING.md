@@ -9,13 +9,13 @@ Requires **JDK 21+**, Scala 3.7.4.
 git clone https://github.com/sake92/basamake-vscode.git ../basamake-vscode
 
 # Build fat JAR
-deder exec -t assembly -m core
+deder exec -t assembly -m modules-main
 
 # Launch VS Code with the dev extension
 code --disable-extension scalameta.metals --extensionDevelopmentPath="$(pwd)/../basamake-vscode" .
 ```
 
-Set the extension's `basamake.jarPath` setting to the absolute path of `.deder/out/core/assembly/out.jar`.
+Set the extension's `basamake.jarPath` setting to the absolute path of `.deder/out/modules-main/assembly/out.jar`.
 
 Then `Ctrl+Shift+P` → **Developer: Reload Window** in VS Code after each rebuild.
 
@@ -48,8 +48,7 @@ LSP transport rides on stdout. No other output may touch it.
 
 | Guard | Where |
 |-------|-------|
-| Logback console → `System.err` | `Main.configureLogging()` |
-| Auto-flush stdout wrapper | `Main.main()` — `PrintStream(System.out, true, "UTF-8")` |
-| Detach default appenders | `LoggingUtils` startup |
+| File-only logging (no console appender) | `LoggingUtils.configureFileLogging()` |
+| Auto-flush stdout wrapper | `Main.run()` — `PrintStream(System.out, true, "UTF-8")` |
 
 Verify with: `strace -e write -f java -jar ...` — fd 1 must have only JSON-RPC.

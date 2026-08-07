@@ -35,7 +35,7 @@ jobs:
         run: brew install sake92/tap/deder
       - name: Unit tests
         shell: bash -eo pipefail {0}
-        run: deder exec -t test -m core-test
+        run: deder exec -t test -m modules-main-test -m modules-navigation-test
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v6
         if: success() || failure()

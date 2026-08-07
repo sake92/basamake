@@ -1,0 +1,21 @@
+# basamake — Project PRD
+
+Minimalistic Scala LSP server ("just the bare minimum to get work done, no fancy features"), driven by the Basamake VS Code extension.
+
+## Goals
+
+- Go to definition and find references for Scala and Java sources in a workspace
+- Consume BSP build servers: discover `.bsp/*.json`, lazily start connections, report build diagnostics
+- Work from SemanticDB files when the build tool produces them, fall back to source parsing otherwise
+- Cross-target navigation: from source, into dependency jars and the JDK sources
+
+## Tech stack
+
+- Scala 3.7.4, JDK 21+, deder build tool
+- LSP: lsp4j 1.0.0; BSP client: bsp4j 2.2.0-M2
+- Parsing: scalameta (Scala), javaparser (Java); os-lib, lmdbjava (dep/JDK index cache), tupson, logback
+
+## Scope
+
+- In: navigation (definition/references/documentSymbol), BSP diagnostics, multiple BSP servers per workspace, SemanticDB + source-parsing index, dependency/JDK symbol cache
+- Out (explicitly non-goals): code completion, hover, rename, formatting, workspace symbols

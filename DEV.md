@@ -1,6 +1,1 @@
-
-
-deder exec -t assembly -m core && cp .deder/out/core/assembly/out.jar ../basamake-vscode/basamake.jar
-
-
-
+deder exec -t assembly -m modules-main && cp .deder/out/modules-main/assembly/out.jar ../basamake-vscode/basamake.jar
