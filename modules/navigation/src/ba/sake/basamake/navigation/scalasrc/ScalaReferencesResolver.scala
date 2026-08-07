@@ -82,7 +82,10 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     methodDepth = 0
     topLevelPkgOwner = ExtractorShared.extractPackageOwner(src.stats)
     wrapper = ExtractorShared.computeWrapper(fileName, topLevelPkgOwner)
-    currentOwner = topLevelPkgOwner
+    // start from the empty package like the extractor — nested `package` statements
+    // accumulate onto the ENCLOSING owner in resolvePkg, so the initial owner must
+    // be neutral (_empty_/), not the top-level package (which would double it)
+    currentOwner = "_empty_/"
     currentOwnerIsType = false
 
     val topLevelOwner = wrapper.getOrElse(topLevelPkgOwner)
@@ -231,7 +234,9 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolvePkg(p: Pkg): Unit = {
     val segs = p.ref.toString.split('.').toList
-    val pkgOwner = SymbolUtils.packageOwner(segs)
+    // accumulate onto the enclosing package owner — nested package statements
+    // (`package scala` + `package collection`) must NOT drop the outer segments
+    val pkgOwner = mkPackageOwner(currentOwner, segs)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
@@ -827,11 +832,17 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── helpers ──────────────────────────────────────────────────
 
-  private def mkPackageOwnerForPkgObj(baseOwner: String, pkgObjName: String): String = {
-    val base = if (baseOwner == "_empty_/") Nil
+  /** Package owner for a `Pkg` statement nested inside `baseOwner`: enclosing
+    * package segments + the statement's own segments. Mirrors the extractor's
+    * `mkPackageOwner` exactly (same keys on both sides is mandatory). */
+  private def mkPackageOwner(baseOwner: String, segments: List[String]): String = {
+    val base = if (baseOwner == "_empty_/" || baseOwner.isEmpty) Nil
                else baseOwner.stripSuffix("/").split('/').toList.filter(_.nonEmpty)
-    SymbolUtils.packageOwner(base :+ pkgObjName)
+    SymbolUtils.packageOwner(base ++ segments)
   }
+
+  private def mkPackageOwnerForPkgObj(baseOwner: String, pkgObjName: String): String =
+    mkPackageOwner(baseOwner, List(pkgObjName))
 
   /** Resolve the called method symbol of an apply `fun`, for named-arg param lookup.
     * Mirrors the lookup path used by `resolveTerm`/`resolveTermSelect` but only returns

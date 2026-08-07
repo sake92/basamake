@@ -52,6 +52,18 @@ class ScalaReferencesResolverTest extends FunSuite {
     assertHasOccurrence(rf, "pkg/Foo#")
   }
 
+  // ── R.2b ref to class in same nested-package (scala-library style) ──
+
+  test("R.2b ref to class in same nested-package (scala-library style)") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("a/b/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    val code = """package a
+                  |package b
+                  |class Bar extends Foo""".stripMargin
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
+    assertHasOccurrence(rf, "a/b/Foo#")
+  }
+
   // ── R.3 wildcard import ───────────────────────────────────────
 
   test("R.3 wildcard import") {

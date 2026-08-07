@@ -227,6 +227,8 @@ class BspManager private (
     if (gitignoreChanges.nonEmpty) {
       logger.info(s"Detected .gitignore change(s): ${gitignoreChanges.mkString(", ")} — reloading ignore engine")
       ignoreEngine = Some(newEngine())
+      // null in testing constructors (BspManager.forTesting)
+      if (workspaceIndex != null) workspaceIndex.reloadIgnores()
     }
     if (changedBspFiles.nonEmpty) {
       logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")

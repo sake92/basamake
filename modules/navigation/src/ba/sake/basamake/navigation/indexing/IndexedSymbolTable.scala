@@ -33,6 +33,13 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private val indexing = ConcurrentHashMap.newKeySet[String]()
   private val jdkIndexing = new AtomicBoolean(false)
 
+  // Bounds concurrent background indexing. Parsing sources jars with scalameta is
+  // memory-hungry — one virtual thread per jar meant ~90 jars parsed at once on
+  // startup, spiking the committed heap past 1GB (and G1 never returned it).
+  // 2 concurrent indexes keep the peak low; wall time is barely affected (parsing
+  // is CPU-bound and was time-sliced anyway).
+  private val indexLimiter = new java.util.concurrent.Semaphore(2)
+
   // ── public extra API ──────────────────────────────────────────
 
   /** Ensure each source jar is cached (indexed in background if needed) and registered
@@ -66,10 +73,13 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
         logger.info(s"Indexing JDK sources $srcZip in background")
         Thread.ofVirtual().start(() => {
           try {
-            SourceJarIndexer.index(srcZip, fp)
-            register(fp, srcZip)
-          } catch {
-            case NonFatal(e) => logger.warn(s"Failed to index JDK sources: ${e.getMessage}")
+            indexLimiter.acquire()
+            try {
+              SourceJarIndexer.index(srcZip, fp)
+              register(fp, srcZip)
+            } catch {
+              case NonFatal(e) => logger.warn(s"Failed to index JDK sources: ${e.getMessage}")
+            } finally indexLimiter.release()
           } finally jdkIndexing.set(false)
         })
       }
@@ -158,14 +168,18 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
     SourceJarIndexer.cacheRoot / os.RelPath(fp) / "index.lmdb"
 
   /** Index one source in the background (virtual thread). Caller must have claimed
-    * the fingerprint in `indexing`; the claim is released when the thread finishes. */
+    * the fingerprint in `indexing`; the claim is released when the thread finishes.
+    * Concurrent work is bounded by `indexLimiter` (see above). */
   private def indexInBackground(src: os.Path, fp: String): Unit = {
     Thread.ofVirtual().start(() => {
       try {
-        SourceJarIndexer.index(src, fp)
-        register(fp, src)
-      } catch {
-        case NonFatal(e) => logger.warn(s"Failed to index $src: ${e.getMessage}")
+        indexLimiter.acquire()
+        try {
+          SourceJarIndexer.index(src, fp)
+          register(fp, src)
+        } catch {
+          case NonFatal(e) => logger.warn(s"Failed to index $src: ${e.getMessage}")
+        } finally indexLimiter.release()
       } finally indexing.remove(fp)
     })
   }

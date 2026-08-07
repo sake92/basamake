@@ -1,7 +1,5 @@
 package ba.sake.basamake.navigation.indexing
 
-import java.util.concurrent.ConcurrentHashMap
-
 /** Directory names that never contain project sources — skipped by the workspace
   * walk regardless of gitignore rules (deder's ignoredDirNames + basamake extras). */
 object GitIgnoreEngine {
@@ -40,9 +38,9 @@ object GitIgnoreEngine {
   * `exemptLastNames`: path segments that are NEVER ignored (e.g. ".bsp" — gitignored
   * but required by BspDiscovery and the file watcher).
   *
-  * The rules cache is thread-safe (ConcurrentHashMap), so concurrent `isIgnored`
-  * calls (file-watcher thread + BSP debounce timer) are safe. `baseLayers` is written
-  * only at construction; `reload()` is not synchronized and is intended for tests. */
+  * The rules cache is guarded by a reentrant lock, so concurrent `isIgnored`
+  * calls (file-watcher thread + BSP debounce timer) are safe. `baseLayers` is
+  * written only at construction; `reload()` takes the same lock. */
 final class GitIgnoreEngine(
     root: os.Path,
     extraRootPatterns: Vector[String] = Vector.empty,
@@ -53,7 +51,13 @@ final class GitIgnoreEngine(
 
   private var baseLayers: Vector[Layer] = computeBaseLayers()
 
-  private val rulesCache = new ConcurrentHashMap[os.Path, Vector[Layer]]()
+  // Plain map + reentrant lock. ConcurrentHashMap.computeIfAbsent is NOT usable
+  // here: its mapping function must not modify the same map, and `rulesFor`
+  // recurses via a nested lookup — when the nested key hashes to the same bin,
+  // CHM throws IllegalStateException("Recursive update") (JDK ConcurrentHashMap:
+  // `if (pred.next != null) throw ...`). Flaky under parallel test load.
+  private val rulesLock = new Object
+  private val rulesCache = new scala.collection.mutable.HashMap[os.Path, Vector[Layer]]()
 
   private def computeBaseLayers(): Vector[Layer] = {
     val chain = GitIgnoreEngine.ancestorChain(root)
@@ -67,14 +71,14 @@ final class GitIgnoreEngine(
   }
 
   /** Rules that apply to paths inside `dir`: base layers + nested .gitignore files
-    * from the root down to `dir`. Memoized — each .gitignore parsed once.
-    * Recursion goes strictly upward (different keys), so computeIfAbsent is safe. */
-  private def rulesFor(dir: os.Path): Vector[Layer] =
-    rulesCache.computeIfAbsent(dir, { d =>
-      if d == root then baseLayers
-      else if d.startsWith(root) then rulesFor(d / os.up) ++ ownLayer(d)
+    * from the root down to `dir`. Memoized — each .gitignore parsed once. */
+  private def rulesFor(dir: os.Path): Vector[Layer] = rulesLock.synchronized {
+    rulesCache.getOrElseUpdate(dir, {
+      if dir == root then baseLayers
+      else if dir.startsWith(root) then rulesFor(dir / os.up) ++ ownLayer(dir)
       else baseLayers
     })
+  }
 
   private def ownLayer(dir: os.Path): Vector[Layer] = {
     val f = dir / ".gitignore"
@@ -111,7 +115,7 @@ final class GitIgnoreEngine(
   }
 
   /** Re-parse base layers after a `.gitignore` change; drops the nested-rules cache. */
-  def reload(): Unit = {
+  def reload(): Unit = rulesLock.synchronized {
     rulesCache.clear()
     baseLayers = computeBaseLayers()
   }

@@ -48,6 +48,21 @@ class ScalaDefinitionsExtractorTest extends FunSuite {
     ))
   }
 
+  // ── C.3b Nested package STATEMENTS (scala-library style) ───────
+  test("C.3b nested package statements accumulate the outer prefix") {
+    assertSymbols("c03b_nested_pkg_statements.scala", "package a\npackage b\nclass C", Set(
+      sym("a/b/C#", isType = true),
+      sym("a/b/C#`<init>`()."),
+    ))
+  }
+
+  test("C.3c multi-segment first statement + nested second statement") {
+    assertSymbols("c03c_nested_pkg_mixed.scala", "package a.b\npackage c\nclass D", Set(
+      sym("a/b/c/D#", isType = true),
+      sym("a/b/c/D#`<init>`()."),
+    ))
+  }
+
   // ── C.4 Empty package, multiple top-level classes ──────────────
   test("C.4 empty package, multiple top-level classes") {
     assertSymbols("c04_multi_class.scala", "class A; class B", Set(

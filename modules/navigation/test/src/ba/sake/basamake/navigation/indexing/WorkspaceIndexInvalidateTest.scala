@@ -241,4 +241,28 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
         s"dump must list files created after initialize:\n$dump")
     } finally os.remove.all(root)
   }
+
+  // ── gitignored paths never enter the index (entry-point guards) ─
+
+  test("gitignored paths never enter the index via open/create/save") {
+    val root = buildSbtLikeFixture()
+    try {
+      os.write(root / ".gitignore", ".worktrees/\n")
+      val (idx, st) = freshIndexAt(root) // engine reads .gitignore at construction
+
+      val wtFile = root / ".worktrees" / "gitignore-roots" / "A.scala"
+      os.write(wtFile, "object WorktreeThing\n", createFolders = true)
+
+      // all entry points must be no-ops for gitignored paths
+      idx.onFilesCreated(Set(wtFile))
+      idx.onDidOpen(wtFile)
+      idx.onDidSave(wtFile)
+
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(!dump.contains(".worktrees"),
+        s"gitignored files must not appear in the dump:\n$dump")
+      assert(st.get("_empty_/WorktreeThing#").isEmpty,
+        "no definitions may be extracted for gitignored files")
+    } finally os.remove.all(root)
+  }
 }

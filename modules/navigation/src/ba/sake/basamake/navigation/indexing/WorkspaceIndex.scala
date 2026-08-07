@@ -33,14 +33,35 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   // serialize debug-dump file writes (os.write.over is not atomic)
   private val dumpLock = new Object
 
+  // gitignore engine — built once at construction, used by the walk AND by the
+  // entry-point guards below. Replaced wholesale on .gitignore changes (volatile
+  // so concurrent guard calls never see a half-mutated engine).
+  @volatile private var ignoreEngine = new GitIgnoreEngine(workspacePath, ignorePatterns)
+
+  /** Re-read `.gitignore` rules — called by BspManager on .gitignore change events. */
+  def reloadIgnores(): Unit = ignoreEngine = new GitIgnoreEngine(workspacePath, ignorePatterns)
+
+  /** True for paths that must never enter the index: gitignored paths INSIDE the
+    * workspace (e.g. `.worktrees/`, `node_modules/`) or under an always-skip dir.
+    * Paths OUTSIDE the workspace (deps/JDK sources opened via goto-def) are never
+    * blocked — GitIgnoreEngine treats everything outside its root as ignored. */
+  private def isIgnoredWorkspacePath(p: os.Path): Boolean = {
+    if !p.startsWith(workspacePath) then return false
+    var cur = p
+    while cur.startsWith(workspacePath) do {
+      if GitIgnoreEngine.alwaysSkipDirNames.contains(cur.last) then return true
+      cur = cur / os.up
+    }
+    ignoreEngine.isIgnored(p, isDir = os.isDir(p))
+  }
+
   // ── initialize ──────────────────────────────────────────────
   def initialize(roots: List[SemanticdbDirs]): Unit = {
     logger.info(s"Initializing workspace index at $workspacePath")
-    val engine = new GitIgnoreEngine(workspacePath, ignorePatterns)
     val relevantExtensions = Set("scala", "java")
     def skip(p: os.Path): Boolean =
-      if os.isDir(p) then GitIgnoreEngine.alwaysSkipDirNames.contains(p.last) || engine.isIgnored(p, isDir = true)
-      else if os.isFile(p) then !relevantExtensions.contains(p.ext) || engine.isIgnored(p, isDir = false)
+      if os.isDir(p) then GitIgnoreEngine.alwaysSkipDirNames.contains(p.last) || ignoreEngine.isIgnored(p, isDir = true)
+      else if os.isFile(p) then !relevantExtensions.contains(p.ext) || ignoreEngine.isIgnored(p, isDir = false)
       else true
 
     val sources = os.walk(workspacePath, skip = skip)
@@ -117,17 +138,20 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
 
   // ── onDidOpen/Change/Save/Close ──────────────────────────────
   def onDidOpen(path: os.Path): Unit = {
+    if isIgnoredWorkspacePath(path) then return
     openFiles.add(path)
     sourcesMap.putIfAbsent(path, SourceData.empty)
     refreshOpenBuffer(path)
   }
 
   def onDidChange(path: os.Path): Unit = {
+    if isIgnoredWorkspacePath(path) then return
     openFiles.add(path)
     refreshOpenBuffer(path)
   }
 
   def onDidSave(path: os.Path): Unit = {
+    if isIgnoredWorkspacePath(path) then return
     openFiles.add(path)
     sourcesMap.putIfAbsent(path, SourceData.empty)
     // re-extract SymbolTable for this path
@@ -170,9 +194,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   }
 
   /** New source files on disk (watcher create events, rename new paths).
-    * Semanticdb pairing arrives with the next compile (invalidate). */
+    * Semanticdb pairing arrives with the next compile (invalidate).
+    * Gitignored paths are dropped — they must never enter the source list. */
   def onFilesCreated(paths: Set[os.Path]): Unit = {
-    paths.foreach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
+    val accepted = paths.filterNot(isIgnoredWorkspacePath)
+    if (accepted.isEmpty) return
+    accepted.foreach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
     writeDebugDump()
   }
 

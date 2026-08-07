@@ -108,8 +108,11 @@ Core index in `modules/main`. On `initialize()`:
 - Skips directories: always-skip set (`.git`, `.basamake`, `.deder`, `.metals`, `.bsp`,
   `.scala-build`, `target`, `out`, `.github`, `.idea`, `.vscode`, `node_modules`) plus
   everything matched by `.gitignore` rules (nested `.gitignore` files included, plus
-  `ignorePatterns` from `.basamake/config.json` — last match wins). SemanticDB dirs
-  come only from `data.json`, never from the walk
+  `ignorePatterns` from `.basamake/config.json` — last match wins). The same ignore
+  rules guard the LSP entry points (`didOpen`/`didChange`/`didSave`, watcher-created
+  files): gitignored paths never enter `sourcesMap`, the SymbolTable, or the debug
+  dump. Paths outside the workspace (deps/JDK files opened via goto-def) are exempt.
+  SemanticDB dirs come only from `data.json`, never from the walk
 
 On open buffer change (`onDidChange`):
 - Re-extracts occurrences for the changed file
@@ -144,16 +147,22 @@ Windows). One directory per source, nested by maven groupId:
   value), shortName is derived from the symbol at read (not stored), and paths are
   stored src-relative (`java.base/java/lang/Object.java`). JDK index ~120MB, down
   from ~230MB.
+- **Background indexing is bounded** (`IndexedSymbolTable.indexLimiter`, 2 permits):
+  parsing ~90 source jars concurrently on startup used to spike the committed heap
+  past 1GB — and G1 never returned it (idle RSS stayed ~1.7GB until a Full GC).
+  The semaphore keeps the peak low. Note G1 still holds committed heap after any
+  big spike: to have idle memory returned automatically, set `basamake.jvmArgs` in
+  the VS Code extension config to `["-XX:G1PeriodicGCInterval=30000"]`.
 - Cache dir fingerprints embed the maven groupId from the sibling POM in the
   coursier cache as a directory (`com_fasterxml_jackson_core/jackson-core_2.12.1_<hash>`
   — JDK DOM parser, direct `<project>` child only); filename-derived flat names
   (`antlr4-runtime_4.7.2_...`) when no POM exists (e.g. scala-lang jars).
 - `SourceJarIndexer.cacheRoot` is a `@volatile var` — tests override it to
   `./tmp/deps-cache-*` (trait `TestCacheRoot`); never write into the real home cache.
-- **Known limitation:** scalameta's Scala 3 dialect cannot parse a few scala-library/
-  scala3-compiler sources (`scala/util/Try.scala`, `scala/collection/Map.scala`,
-  `scala/caps/package.scala`, `dotty/tools/dotc/ast/Desugar.scala`) — those files'
-  definitions are skipped from the dep index.
+- **Known limitation:** scalameta (both Scala 3 and Scala 2.13 dialects) cannot
+  parse a few dotty compiler sources (e.g. `dotty/tools/dotc/ast/Desugar.scala`) —
+  those files' definitions are skipped from the dep index. scala-library sources
+  like `scala/util/Try.scala` parse fine via the Scala 2.13 fallback.
 
 ### Project root resolution
 

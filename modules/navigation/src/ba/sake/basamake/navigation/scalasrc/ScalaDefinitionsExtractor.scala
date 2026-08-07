@@ -109,7 +109,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       // ── package ───────────────────────────────────────────────
       case p: Pkg =>
         val segs = p.ref.toString.split('.').toList
-        val newOwner = mkPackageOwner(segs)
+        val newOwner = mkPackageOwner(owner, segs)
         extractStats(p.body, newOwner, ovl, wrapper)
 
       // ── package object ────────────────────────────────────────
@@ -297,14 +297,20 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
   // ── helpers ──────────────────────────────────────────────────
 
-  private def mkPackageOwner(segments: List[String]): String =
-    SymbolUtils.packageOwner(segments)
-
-  private def mkPackageOwnerForPkgObj(baseOwner: String, pkgObjName: String): String = {
-    val base = if (baseOwner == "_empty_/") Nil
+  /** Package owner for a `Pkg` statement nested inside `baseOwner`: the enclosing
+    * package segments + the statement's own segments. Nested package statements
+    * (`package scala` + `package collection`, as used across scala-library) must
+    * ACCUMULATE, not replace — a bare `packageOwner(segs)` would emit
+    * `collection/` instead of `scala/collection/` and no compiler semanticdb symbol
+    * would ever match. `baseOwner` at a Pkg site is always a plain package owner. */
+  private def mkPackageOwner(baseOwner: String, segments: List[String]): String = {
+    val base = if (baseOwner == "_empty_/" || baseOwner.isEmpty) Nil
                else baseOwner.stripSuffix("/").split('/').toList.filter(_.nonEmpty)
-    SymbolUtils.packageOwner(base :+ pkgObjName)
+    SymbolUtils.packageOwner(base ++ segments)
   }
+
+  private def mkPackageOwnerForPkgObj(baseOwner: String, pkgObjName: String): String =
+    mkPackageOwner(baseOwner, List(pkgObjName))
 
   private def addSymbol(symbol: String, shortName: String, isType: Boolean, pos: Position): Unit = {
     val range = if (pos == Position.None) new Range(0, 0, 0, 0) else PositionUtils.toRange(pos)
