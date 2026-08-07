@@ -2,6 +2,9 @@
 *.jar
 *.log
 
+# committed test fixtures
+!modules/navigation/test/resources/jars/*.jar
+
 *.DS_Store
 
 target/

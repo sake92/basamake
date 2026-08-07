@@ -2,7 +2,7 @@ package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
 import scala.meta.internal.semanticdb.Range
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, ResolvedFile}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition, ResolvedFile}
 
 class ScalaReferencesResolverTest extends FunSuite {
 
@@ -35,7 +35,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.1 bare-name ref to workspace class with explicit import ──
 
   test("R.1 bare-name ref to workspace class with explicit import") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.C; val v: C = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
@@ -45,7 +45,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.2 ref to class in same package (no import) ──────────────
 
   test("R.2 ref to class in same package (no import)") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Bar extends Foo"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
@@ -55,7 +55,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.3 wildcard import ───────────────────────────────────────
 
   test("R.3 wildcard import") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("a/b/Thing#", "Thing", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.*; val t: Thing = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
@@ -65,7 +65,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.4 rename import ─────────────────────────────────────────
 
   test("R.4 rename import") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.{C => D}; val d: D = null"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
@@ -75,7 +75,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.5 new C(args) — emits C# + ctor ref ─────────────────────
 
   test("R.5 new C(args) — emits C# + ctor ref") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/C#", "C", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/C#`<init>`().", "<init>", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class C; object Main { val c = new C() }"""
@@ -87,7 +87,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.6 Foo(args) where Foo is object with apply ──────────────
 
   test("R.6 Foo(args) where Foo is object with apply") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Foo.", "Foo", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/Foo.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val r = Foo(42) }"""
@@ -99,7 +99,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.7 method call obj.meth(x) ───────────────────────────────
 
   test("R.7 method call obj.meth(x)") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Obj.", "Obj", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/Obj.m().", "m", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Main { def f(o: Obj): Int = o.m(7) }"""
@@ -115,7 +115,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.8 method param ref inside body") {
     val code = """package pkg; class C { def m(x: Int): Int = x }"""
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     // ref occurrence at x in body (def occurrence lives in SymbolTable now)
     assertHasOccurrence(rf, "pkg/C#m().(x)")
@@ -126,7 +126,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.9 method-local val — local<N>") {
     val code = """package pkg; class C { def m(): Int = { val y = 1; y } }"""
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     // ref occurrence to y only (def occurrence now in locals, not occurrences)
     assertHasOccurrence(rf, "local0")
@@ -138,7 +138,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   test("R.10 unresolved name") {
     val code = """package pkg; class C { def m(): Nothing = doStuff() }"""
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "")
   }
@@ -147,7 +147,7 @@ class ScalaReferencesResolverTest extends FunSuite {
 
   // TODO List type
   test("R.11 Predef List(...)") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("scala/collection/immutable/List.", "List", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("scala/collection/immutable/List.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val xs = List(1, 2) }"""
@@ -159,7 +159,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.12 type-position ref val x: Foo ─────────────────────────
 
   test("R.12 type-position ref val x: Foo") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; class Main { val x: Foo = null }"""
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
@@ -169,7 +169,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.13 nested a.b.c.d select ────────────────────────────────
 
   test("R.13 nested a.b.c.d select") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     // NOTE: These are term symbols nested by dot (member) chain, matching the
     // SemanticDB convention for nested objects/vals: a., a.b., a.b.c., a.b.c.d.
     st.add(SymbolDefinition("_empty_/a.", "a", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
@@ -187,7 +187,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.14 case class apply Person("x") ─────────────────────────
 
   test("R.14 case class apply Person(\"x\")") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("pkg/Person.", "Person", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/Person.apply().", "apply", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package pkg; object Main { val p = Person("x") }"""
@@ -199,7 +199,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.15 unimport ─────────────────────────────────────────────
 
   test("R.15 unimport") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     st.add(SymbolDefinition("a/b/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("a/b/Bar#", "Bar", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
     val code = """package x; import a.b.{Foo => _, *}; val v: Bar = null"""
@@ -212,7 +212,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.16 same-file top-level sibling def (no package) ────────
 
   test("R.16 same-file top-level sibling def (no package)") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     new ScalaDefinitionsExtractor(st).extractFromContent(
       "bla.scala",
       """@main def blaMain(): Unit = println(add(2, 3))
@@ -233,7 +233,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.17 cross-file top-level def (different wrapper) ─────────
 
   test("R.17 cross-file top-level def (different wrapper)") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     new ScalaDefinitionsExtractor(st).extractFromContent(
       "Sib.scala",
       """def add(a: Int, b: Int): Int = a + b
@@ -251,7 +251,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.NAMED named arg emits param ref ─────────────────────────
 
   test("named arg emits param ref") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val dummyPath = os.pwd
     val r = new Range(0, 0, 0, 0)
     st.add(SymbolDefinition("pkg/Util.", "Util", isType = false, r, dummyPath / "Util.scala"))
@@ -268,7 +268,7 @@ class ScalaReferencesResolverTest extends FunSuite {
   // ── R.NEW method call on `new C().m` ───────────────────────────
 
   test("method call on new C().m resolves to C#m") {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val r = new Range(0, 0, 0, 0)
     st.add(SymbolDefinition("pkg/C#", "C", isType = true, r, os.pwd / "dummy.scala"))
     st.add(SymbolDefinition("pkg/C#m().", "m", isType = false, r, os.pwd / "dummy.scala"))

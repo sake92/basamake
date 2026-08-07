@@ -8,8 +8,8 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
-import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable}
-import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs}
+import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable, CompositeSymbolTable}
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.tupson.{given, *}
@@ -18,13 +18,15 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   @volatile private var client: LanguageClient = uninitialized
 
-  private val symbolTable = new SymbolTable
+  private val workspaceSymbolTable = new InMemorySymbolTable
+  private val depsSymbolTable = new IndexedSymbolTable
+  private val symbolTable = new CompositeSymbolTable(workspaceSymbolTable, depsSymbolTable)
   private val workspaceIndex = new WorkspaceIndex(
     workspacePath,
     symbolTable,
     BasamakeConfig.load(workspacePath).ignorePatterns.toVector
   )
-  private val bspManager = BspManager(workspacePath, workspaceIndex)
+  private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
 
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
@@ -53,12 +55,21 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val wsCaps = new WorkspaceServerCapabilities()
     wsCaps.setFileOperations(fileOps)
     capabilities.setWorkspace(wsCaps)
-    val roots = loadSemanticdbRootsFromDataJson()
+    val (roots, depSources) = loadBspDataFromDataJson()
     try {
       workspaceIndex.initialize(roots)
     } catch {
       case e: Exception =>
         logger.error(s"Failed to initialize workspace index: ${e.getMessage}")
+    }
+    // Warm-start dependency sources (from data.json) + JDK sources — cached indexes
+    // load lazily on first lookup; uncached jars/JDK index in the background.
+    try {
+      depsSymbolTable.ensureIndexed(depSources)
+      depsSymbolTable.ensureJdkIndexed()
+    } catch {
+      case e: Exception =>
+        logger.error(s"Failed to start dependency indexing: ${e.getMessage}")
     }
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client)
@@ -100,7 +111,19 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     if (created.nonEmpty || deleted.nonEmpty) {
       bspManager.onWatchedFilesChanged(created, deleted)
     }
+    // keep the workspace source list live for created/deleted source files
+    val createdPaths = created.flatMap(uriToSourcePath)
+    val deletedPaths = deleted.flatMap(uriToSourcePath)
+    if (createdPaths.nonEmpty) workspaceIndex.onFilesCreated(createdPaths.toSet)
+    if (deletedPaths.nonEmpty) workspaceIndex.onFilesDeleted(deletedPaths.toSet)
   }
+
+  /** Convert a watched-file URI to a source path (.scala/.java only). */
+  private def uriToSourcePath(uri: String): Option[os.Path] =
+    try {
+      val p = os.Path(URI.create(uri))
+      if (p.ext == "scala" || p.ext == "java") Some(p) else None
+    } catch { case _: Exception => None }
 
   /** VS Code sends workspace/didRenameFiles when user renames a file.
     * Clear old diagnostics, re-index new file into WorkspaceIndex,
@@ -110,7 +133,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     logger.debug(s"didRenameFiles (${params.getFiles.size()} file(s)): $renames")
     params.getFiles.forEach { rename =>
       bspManager.clearDiagnostics(rename.getOldUri)
+      val oldPath = try Some(os.Path(URI.create(rename.getOldUri))) catch { case _: Exception => None }
+      oldPath.foreach(p => workspaceIndex.onFilesDeleted(Set(p)))
       val newPath = os.Path(URI.create(rename.getNewUri))
+      if (newPath.ext == "scala" || newPath.ext == "java") workspaceIndex.onFilesCreated(Set(newPath))
       workspaceIndex.onDidOpen(newPath)
       Thread.ofVirtual().start(() => bspManager.poke(rename.getNewUri, compile = true))
     }
@@ -129,9 +155,8 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val uri = params.getTextDocument.getUri
     logger.debug(s"didChange: $uri")
     val path = os.Path(URI.create(uri))
-    val text = params.getContentChanges.asScala.last.getText
     // TODO in new thread?
-    workspaceIndex.onDidChange(path, text)
+    workspaceIndex.onDidChange(path)
   }
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
@@ -140,7 +165,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
       bspManager.poke(uri, compile = true)
-      workspaceIndex.onDidSave(path, Option(params.getText))
+      workspaceIndex.onDidSave(path)
     })
   }
 
@@ -204,31 +229,37 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     new Location(uri, range)
   }
 
-  /** Read .basamake/bsp/.../data.json files and collect (sourceRootDir, semanticdbDir) pairs.
-    * Speeds up subsequent startups by indexing BSP-managed output dirs without
-    * walking the entire workspace. Returns empty list if no data.json files exist. */
-  private def loadSemanticdbRootsFromDataJson(): List[SemanticdbDirs] = {
+  /** Read .basamake/bsp/.../data.json files and collect (sourceRootDir, semanticdbDir)
+    * pairs plus dependency source jar paths. Speeds up subsequent startups by indexing
+    * BSP-managed output dirs + known dep sources without walking the entire workspace.
+    * Returns empty lists if no data.json files exist. */
+  private def loadBspDataFromDataJson(): (List[SemanticdbDirs], List[os.Path]) = {
     val bspDir = workspacePath / ".basamake/bsp"
     if (!os.exists(bspDir) || !os.isDir(bspDir)) {
       logger.debug(s"No BSP data.json files found in ${bspDir}")
-      return Nil
+      return (Nil, Nil)
     }
     try {
       val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
-      dataFiles.flatMap { f =>
+      var roots = List.empty[SemanticdbDirs]
+      var depSources = List.empty[os.Path]
+      dataFiles.foreach { f =>
         try {
           val data = os.read(f).parseJson[BspTargetData]
-          data.targets.map(t => SemanticdbDirs(t.sourceRootDir, t.semanticdbDir))
+          data.targets.foreach { t =>
+            roots = SemanticdbDirs(t.sourceRootDir, t.semanticdbDir) :: roots
+            t.dependencySources.foreach(s => depSources = os.Path(s) :: depSources)
+          }
         } catch {
           case e: Exception =>
             logger.error(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
-            Nil
         }
-      }.toList
+      }
+      (roots, depSources.distinct)
     } catch {
       case e: Exception =>
         logger.error(s"Failed to load data.json files: ${e.getMessage}")
-        Nil
+        (Nil, Nil)
     }
   }
 }

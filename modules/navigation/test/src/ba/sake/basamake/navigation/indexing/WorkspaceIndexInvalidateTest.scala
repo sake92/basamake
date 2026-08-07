@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.SymbolTable
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable}
 import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
 
 /** Integration tests for WorkspaceIndex.invalidate / initialize semanticdb pairing.
@@ -14,7 +14,7 @@ import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocum
 class WorkspaceIndexInvalidateTest extends FunSuite {
 
   private def freshIndexAt(root: os.Path): (WorkspaceIndex, SymbolTable) = {
-    val st = new SymbolTable
+    val st = new InMemorySymbolTable
     val idx = new WorkspaceIndex(root, st)
     idx.initialize(List.empty)
     (idx, st)
@@ -145,7 +145,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
   test("invalidate: no-op on empty roots and on nonexistent dirs") {
     val root = buildSbtLikeFixture()
     try {
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
       idx.invalidate(Nil) // must not throw
       idx.invalidate(List(SemanticdbDirs("/no/such/source", "/no/such/sem"))) // must not throw
@@ -158,7 +158,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
     val root = buildSbtLikeFixture()
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val st = new SymbolTable
+      val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
       idx.initialize(List(SemanticdbDirs(root, semanticdbDirOf(root))))
       idx.onDidOpen(mainFile)
@@ -185,6 +185,60 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       assert(after.contains("src/main/scala/utils.scala"), s"dump lists the source:\n$after")
       assert(!after.contains("<<NO SEMANTICDB>>"), s"dump must be refreshed after invalidate:\n$after")
       assert(after.contains(".semanticdb"), s"dump must show semanticdb pairs:\n$after")
+    } finally os.remove.all(root)
+  }
+
+  // ── close vs delete semantics ────────────────────────────────
+
+  test("closing an open buffer does not lose semanticdb pairing or definitions") {
+    val root = buildSbtLikeFixture()
+    try {
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val (idx, st) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(st.get("_empty_/utils.getMsg().").isDefined, "defs loaded after invalidate")
+
+      idx.onDidOpen(utilsFile)
+      idx.onDidClose(utilsFile) // tab close (e.g. VS Code preview-tab switch)
+
+      assert(st.get("_empty_/utils.getMsg().").isDefined,
+        "definitions must survive closing a tab (only disk events purge them)")
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(!dump.contains("<<NO SEMANTICDB>>"), s"dump must still show pairs after close:\n$dump")
+    } finally os.remove.all(root)
+  }
+
+  test("onFilesDeleted purges pairing and definitions for deleted files") {
+    val root = buildSbtLikeFixture()
+    try {
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val (idx, st) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(st.get("_empty_/utils.getMsg().").isDefined, "defs loaded after invalidate")
+
+      os.remove(utilsFile) // file gone from disk (external delete / rename)
+      idx.onFilesDeleted(Set(utilsFile))
+
+      assert(st.get("_empty_/utils.getMsg().").isEmpty,
+        "definitions must be purged when the file is deleted")
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(!dump.contains("utils.scala"),
+        s"deleted file must disappear from the dump entirely:\n$dump")
+    } finally os.remove.all(root)
+  }
+
+  test("onFilesCreated adds post-initialize files to the source list") {
+    val root = buildSbtLikeFixture()
+    try {
+      val (idx, _) = freshIndexAt(root)
+      val newFile = root / "src" / "main" / "scala" / "NewThing.scala"
+      os.write(newFile, "object NewThing\n")
+
+      idx.onFilesCreated(Set(newFile))
+
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(dump.contains("NewThing.scala"),
+        s"dump must list files created after initialize:\n$dump")
     } finally os.remove.all(root)
   }
 }

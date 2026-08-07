@@ -6,88 +6,119 @@ import scala.meta.internal.semanticdb.Range
 import java.io.{ByteArrayOutputStream, ByteArrayInputStream, DataOutputStream, DataInputStream}
 import java.nio.ByteBuffer
 
+/** LMDB persistence for dependency indexes. `save` writes to a sibling `.tmp`
+  * directory first and renames into place — a crash mid-write can never corrupt
+  * an existing index (worst case: metadata is stale and we reindex).
+  *
+  * Lazy point-queries only — `get` opens the env per call, does a B-tree lookup
+  * for ONE symbol and closes. Nothing is ever loaded into memory; the RAM saving
+  * is the whole point of LMDB here.
+  *
+  * Value format (v1, see `CacheMetadata.FormatVersion`):
+  *   - the symbol is NOT stored in the value — it IS the LMDB key
+  *   - the path is always stored src-relative (`java.base/java/lang/Object.java`)
+  *     and resolved against `<cacheDir>/src/` at load; no backward compat — a
+  *     mismatched formatVersion makes the cache invalid and triggers a reindex
+  *   - shortName is not stored either — it's derived from the symbol on read
+  */
 object LmdbSerializer {
 
+  // 1GB — the JDK src.zip index (~570k symbols) exceeds 100MB. LMDB mapsize is
+  // address space only; data.mdb still grows on disk as needed. Must stay >= the
+  // largest saved index, also for read-only opens.
+  private val MapSize = 1L * 1024 * 1024 * 1024 // 1GB
+
   def save(table: SymbolTable, path: os.Path): Unit = {
-    os.makeDir.all(path)
-    val env = Env.create()
-      .setMapSize(100L * 1024 * 1024) // 100MB
-      .setMaxDbs(1)
-      .open(path.toIO)
-
+    val tmpPath = path / os.up / (path.last + ".tmp")
+    val cacheDir = path / os.up
+    os.remove.all(tmpPath)
+    os.makeDir.all(tmpPath)
     try {
-      val db = env.openDbi("symbols", DbiFlags.MDB_CREATE)
-      val txn = env.txnWrite()
+      val env = Env.create()
+        .setMapSize(MapSize)
+        .setMaxDbs(1)
+        .open(tmpPath.toIO)
 
-      table.all.foreach { d =>
-        val keyBytes = d.symbol.getBytes("UTF-8")
-        val keyBuf = ByteBuffer.allocateDirect(keyBytes.length)
-        keyBuf.put(keyBytes).flip()
-        val valueBytes = serialize(d)
-        val valBuf = ByteBuffer.allocateDirect(valueBytes.length)
-        valBuf.put(valueBytes).flip()
-        db.put(txn, keyBuf, valBuf)
+      try {
+        val db = env.openDbi("symbols", DbiFlags.MDB_CREATE)
+        val txn = env.txnWrite()
+
+        try {
+          table.all.foreach { d =>
+            val keyBytes = d.symbol.getBytes("UTF-8")
+            val keyBuf = ByteBuffer.allocateDirect(keyBytes.length)
+            keyBuf.put(keyBytes).flip()
+            val valueBytes = serialize(d, cacheDir)
+            val valBuf = ByteBuffer.allocateDirect(valueBytes.length)
+            valBuf.put(valueBytes).flip()
+            db.put(txn, keyBuf, valBuf)
+          }
+          txn.commit()
+        } finally txn.close() // aborts if the commit didn't happen
+      } finally {
+        env.close()
       }
 
-      txn.commit()
+      // rename into place: remove the old dir first (rename can't replace non-empty
+      // dirs). Only reached on success — a failure keeps the old index untouched.
+      os.remove.all(path)
+      os.move(tmpPath, path)
     } finally {
-      env.close()
+      // on failure remove the partial write (no-op on success — dir was renamed away)
+      os.remove.all(tmpPath)
     }
   }
 
-  def load(path: os.Path): SymbolTable = {
-    val table = new SymbolTable()
+  /** Point lookup of one symbol — opens the env per call (mmap, ~µs), never loads
+    * the index into memory. Throws when the env is corrupt/missing (caller decides
+    * how to recover — IndexedSymbolTable wipes and reindexes). */
+  def get(path: os.Path, symbol: String): Option[SymbolDefinition] = {
     val env = Env.create()
-      .setMapSize(100L * 1024 * 1024)
+      .setMapSize(MapSize)
       .setMaxDbs(1)
       .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
 
     try {
       val db = env.openDbi("symbols")
       val txn = env.txnRead()
-      val cursor = db.iterate(txn)
-
-      import scala.jdk.CollectionConverters.*
-      cursor.iterator().asScala.foreach { entry =>
-        val bytes = entry.`val`()
-        val arr = new Array[Byte](bytes.remaining())
-        bytes.get(arr)
-        val d = deserialize(arr)
-        table.add(d)
-      }
-
-      cursor.close()
-      txn.close()
+      try {
+        val keyBytes = symbol.getBytes("UTF-8")
+        val keyBuf = ByteBuffer.allocateDirect(keyBytes.length)
+        keyBuf.put(keyBytes).flip()
+        val valBuf = db.get(txn, keyBuf)
+        if (valBuf == null) None
+        else {
+          val arr = new Array[Byte](valBuf.remaining())
+          valBuf.get(arr)
+          Some(deserialize(arr, symbol, path))
+        }
+      } finally txn.close()
     } finally {
       env.close()
     }
-
-    table
   }
 
-  private def serialize(d: SymbolDefinition): Array[Byte] = {
+  /** Value payload: isType, range, path. The symbol is the key, shortName is derived. */
+  private def serialize(d: SymbolDefinition, cacheDir: os.Path): Array[Byte] = {
     val bos = new ByteArrayOutputStream()
     val dos = new DataOutputStream(bos)
 
-    dos.writeUTF(d.symbol)
-    dos.writeUTF(d.shortName)
     dos.writeBoolean(d.isType)
     dos.writeInt(d.range.startLine)
     dos.writeInt(d.range.startCharacter)
     dos.writeInt(d.range.endLine)
     dos.writeInt(d.range.endCharacter)
-    dos.writeUTF(d.path.toString)
+    // strict: dep defs always live under <cacheDir>/src/ — fail fast on anything else
+    dos.writeUTF(d.path.relativeTo(cacheDir / "src").toString)
 
     dos.flush()
     bos.toByteArray
   }
 
-  private def deserialize(bytes: Array[Byte]): SymbolDefinition = {
+  private def deserialize(bytes: Array[Byte], symbol: String, indexDir: os.Path): SymbolDefinition = {
     val bis = new ByteArrayInputStream(bytes)
     val dis = new DataInputStream(bis)
 
-    val symbol = dis.readUTF()
-    val shortName = dis.readUTF()
     val isType = dis.readBoolean()
     val range = Range(
       startLine = dis.readInt(),
@@ -95,8 +126,19 @@ object LmdbSerializer {
       endLine = dis.readInt(),
       endCharacter = dis.readInt()
     )
-    val path = os.Path(dis.readUTF())
+    // (RelPath: the stored string is multi-segment, e.g. "java/lang/Object.java")
+    val path = indexDir / os.up / "src" / os.RelPath(dis.readUTF())
 
-    SymbolDefinition(symbol, shortName, isType, range, path)
+    SymbolDefinition(symbol, shortNameOf(symbol), isType, range, path)
+  }
+
+  /** Derive the short name from the symbol: strip `(params`, trailing `#`/`.` and
+    * the owner prefix. E.g. `java/lang/Object#clone().` → `clone`, `java/lang/Object#`
+    * → `Object`. */
+  private def shortNameOf(symbol: String): String = {
+    val base = symbol.takeWhile(_ != '(').stripSuffix("#").stripSuffix(".")
+    val afterHash = base.substring(base.lastIndexOf('#') + 1)
+    val idx = afterHash.lastIndexOf('/')
+    if (idx >= 0) afterHash.substring(idx + 1) else afterHash
   }
 }

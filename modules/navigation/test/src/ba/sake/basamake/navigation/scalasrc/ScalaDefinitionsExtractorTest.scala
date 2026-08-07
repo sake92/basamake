@@ -1,12 +1,12 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition}
 
 class ScalaDefinitionsExtractorTest extends FunSuite {
 
   private def extract(fileName: String, code: String): Set[SymbolDefinition] = {
-    val table = new SymbolTable
+    val table = new InMemorySymbolTable
     val extractor = new ScalaDefinitionsExtractor(table)
     extractor.extractFromContent(fileName, code, os.pwd / fileName)
     table.all

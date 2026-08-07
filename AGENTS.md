@@ -55,14 +55,14 @@ object WorkspaceIndex {
 
 ## Smoke Test
 
-```bash
-cd examples/hello
-deder clean        # clear cache so Deder actually recompiles
-python3 smoke_test.py
-```
+The python smoke scripts (`examples/hello/smoke_test.py`, `bsp_smoke_test.py`,
+root `test_sbt_gotodef.py`) were deleted. Their coverage now lives in Scala tests:
 
-Checks LSP flow: initialize → didOpen → capability verification.
-**Note:** smoke_test.py still expects diagnostics from old BSP compile flow — needs rewrite to test navigation features (definition/references).
+- `LspTransportTest` (modules/main-test) — drives the real `BasamakeLanguageServer`
+  through the JSON-RPC transport (initialize → didOpen → definition → shutdown)
+  against a fixture copied to `<repo>/tmp/`
+- `BasamakeLanguageServerTest` — LSP handler behavior (rename, watched files, stale semanticdb)
+- `WorkspaceIndexTest` — navigation with real semanticdb generated at test time (scala-cli compile of a tmp fixture copy)
 
 ## stdout Is Sacred
 
@@ -114,6 +114,46 @@ Core index in `modules/main`. On `initialize()`:
 On open buffer change (`onDidChange`):
 - Re-extracts occurrences for the changed file
 - Prefers SemanticDB when text matches disk, falls back to source parse
+
+### Dependency/JDK index cache (`~/.cache/basamake/deps`)
+
+`IndexedSymbolTable` (via `SourceJarIndexer`) caches dependency sources + the JDK
+`src.zip` under the XDG-compliant cache root (`~/.cache/basamake/deps` on
+Linux/mac — `$XDG_CACHE_HOME` honored; `%LOCALAPPDATA%\basamake\deps` on
+Windows). One directory per source, nested by maven groupId:
+`com_lihaoyi/upickle_3_4.0.0_<hash>/`; jars without a POM stay flat
+(`antlr4-runtime_4.7.2_<hash>/`, `jdk-21.0.10_<hash>/`):
+
+- **Index eagerly, unpack lazily.** `ensureIndexed`/`ensureJdkIndexed` (called from
+  `initialize()` and every BSP `dependencySources` handshake) build the LMDB symbol
+  index in the background, but source files are NOT written to disk. Individual
+  files are extracted on first lookup hit (`IndexedSymbolTable.get` →
+  `ensureEntryExtracted` → `SourceJarIndexer.extractEntry`), so the LSP Location
+  always points at a real file while untouched deps stay lean (one click into the
+  JDK unpacks only that one file, not all 15k).
+- **Lookups are live LMDB point queries** (`LmdbSerializer.get`: open env per call,
+  `db.get` B-tree lookup, deserialize one entry) — nothing is ever loaded into
+  memory. The RAM saving is the whole point of LMDB here. `byPath`/`all`/`keys`
+  are intentionally empty on `IndexedSymbolTable`: dep/JDK references only matter
+  for user code (workspace in-memory table), dep symbols are resolved by symbol
+  only, and the index is immutable so empty results never go stale.
+- Each `index.lmdb/` dir holds `data.mdb` + `lock.mdb` (LMDB-managed). `MapSize` is
+  1GB — the JDK index is ~570k symbols and exceeds 100MB.
+- LMDB value format v1 (guarded by `CacheMetadata.FormatVersion`, no backward
+  compat — mismatch reindexes): the symbol is the key only (not duplicated in the
+  value), shortName is derived from the symbol at read (not stored), and paths are
+  stored src-relative (`java.base/java/lang/Object.java`). JDK index ~120MB, down
+  from ~230MB.
+- Cache dir fingerprints embed the maven groupId from the sibling POM in the
+  coursier cache as a directory (`com_fasterxml_jackson_core/jackson-core_2.12.1_<hash>`
+  — JDK DOM parser, direct `<project>` child only); filename-derived flat names
+  (`antlr4-runtime_4.7.2_...`) when no POM exists (e.g. scala-lang jars).
+- `SourceJarIndexer.cacheRoot` is a `@volatile var` — tests override it to
+  `./tmp/deps-cache-*` (trait `TestCacheRoot`); never write into the real home cache.
+- **Known limitation:** scalameta's Scala 3 dialect cannot parse a few scala-library/
+  scala3-compiler sources (`scala/util/Try.scala`, `scala/collection/Map.scala`,
+  `scala/caps/package.scala`, `dotty/tools/dotc/ast/Desugar.scala`) — those files'
+  definitions are skipped from the dep index.
 
 ### Project root resolution
 
@@ -185,7 +225,21 @@ Two test modules:
 - `SymbolUtilsTest` — SemanticDB symbol encoding
 - `SymbolTableTest` — SymbolTable concurrency
 
-Tests use fixture source files under `test/resources/examples/`. No real build tool needed.
+Tests use fixture source files under `test/resources/examples/`. No real build tool needed —
+except the sbt-fixture semanticdb tests, which compile a tmp fixture copy with scala-cli
+(`SemanticdbFixture`).
+
+## Test Hygiene
+
+- No hardcoded absolute home paths (`/home/<user>`) in tests, scripts, or source — use
+  `System.getProperty("java.home")`, `os.home`, or paths relative to `os.pwd`.
+- Fixtures live under `test/resources/` (including committed binary data: the commons-net
+  sources jar). No `.semanticdb` files are committed — real semanticdb is generated at test
+  time: `SemanticdbFixture` compiles a tmp fixture copy with `scala-cli compile --server=false
+  --semanticdb` and indexes the output.
+- Tests never shell out to build tools and never write into fixture folders: they copy
+  fixtures to `<repo>/tmp/<test>-<timestamp>/` first; any build-tool shell-out
+  (scala-cli/sbt/deder) happens there.
 
 ## SemanticDB Reference
 
@@ -209,4 +263,4 @@ Spec summary + basamake consumer notes: **`agents/semanticdb.md`** — symbol fo
 | `modules/main/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, `spawnLock`, `spawning` flag, pending-compile queue |
 | `modules/main/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, queue-free, eventSink-based build client |
 | `modules/main/src/ba/sake/basamake/bsp/BspRouter.scala` | Two-phase URI routing (ground-truth + bootstrap heuristic) |
-| `examples/hello/` | Test project + smoke_test.py |
+| `examples/hello/` | Test project (manual testing via vscode extension; `.bsp` configs generated per machine via README flow) |

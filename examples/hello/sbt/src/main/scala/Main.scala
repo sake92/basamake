@@ -8,6 +8,7 @@ import upickle.default._
   println("Hello world!")
   println(msg)
   write(Seq(1, 2, 3))
+  new java.lang.Object()
  
 def msg = 
   sbtutils.getMsg()

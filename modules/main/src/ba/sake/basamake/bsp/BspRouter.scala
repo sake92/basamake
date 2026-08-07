@@ -30,7 +30,7 @@ class BspRouter extends StrictLogging {
   /** Register a .bsp root directory and its connection IDs.
     * Called when attaching a new connection (at LSP init or watcher detects new .bsp/). */
   def registerBspRoot(bspDir: Path, connIds: Set[BspConnectionId]): Unit = {
-    val canonical = bspDir.toRealPath()
+    val canonical = canonicalize(bspDir)
     bspRoots.updateAndGet { current =>
       current + (canonical -> (current.getOrElse(canonical, Set.empty) ++ connIds))
     }
@@ -39,7 +39,7 @@ class BspRouter extends StrictLogging {
 
   /** Remove a connection from a .bsp root. Deletes the root only when it no longer owns any connection IDs. */
   def unregisterBspRoot(bspDir: Path, connId: BspConnectionId): Unit = {
-    val canonical = bspDir.toRealPath()
+    val canonical = canonicalize(bspDir)
     bspRoots.updateAndGet { current =>
       current.get(canonical) match
         case Some(connIds) =>
@@ -51,6 +51,13 @@ class BspRouter extends StrictLogging {
     bootstrapCache.clear()
     logger.debug(s"Unregistered connection $connId from BSP root $canonical")
   }
+
+  /** Canonicalize a path for use as a map key. Falls back to the normalized
+    * absolute path when the directory no longer exists on disk (e.g. a .bsp/
+    * directory deleted between discovery and detach) — must never throw. */
+  private def canonicalize(p: Path): Path =
+    try p.toRealPath()
+    catch case _: java.io.IOException => p.toAbsolutePath.normalize()
 
   /** Register ground-truth source directories from a BSP handshake. */
   def registerGroundTruth(connId: BspConnectionId, sourceDirs: List[String]): Unit = {

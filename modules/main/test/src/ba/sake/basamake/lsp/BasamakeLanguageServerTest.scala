@@ -254,9 +254,8 @@ class BasamakeLanguageServerTest extends FunSuite {
     try {
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val original = os.read(mainFile)
-      // Edit source AFTER semanticdb was generated (mtime will be newer)
+      // Edit the source (index here is source-only — no semanticdb roots are passed)
       os.write.over(mainFile, "// edited after compile\n" + original)
-      Thread.sleep(10) // ensure mtime difference
 
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)

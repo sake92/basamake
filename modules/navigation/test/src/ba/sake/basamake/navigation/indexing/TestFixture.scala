@@ -27,3 +27,25 @@ object TestFixture {
   private def sanitize(name: String): String =
     name.replaceAll("[^a-zA-Z0-9_-]", "-").take(60)
 }
+
+/** Points `SourceJarIndexer.cacheRoot` at a fresh `./tmp/deps-cache-*` dir for the
+  * duration of the suite and removes it afterwards — tests must never write into
+  * the real `~/.basamake/deps` cache. */
+trait TestCacheRoot { self: munit.FunSuite =>
+
+  import scala.compiletime.uninitialized
+
+  private var originalCacheRoot: os.Path = uninitialized
+  private var testCacheRoot: os.Path = uninitialized
+
+  override def beforeAll(): Unit = {
+    originalCacheRoot = SourceJarIndexer.cacheRoot
+    testCacheRoot = os.pwd / "tmp" / s"deps-cache-${self.getClass.getSimpleName}-${System.currentTimeMillis()}"
+    SourceJarIndexer.cacheRoot = testCacheRoot
+  }
+
+  override def afterAll(): Unit = {
+    SourceJarIndexer.cacheRoot = originalCacheRoot
+    os.remove.all(testCacheRoot)
+  }
+}

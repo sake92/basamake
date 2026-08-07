@@ -5,6 +5,8 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import ch.epfl.scala.bsp4j.*
 import scala.jdk.CollectionConverters.*
 import munit.FunSuite
+import ba.sake.basamake.navigation.indexing.SemanticdbDirs
+import ba.sake.tupson.{given, *}
 
 /** Base mock BuildServer — returns completed empty futures for all methods.
   * Tests selectively override what they need. */
@@ -350,6 +352,146 @@ class BspConnectionTest extends FunSuite {
 
   test("BspConnectionSpec: default handshake timeout is 120s (matches BasamakeConfig docs)") {
     assertEquals(fakeSpec.handshakeTimeoutSec, 120L)
+  }
+
+  test("handshake → index catch-up: all targets with semanticdb dirs reach the index once") {
+    val root = os.temp.dir(prefix = "bsp-catchup")
+    val spec = BspConnectionSpec(
+      content = BspDiscoveryFile("fake", List("true")),
+      path = root / ".bsp/fake.json",
+      compileTimeoutSec = 2,
+      workspaceRoot = root
+    )
+    val tid1 = new BuildTargetIdentifier("//m1")
+    val tid2 = new BuildTargetIdentifier("//m2")
+    val captured = new java.util.concurrent.CopyOnWriteArrayList[List[SemanticdbDirs]]()
+    val sink = new BspEventSink with BspAfterCompileSink {
+      def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+      def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+      def onAfterCompile(roots: List[SemanticdbDirs]): Unit = captured.add(roots)
+    }
+    val opts = new ScalacOptionsResult(java.util.List.of(
+      new ScalacOptionsItem(tid1, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out1").asJava,
+        java.util.Collections.emptyList(), "file:///class/dir1"),
+      new ScalacOptionsItem(tid2, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out2").asJava,
+        java.util.Collections.emptyList(), "file:///class/dir2")
+    ))
+    val conn = BspConnection.forTesting(
+      spec = spec,
+      spawn = () => {
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        HandshakeResult(proc, new MockBuildServer,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          new SourcesResult(java.util.Collections.emptyList()),
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          opts)
+      },
+      killTree = _ => (),
+      eventSink = sink
+    )
+
+    conn.ensureConnected()
+
+    assert(captured.size() >= 1, "index catch-up invalidate must fire right after handshake")
+    val allRoots = captured.asScala.flatMap(_.iterator).toSet
+    assertEquals(allRoots, Set(
+      SemanticdbDirs(os.Path("/flag/root"), os.Path("/sem/out1")),
+      SemanticdbDirs(os.Path("/flag/root"), os.Path("/sem/out2"))
+    ))
+    // data.json persisted at connect time (warm start for the next session)
+    val dataFiles = os.walk(root / ".basamake/bsp").filter(_.last == "data.json")
+    assert(dataFiles.nonEmpty, "target data must be persisted right after handshake")
+  }
+
+  test("extractTargetDependencySources converts URIs to paths") {
+    val tid1 = new BuildTargetIdentifier("//m1")
+    val tid2 = new BuildTargetIdentifier("//m2")
+    val result = new DependencySourcesResult(java.util.List.of(
+      new DependencySourcesItem(tid1, java.util.List.of(
+        "file:///home/user/.cache/coursier/foo/foo-1.0-sources.jar",
+        "jar:file:///home/user/.cache/coursier/bar/bar-2.0-sources.jar!/META-INF/anything"
+      )),
+      new DependencySourcesItem(tid2, java.util.List.of(
+        "https://example.com/not-a-file",
+        "garbage"
+      ))
+    ))
+
+    val map = BspConnection.extractTargetDependencySources(result)
+    assertEquals(map(tid1), List(
+      os.Path("/home/user/.cache/coursier/foo/foo-1.0-sources.jar"),
+      os.Path("/home/user/.cache/coursier/bar/bar-2.0-sources.jar")
+    ))
+    assertEquals(map(tid2), Nil, "non-file URIs must be skipped")
+  }
+
+  test("dependency sources: data.json persistence + onDependencySources after handshake") {
+    val root = os.temp.dir(prefix = "bsp-dep-src-test-")
+    try {
+      val spec = BspConnectionSpec(
+        content = BspDiscoveryFile("fake", List("true")),
+        path = root / ".bsp/fake.json",
+        compileTimeoutSec = 2,
+        workspaceRoot = root
+      )
+      val tid1 = new BuildTargetIdentifier("//m1")
+      val tid2 = new BuildTargetIdentifier("//m2")
+      val capturedRoots = new java.util.concurrent.CopyOnWriteArrayList[List[SemanticdbDirs]]()
+      val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[List[os.Path]]()
+      val sink = new BspEventSink with BspAfterCompileSink with BspDependencySourcesSink {
+        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+        def onAfterCompile(roots: List[SemanticdbDirs]): Unit = capturedRoots.add(roots)
+        def onDependencySources(paths: List[os.Path]): Unit = capturedDeps.add(paths)
+      }
+      val opts = new ScalacOptionsResult(java.util.List.of(
+        new ScalacOptionsItem(tid1, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out1").asJava,
+          java.util.Collections.emptyList(), "file:///class/dir1"),
+        new ScalacOptionsItem(tid2, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out2").asJava,
+          java.util.Collections.emptyList(), "file:///class/dir2")
+      ))
+      val depSources = new DependencySourcesResult(java.util.List.of(
+        new DependencySourcesItem(tid1, java.util.List.of(
+          "file:///cache/lib1-1.0-sources.jar", "file:///cache/lib2-2.0-sources.jar")),
+        new DependencySourcesItem(tid2, java.util.List.of(
+          "file:///cache/lib2-2.0-sources.jar"))
+      ))
+      val conn = BspConnection.forTesting(
+        spec = spec,
+        spawn = () => {
+          val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+          HandshakeResult(proc, new MockBuildServer,
+            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+            new SourcesResult(java.util.Collections.emptyList()),
+            depSources,
+            opts)
+        },
+        killTree = _ => (),
+        eventSink = sink
+      )
+
+      conn.ensureConnected()
+
+      assert(capturedRoots.size() >= 1, "index catch-up invalidate must fire right after handshake")
+      val allRoots = capturedRoots.asScala.flatMap(_.iterator).toSet
+      assertEquals(allRoots, Set(
+        SemanticdbDirs(os.Path("/flag/root"), os.Path("/sem/out1")),
+        SemanticdbDirs(os.Path("/flag/root"), os.Path("/sem/out2"))
+      ))
+      // onDependencySources must fire once with deduped paths
+      assert(capturedDeps.size() >= 1, "onDependencySources must fire right after handshake")
+      val allDeps = capturedDeps.asScala.flatten.toSet
+      assertEquals(allDeps, Set(
+        os.Path("/cache/lib1-1.0-sources.jar"),
+        os.Path("/cache/lib2-2.0-sources.jar")
+      ))
+      // data.json persisted at connect time (warm start for the next session)
+      val dataFiles = os.walk(root / ".basamake/bsp").filter(_.last == "data.json")
+      assert(dataFiles.nonEmpty, "target data must be persisted right after handshake")
+      val data = os.read(dataFiles.head).parseJson[BspTargetData]
+      val tid1Info = data.targets.find(_.id == "//m1").get
+      assertEquals(tid1Info.dependencySources, List("/cache/lib1-1.0-sources.jar", "/cache/lib2-2.0-sources.jar"))
+    } finally os.remove.all(root)
   }
 }
 
