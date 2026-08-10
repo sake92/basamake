@@ -95,12 +95,20 @@ object LmdbSerializer {
     os.remove.all(tmpPath)
     os.makeDir.all(tmpPath)
     try {
+      // MDB_WRITEMAP: dirty pages are written straight into the mmap (OS page
+      // cache) instead of malloc'd copies held for the whole txn — for the JDK
+      // index (~120MB, 570k symbols, one giant txn) that removes ~120MB of
+      // native buffering during the save. MDB_NOSYNC: skip the per-commit fsync
+      // of the whole file. Both are safe here — durability is provided by the
+      // tmp dir + rename publish below; a crash mid-write leaves only a stale
+      // tmp dir that the finally block wipes (and metadata.json is only written
+      // after the rename, so the cache stays invalid and gets reindexed).
       val env =
         try {
           Env.create()
             .setMapSize(MapSize)
             .setMaxDbs(1)
-            .open(tmpPath.toIO)
+            .open(tmpPath.toIO, EnvFlags.MDB_WRITEMAP, EnvFlags.MDB_NOSYNC)
         } catch {
           case e: Exception =>
             throw new LmdbException(s"Failed to open LMDB env for writing at $tmpPath", e)

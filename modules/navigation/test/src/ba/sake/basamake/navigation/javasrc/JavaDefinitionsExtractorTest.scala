@@ -220,4 +220,51 @@ record R(int x, int y) {
       sym("a/R#y()."),
     ))
   }
+
+  // ── J.18 parser reuse: many files through ONE extractor ────
+  test("J.18 parser reuse: sequential parses through one extractor stay isolated") {
+    // SourceJarIndexer parses ~29k .java files with ONE extractor (one reused
+    // JavaParser instance). This guards against state leaking between parses
+    // (problems list, comments collection, astParser reset) when the instance
+    // is reused instead of `new JavaParser()` per file.
+    val table = new InMemorySymbolTable
+    val extractor = new JavaDefinitionsExtractor(table)
+
+    val cases = List(
+      ("A.java", "package a; class A { void m() {} }",
+        Set(
+          sym("a/A#", isType = true),
+          sym("a/A#`<init>`()."),
+          sym("a/A#m()."),
+        )),
+      ("B.java", "package b; enum E { X, Y }",
+        Set(
+          sym("b/E#", isType = true),
+          sym("b/E#X."),
+          sym("b/E#Y."),
+        )),
+      ("C.java", "package c; record R(int v) {}",
+        Set(
+          sym("c/R#", isType = true),
+          sym("c/R#`<init>`()."),
+          sym("c/R#`<init>`().(v)"),
+          sym("c/R#v()."),
+        )),
+      ("D.java", "package a; class D { void n() {} }",
+        Set(
+          sym("a/D#", isType = true),
+          sym("a/D#`<init>`()."),
+          sym("a/D#n()."),
+        )),
+    )
+
+    // each parse must produce EXACTLY its own symbols — nothing left over from
+    // a previous parse, nothing lost to a broken parser reset
+    cases.foreach { case (fileName, code, expected) =>
+      val before = table.all
+      extractor.extractFromContent(fileName, code, os.pwd / fileName)
+      val added = table.all.diff(before).map(d => (d.symbol, d.isType))
+      assertEquals(added, expected, s"symbols added by $fileName (parser reuse leak?)")
+    }
+  }
 }

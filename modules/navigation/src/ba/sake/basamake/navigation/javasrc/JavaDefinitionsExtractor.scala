@@ -19,6 +19,16 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 
   private var currentPath: os.Path = uninitialized
 
+  // ONE parser instance per extractor, reused across all files — javaparser's
+  // `JavaParser` is explicitly designed for reuse ("Creating an instance will
+  // reduce setup time between parsing files"): each parse() resets its internal
+  // GeneratedJavaParser via getParserForProvider. Safe because an extractor is
+  // single-threaded at every call site (SourceJarIndexer: one extractor per jar,
+  // one virtual thread; WorkspaceIndex: a fresh extractor per file). The JDK
+  // src.zip alone is ~29k .java files — one new JavaParser per file was pure
+  // setup churn. NOT thread-safe: never share an extractor across threads.
+  private val javaParser = new JavaParser()
+
   def extract(name: String, is: InputStream, path: os.Path): Unit =
     try {
       val content = new String(is.readAllBytes(), "UTF-8")
@@ -36,7 +46,7 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
   }
 
   private def parse(content: String): Option[CompilationUnit] = {
-    val res: ParseResult[CompilationUnit] = new JavaParser().parse(content)
+    val res: ParseResult[CompilationUnit] = javaParser.parse(content)
     if (res.getResult.isPresent) Some(res.getResult.get()) else None
   }
 
