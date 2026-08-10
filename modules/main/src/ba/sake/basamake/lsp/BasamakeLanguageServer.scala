@@ -8,7 +8,7 @@ import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
-import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable, CompositeSymbolTable}
+import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable, CompositeSymbolTable, HoverProvider}
 import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.basamake.config.BasamakeConfig
@@ -27,6 +27,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     BasamakeConfig.load(workspacePath).ignorePatterns.toVector
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
+  private val hoverProvider = HoverProvider(workspaceIndex)
 
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
@@ -42,6 +43,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setDocumentSymbolProvider(true)
+    capabilities.setHoverProvider(true)
     // Advertise rename handling so VS Code sends didRenameFiles notifications.
     // MUST declare filters: vscode-languageclient only registers its
     // workspace/didRenameFiles listener when filters are present
@@ -220,6 +222,31 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val locs = workspaceIndex.references(path, line, char, includeDecl, depCandidates).map(toLspLocation).asJava
       logger.debug(s"references at $line:$char (includeDecl=$includeDecl) → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
       locs
+    }
+
+  override def hover(params: HoverParams): CompletableFuture[Hover] =
+    CompletableFuture.supplyAsync { () =>
+      val uri = params.getTextDocument.getUri
+      logger.debug(s"hover: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
+      Thread.ofVirtual().start(() => {
+        bspManager.ensureDepsIndexedFor(uri)
+        bspManager.poke(uri, compile = false)
+      })
+      val path = os.Path(URI.create(uri))
+      val line = params.getPosition.getLine
+      val char = params.getPosition.getCharacter
+      val depCandidates = bspManager.dependencySourcesFor(uri)
+      hoverProvider.hover(path, line, char, depCandidates) match {
+        case Some(info) =>
+          logger.debug(s"hover at $line:$char → ${info.signature}")
+          val md = new MarkupContent()
+          md.setKind("markdown")
+          md.setValue(info.markdown)
+          new Hover(md)
+        case None =>
+          logger.debug(s"hover at $line:$char → no info")
+          null
+      }
     }
 
   // documentSymbol returns empty for v1 — descriptor → SymbolKind map is deferred follow-up

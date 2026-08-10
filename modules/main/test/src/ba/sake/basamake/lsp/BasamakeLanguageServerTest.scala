@@ -246,6 +246,55 @@ class BasamakeLanguageServerTest extends FunSuite {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // hover via LSP handler
+  // ═══════════════════════════════════════════════════════════════
+
+  test("LSP hover: over getMsg call returns signature + doc + location") {
+    val root = copyFixture("hover", "lsp-hover")
+    try {
+      os.remove.all(root / "target") // force source-only
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val mainText = os.read(mainFile)
+      server.didOpen(new DidOpenTextDocumentParams(
+        new TextDocumentItem(mainFile.toNIO.toUri.toString, "scala", 1, mainText)))
+
+      val (l, c) = posAt(mainText, """utils\.(?<p>getMsg)\(\)""")
+      val params = new HoverParams(new TextDocumentIdentifier(mainFile.toNIO.toUri.toString), new Position(l, c))
+      val hover = server.hover(params).get(10, TimeUnit.SECONDS)
+
+      assert(hover != null, "expected hover for getMsg")
+      val md = hover.getContents.getRight.getValue
+      assert(md.contains("**def getMsg(): String**"), s"hover missing signature: $md")
+      assert(md.contains("Returns a greeting message."), s"hover missing doc: $md")
+      assert(md.contains("utils.scala:3"), s"hover missing location footer: $md")
+    } finally os.remove.all(root)
+  }
+
+  test("LSP hover: over unresolved position returns null") {
+    val root = copyFixture("hover", "lsp-hover-none")
+    try {
+      os.remove.all(root / "target")
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val mainText = os.read(mainFile)
+      server.didOpen(new DidOpenTextDocumentParams(
+        new TextDocumentItem(mainFile.toNIO.toUri.toString, "scala", 1, mainText)))
+
+      // blank line — nothing under the cursor
+      val params = new HoverParams(new TextDocumentIdentifier(mainFile.toNIO.toUri.toString), new Position(2, 0))
+      val hover = server.hover(params).get(10, TimeUnit.SECONDS)
+      assertEquals(hover, null)
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // Stale semanticdb: source edited after compile, goto still works
   // ═══════════════════════════════════════════════════════════════
 

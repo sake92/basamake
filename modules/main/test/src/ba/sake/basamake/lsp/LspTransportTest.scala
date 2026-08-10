@@ -80,6 +80,7 @@ class LspTransportTest extends FunSuite {
         assertEquals(caps.getTextDocumentSync.getLeft, TextDocumentSyncKind.Full)
         assertEquals(caps.getDefinitionProvider.getLeft.booleanValue(), true)
         assertEquals(caps.getReferencesProvider.getLeft.booleanValue(), true)
+        assertEquals(caps.getHoverProvider.getLeft.booleanValue(), true)
         val didRename = caps.getWorkspace.getFileOperations.getDidRename
         assert(didRename != null && !didRename.getFilters.isEmpty, "didRename filters must be advertised")
         serverProxy.initialized(new InitializedParams())
