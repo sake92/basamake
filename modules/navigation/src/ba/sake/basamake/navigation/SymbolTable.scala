@@ -77,6 +77,17 @@ class CompositeSymbolTable(
   override def get(symbol: String): Option[SymbolDefinition] =
     workspaceSymbolTable.get(symbol).orElse(depsSymbolTable.get(symbol))
 
+  /** Dep lookup scoped to candidate jars (the current file's BSP target dependency
+    * sources). Falls back to the plain lookup when the dep table has no
+    * candidate-scoped API (e.g. a plain in-memory table in tests). */
+  def getWithCandidates(symbol: String, candidates: List[os.Path]): Option[SymbolDefinition] =
+    workspaceSymbolTable.get(symbol).orElse {
+      depsSymbolTable match {
+        case i: ba.sake.basamake.navigation.indexing.IndexedSymbolTable => i.get(symbol, candidates)
+        case d => d.get(symbol)
+      }
+    }
+
   override def byPath(path: os.Path): Set[SymbolDefinition] =
     workspaceSymbolTable.byPath(path) ++ depsSymbolTable.byPath(path)
 

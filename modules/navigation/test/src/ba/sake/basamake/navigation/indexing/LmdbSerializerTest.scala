@@ -73,4 +73,36 @@ class LmdbSerializerTest extends FunSuite {
 
     assert(LmdbSerializer.get(indexDir, "foo.Bar.`<init>`().").isDefined)
   }
+
+  test("streamingSave writes definitions straight into LMDB + collects count/packages") {
+    val indexDir = os.temp.dir() / "stream.lmdb"
+    val cacheDir = indexDir / os.up
+    val srcDir = cacheDir / "src"
+
+    val sink = LmdbSerializer.streamingSave(indexDir, cacheDir) { s =>
+      s.add(SymbolDefinition("foo/Bar#", "Bar", true, Range(0, 0, 0, 10), srcDir / "Bar.java"))
+      s.add(SymbolDefinition("foo/Bar.baz().", "baz", false, Range(1, 2, 1, 5), srcDir / "Bar.java"))
+      // local symbols are skipped, mirroring InMemorySymbolTable.add
+      s.add(SymbolDefinition("local0", "x", false, Range(0, 0, 0, 1), srcDir / "Bar.java"))
+      s.add(SymbolDefinition("java/lang/Object#", "Object", true, Range(0, 0, 0, 5), srcDir / "Object.java"))
+    }
+
+    assertEquals(sink.count, 3, "local symbols must be skipped by the sink")
+    assertEquals(sink.packages, Set("foo", "java.lang"))
+    assertEquals(LmdbSerializer.get(indexDir, "foo/Bar#").map(_.path), Some(srcDir / "Bar.java"))
+    assert(LmdbSerializer.get(indexDir, "foo/Bar.baz().").isDefined)
+    assert(LmdbSerializer.get(indexDir, "java/lang/Object#").isDefined)
+    assert(LmdbSerializer.get(indexDir, "local0").isEmpty, "local symbols never hit the index")
+  }
+
+  test("streamingSave with empty fill writes a valid empty index") {
+    val indexDir = os.temp.dir() / "stream-empty.lmdb"
+    val cacheDir = indexDir / os.up
+
+    val sink = LmdbSerializer.streamingSave(indexDir, cacheDir)(_ => ())
+
+    assertEquals(sink.count, 0)
+    assertEquals(sink.packages, Set.empty[String])
+    assertEquals(LmdbSerializer.get(indexDir, "anything"), None)
+  }
 }

@@ -437,12 +437,12 @@ class BspConnectionTest extends FunSuite {
       val tid1 = new BuildTargetIdentifier("//m1")
       val tid2 = new BuildTargetIdentifier("//m2")
       val capturedRoots = new java.util.concurrent.CopyOnWriteArrayList[List[SemanticdbDirs]]()
-      val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[List[os.Path]]()
+      val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
       val sink = new BspEventSink with BspAfterCompileSink with BspDependencySourcesSink {
         def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
         def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
         def onAfterCompile(roots: List[SemanticdbDirs]): Unit = capturedRoots.add(roots)
-        def onDependencySources(paths: List[os.Path]): Unit = capturedDeps.add(paths)
+        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
       }
       val opts = new ScalacOptionsResult(java.util.List.of(
         new ScalacOptionsItem(tid1, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out1").asJava,
@@ -478,19 +478,205 @@ class BspConnectionTest extends FunSuite {
         SemanticdbDirs(os.Path("/flag/root"), os.Path("/sem/out1")),
         SemanticdbDirs(os.Path("/flag/root"), os.Path("/sem/out2"))
       ))
-      // onDependencySources must fire once with deduped paths
+      // onDependencySources must fire once with per-target paths (not flattened)
       assert(capturedDeps.size() >= 1, "onDependencySources must fire right after handshake")
-      val allDeps = capturedDeps.asScala.flatten.toSet
+      val allDeps = capturedDeps.asScala.flatMap(_.values).flatten.toSet
       assertEquals(allDeps, Set(
         os.Path("/cache/lib1-1.0-sources.jar"),
         os.Path("/cache/lib2-2.0-sources.jar")
       ))
+      assertEquals(capturedDeps.asScala.head(tid1), List(
+        os.Path("/cache/lib1-1.0-sources.jar"),
+        os.Path("/cache/lib2-2.0-sources.jar")
+      ), "sink must receive the per-target map")
       // data.json persisted at connect time (warm start for the next session)
       val dataFiles = os.walk(root / ".basamake/bsp").filter(_.last == "data.json")
       assert(dataFiles.nonEmpty, "target data must be persisted right after handshake")
       val data = os.read(dataFiles.head).parseJson[BspTargetData]
       val tid1Info = data.targets.find(_.id == "//m1").get
       assertEquals(tid1Info.dependencySources, List("/cache/lib1-1.0-sources.jar", "/cache/lib2-2.0-sources.jar"))
+    } finally os.remove.all(root)
+  }
+
+  test("mergeDeps: empty fresh never replaces non-empty old, non-empty fresh wins") {
+    val tid = new BuildTargetIdentifier("//m")
+    val tid2 = new BuildTargetIdentifier("//m2")
+    val oldDeps = Map(tid -> List(os.Path("/cache/lib1.jar")))
+
+    assertEquals(BspConnection.mergeDeps(oldDeps, Map(tid -> Nil)), oldDeps, "empty fresh must keep old")
+    assertEquals(BspConnection.mergeDeps(oldDeps, Map.empty), oldDeps, "absent fresh must keep old")
+    assertEquals(BspConnection.mergeDeps(oldDeps, Map(tid2 -> Nil)), oldDeps, "empty fresh for a new target must not appear")
+    val fresh = List(os.Path("/cache/lib2.jar"))
+    assertEquals(BspConnection.mergeDeps(oldDeps, Map(tid -> fresh)), Map(tid -> fresh), "non-empty fresh wins")
+  }
+
+  test("changedTargetIds excludes DELETED events") {
+    val t1 = new BuildTargetIdentifier("//a")
+    val t2 = new BuildTargetIdentifier("//b")
+    val t3 = new BuildTargetIdentifier("//c")
+    def event(tid: BuildTargetIdentifier, kind: BuildTargetEventKind): BuildTargetEvent = {
+      val e = new BuildTargetEvent(tid)
+      e.setKind(kind)
+      e
+    }
+    val params = new DidChangeBuildTarget(java.util.List.of(
+      event(t1, BuildTargetEventKind.CHANGED),
+      event(t2, BuildTargetEventKind.CREATED),
+      event(t3, BuildTargetEventKind.DELETED)
+    ))
+    assertEquals(BspConnection.changedTargetIds(params), List(t1, t2))
+    assertEquals(BspConnection.changedTargetIds(new DidChangeBuildTarget(java.util.Collections.emptyList())), Nil)
+  }
+
+  test("handshake with empty dependencySources keeps persisted deps (never-accept-empty)") {
+    val root = os.temp.dir(prefix = "bsp-merge-test-")
+    try {
+      val spec = BspConnectionSpec(
+        content = BspDiscoveryFile("fake", List("true")),
+        path = root / ".bsp/fake.json",
+        compileTimeoutSec = 2,
+        workspaceRoot = root
+      )
+      val tid = new BuildTargetIdentifier("//m1")
+      // pre-write data.json with deps (as a previous session would have)
+      val dataDir = root / ".basamake/bsp" / BspConnectionSpec.dirName(spec)
+      os.makeDir.all(dataDir)
+      val persisted = BspTargetData(
+        bspFile = ".bsp/fake.json",
+        targets = List(BspTargetInfo(
+          id = tid.getUri, sourceRootDir = root, semanticdbDir = root / "sem",
+          dependencySources = List("/cache/lib1-1.0-sources.jar")
+        ))
+      )
+      os.write.over(dataDir / "data.json", ba.sake.tupson.toJson(persisted))
+
+      val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
+      val sink = new BspEventSink with BspDependencySourcesSink {
+        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      }
+      val conn = BspConnection.forTesting(
+        spec = spec,
+        spawn = () => {
+          val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+          HandshakeResult(proc, new MockBuildServer,
+            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+            new SourcesResult(java.util.Collections.emptyList()),
+            new DependencySourcesResult(java.util.Collections.emptyList()), // server returns EMPTY deps
+            new ScalacOptionsResult(java.util.Collections.emptyList()))
+        },
+        killTree = _ => (),
+        eventSink = sink
+      )
+
+      conn.ensureConnected()
+
+      assert(capturedDeps.size() >= 1, "sink must fire at handshake with the merged map")
+      val merged = capturedDeps.asScala.head
+      assertEquals(merged(tid), List(os.Path("/cache/lib1-1.0-sources.jar")),
+        "persisted deps must survive an empty handshake result")
+    } finally os.remove.all(root)
+  }
+
+  test("refreshDependencySources: non-empty result updates map, re-fires sink, persists data.json") {
+    val root = os.temp.dir(prefix = "bsp-refresh-test-")
+    try {
+      val spec = BspConnectionSpec(
+        content = BspDiscoveryFile("fake", List("true")),
+        path = root / ".bsp/fake.json",
+        compileTimeoutSec = 2,
+        workspaceRoot = root
+      )
+      val tid = new BuildTargetIdentifier("//m1")
+      val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
+      val sink = new BspEventSink with BspDependencySourcesSink {
+        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      }
+      // handshake result is pre-built (empty deps); the mock server is only
+      // consulted by refreshDependencySources — returns POPULATED deps there
+      val server = new MockBuildServer {
+        override def buildTargetDependencySources(p: DependencySourcesParams): CompletableFuture[DependencySourcesResult] =
+          CompletableFuture.completedFuture(new DependencySourcesResult(java.util.List.of(
+            new DependencySourcesItem(tid, java.util.List.of("file:///cache/lib9-1.0-sources.jar")))))
+      }
+      val conn = BspConnection.forTesting(
+        spec = spec,
+        spawn = () => {
+          val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+          HandshakeResult(proc, server,
+            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+            new SourcesResult(java.util.Collections.emptyList()),
+            new DependencySourcesResult(java.util.Collections.emptyList()),
+            new ScalacOptionsResult(java.util.Collections.emptyList()))
+        },
+        killTree = _ => (),
+        eventSink = sink
+      )
+
+      conn.ensureConnected()
+      assertEquals(capturedDeps.size(), 0, "empty handshake result must NOT fire the sink")
+
+      conn.refreshDependencySources(List(tid))
+
+      assertEquals(capturedDeps.size(), 1, "refresh must re-fire the sink with the merged map")
+      assertEquals(capturedDeps.asScala.last(tid), List(os.Path("/cache/lib9-1.0-sources.jar")))
+      val dataFiles = os.walk(root / ".basamake/bsp").filter(_.last == "data.json")
+      assert(dataFiles.nonEmpty, "data.json must be persisted after refresh")
+      val data = os.read(dataFiles.head).parseJson[BspTargetData]
+      assertEquals(data.targets.find(_.id == "//m1").get.dependencySources, List("/cache/lib9-1.0-sources.jar"))
+    } finally os.remove.all(root)
+  }
+
+  test("refreshDependencySources with empty result keeps existing deps (no sink re-fire)") {
+    val root = os.temp.dir(prefix = "bsp-refresh-empty-test-")
+    try {
+      val spec = BspConnectionSpec(
+        content = BspDiscoveryFile("fake", List("true")),
+        path = root / ".bsp/fake.json",
+        compileTimeoutSec = 2,
+        workspaceRoot = root
+      )
+      val tid = new BuildTargetIdentifier("//m1")
+      val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
+      val sink = new BspEventSink with BspDependencySourcesSink {
+        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      }
+      // handshake result is pre-built with POPULATED deps; the mock server is only
+      // consulted by refreshDependencySources — returns EMPTY there
+      val server = new MockBuildServer {
+        override def buildTargetDependencySources(p: DependencySourcesParams): CompletableFuture[DependencySourcesResult] =
+          CompletableFuture.completedFuture(new DependencySourcesResult(java.util.Collections.emptyList()))
+      }
+      val conn = BspConnection.forTesting(
+        spec = spec,
+        spawn = () => {
+          val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+          HandshakeResult(proc, server,
+            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+            new SourcesResult(java.util.Collections.emptyList()),
+            new DependencySourcesResult(java.util.List.of(
+              new DependencySourcesItem(tid, java.util.List.of("file:///cache/lib5-1.0-sources.jar")))),
+            new ScalacOptionsResult(java.util.Collections.emptyList()))
+        },
+        killTree = _ => (),
+        eventSink = sink
+      )
+
+      conn.ensureConnected()
+      assertEquals(capturedDeps.size(), 1)
+      assertEquals(capturedDeps.asScala.last(tid), List(os.Path("/cache/lib5-1.0-sources.jar")))
+
+      // refresh returns EMPTY → nothing changes, no sink re-fire
+      conn.refreshDependencySources(List(tid))
+
+      assertEquals(capturedDeps.size(), 1, "empty refresh must not re-fire the sink")
+      assertEquals(capturedDeps.asScala.last(tid), List(os.Path("/cache/lib5-1.0-sources.jar")),
+        "known deps must survive an empty refresh")
     } finally os.remove.all(root)
   }
 }

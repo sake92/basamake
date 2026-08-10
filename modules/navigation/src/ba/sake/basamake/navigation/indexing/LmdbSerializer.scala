@@ -1,14 +1,17 @@
 package ba.sake.basamake.navigation.indexing
 
 import org.lmdbjava.*
-import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition}
+import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 import scala.meta.internal.semanticdb.Range
 import java.io.{ByteArrayOutputStream, ByteArrayInputStream, DataOutputStream, DataInputStream}
 import java.nio.ByteBuffer
 
-/** LMDB persistence for dependency indexes. `save` writes to a sibling `.tmp`
-  * directory first and renames into place — a crash mid-write can never corrupt
-  * an existing index (worst case: metadata is stale and we reindex).
+/** LMDB persistence for dependency indexes. Writes are STREAMED: definitions go
+  * straight into LMDB as they are extracted (`streamingSave` + [[SymbolSink]]) —
+  * the JDK index alone is 570k symbols, and materializing them in an in-memory
+  * table cost ~500MB of heap. Writes go to a sibling `.tmp` directory first and
+  * rename into place — a crash mid-write can never corrupt an existing index
+  * (worst case: metadata is stale and we reindex).
   *
   * Lazy point-queries only — `get` opens the env per call, does a B-tree lookup
   * for ONE symbol and closes. Nothing is ever loaded into memory; the RAM saving
@@ -28,9 +31,67 @@ object LmdbSerializer {
   // largest saved index, also for read-only opens.
   private val MapSize = 1L * 1024 * 1024 * 1024 // 1GB
 
-  def save(table: SymbolTable, path: os.Path): Unit = {
-    val tmpPath = path / os.up / (path.last + ".tmp")
-    val cacheDir = path / os.up
+  // lmdbjava requires DIRECT buffers for keys/values. Allocating a fresh one per
+  // symbol made a JDK index save allocate ~1.1M direct buffers (native memory
+  // churn + GC load). Writes reuse two growable buffers; `get` reuses a
+  // per-thread key buffer.
+  private val keyBufLocal = new ThreadLocal[ByteBuffer]()
+  private val InitialBufCapacity = 256
+
+  /** Reusable direct buffer that grows on demand (capacity only ever increases). */
+  private final class ReusableDirectBuffer {
+    private var capacity = InitialBufCapacity
+    private var buf = ByteBuffer.allocateDirect(capacity)
+    /** Fill with `bytes`, flipped for LMDB use. Grows (rarely) when needed. */
+    def fill(bytes: Array[Byte]): ByteBuffer = {
+      if (bytes.length > capacity) {
+        capacity = bytes.length
+        buf = ByteBuffer.allocateDirect(capacity)
+      }
+      buf.clear()
+      buf.put(bytes).flip()
+      buf
+    }
+  }
+
+  /** Write-only `SymbolTable` that puts each definition into LMDB immediately —
+    * extractors stream through it while parsing, no in-memory table is built.
+    * Mirrors `InMemorySymbolTable.add` semantics: local symbols are skipped.
+    * Exposes `count` + `packages` (for CacheMetadata) after the fill completes. */
+  final class SymbolSink private[LmdbSerializer] (
+      txn: Txn[ByteBuffer],
+      db: Dbi[ByteBuffer],
+      cacheDir: os.Path
+  ) extends SymbolTable {
+    private val keyBuf = new ReusableDirectBuffer
+    private val valBuf = new ReusableDirectBuffer
+    private val packagesSet = scala.collection.mutable.Set.empty[String]
+    private var counter = 0
+
+    override def add(symDef: SymbolDefinition): Unit = {
+      if (SymbolUtils.isLocalSymbol(symDef.symbol)) return
+      val keyBytes = symDef.symbol.getBytes("UTF-8")
+      val valueBytes = serialize(symDef, cacheDir)
+      db.put(txn, keyBuf.fill(keyBytes), valBuf.fill(valueBytes))
+      counter += 1
+      SymbolUtils.packageOf(symDef.symbol).foreach(packagesSet.add)
+    }
+
+    override def get(symbol: String): Option[SymbolDefinition] = None
+    override def byPath(path: os.Path): Set[SymbolDefinition] = Set.empty
+    override def removeByPath(path: os.Path): Unit = ()
+    override def keys: Set[String] = Set.empty
+    override def all: Set[SymbolDefinition] = Set.empty
+
+    def count: Int = counter
+    def packages: Set[String] = packagesSet.toSet
+  }
+
+  /** Stream `fill`'s definitions straight into LMDB under `indexPath` (atomic
+    * tmp + rename). Returns the sink so the caller can read `count`/`packages`
+    * for metadata. Never builds the full symbol set in memory. */
+  def streamingSave(indexPath: os.Path, cacheDir: os.Path)(fill: SymbolSink => Unit): SymbolSink = {
+    val tmpPath = indexPath / os.up / (indexPath.last + ".tmp")
     os.remove.all(tmpPath)
     os.makeDir.all(tmpPath)
     try {
@@ -39,21 +100,14 @@ object LmdbSerializer {
         .setMaxDbs(1)
         .open(tmpPath.toIO)
 
-      try {
+      val sink = try {
         val db = env.openDbi("symbols", DbiFlags.MDB_CREATE)
         val txn = env.txnWrite()
-
         try {
-          table.all.foreach { d =>
-            val keyBytes = d.symbol.getBytes("UTF-8")
-            val keyBuf = ByteBuffer.allocateDirect(keyBytes.length)
-            keyBuf.put(keyBytes).flip()
-            val valueBytes = serialize(d, cacheDir)
-            val valBuf = ByteBuffer.allocateDirect(valueBytes.length)
-            valBuf.put(valueBytes).flip()
-            db.put(txn, keyBuf, valBuf)
-          }
+          val s = new SymbolSink(txn, db, cacheDir)
+          fill(s)
           txn.commit()
+          s
         } finally txn.close() // aborts if the commit didn't happen
       } finally {
         env.close()
@@ -61,12 +115,19 @@ object LmdbSerializer {
 
       // rename into place: remove the old dir first (rename can't replace non-empty
       // dirs). Only reached on success — a failure keeps the old index untouched.
-      os.remove.all(path)
-      os.move(tmpPath, path)
+      os.remove.all(indexPath)
+      os.move(tmpPath, indexPath)
+      sink
     } finally {
       // on failure remove the partial write (no-op on success — dir was renamed away)
       os.remove.all(tmpPath)
     }
+  }
+
+  /** Convenience wrapper for callers that already hold a table (tests). */
+  def save(table: SymbolTable, path: os.Path): Unit = {
+    streamingSave(path, path / os.up) { sink => table.all.foreach(sink.add) }
+    ()
   }
 
   /** Point lookup of one symbol — opens the env per call (mmap, ~µs), never loads
@@ -83,8 +144,7 @@ object LmdbSerializer {
       val txn = env.txnRead()
       try {
         val keyBytes = symbol.getBytes("UTF-8")
-        val keyBuf = ByteBuffer.allocateDirect(keyBytes.length)
-        keyBuf.put(keyBytes).flip()
+        val keyBuf = keyBufferFor(keyBytes)
         val valBuf = db.get(txn, keyBuf)
         if (valBuf == null) None
         else {
@@ -96,6 +156,20 @@ object LmdbSerializer {
     } finally {
       env.close()
     }
+  }
+
+  /** Per-thread reusable key buffer (grows on demand). Safe: the value buffer
+    * returned by `db.get` aliases THIS buffer's memory, but callers copy the
+    * bytes out before the next get on the same thread. */
+  private def keyBufferFor(keyBytes: Array[Byte]): ByteBuffer = {
+    var buf = keyBufLocal.get()
+    if (buf == null || buf.capacity() < keyBytes.length) {
+      buf = ByteBuffer.allocateDirect(keyBytes.length)
+      keyBufLocal.set(buf)
+    }
+    buf.clear()
+    buf.put(keyBytes).flip()
+    buf
   }
 
   /** Value payload: isType, range, path. The symbol is the key, shortName is derived. */

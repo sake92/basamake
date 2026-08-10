@@ -1,6 +1,5 @@
 package ba.sake.basamake.navigation.indexing
 
-import ba.sake.basamake.navigation.InMemorySymbolTable
 import ba.sake.basamake.navigation.scalasrc.ScalaDefinitionsExtractor
 import ba.sake.basamake.navigation.javasrc.JavaDefinitionsExtractor
 import java.util.zip.ZipFile
@@ -34,8 +33,10 @@ object SourceJarIndexer extends StrictLogging {
   }
 
   /** Index `source` under `fingerprint`, writing `index.lmdb` + `metadata.json`.
-    * Returns nothing — lookups go through `LmdbSerializer.get` point queries,
-    * the in-memory build table is dropped after `save`. */
+    * Definitions are STREAMED into LMDB while the zip is parsed — no in-memory
+    * symbol table is ever built (the JDK index alone is 570k symbols; building a
+    * table for it cost ~500MB of heap). Lookups go through `LmdbSerializer.get`
+    * point queries. */
   def index(source: os.Path, fingerprint: String): Unit = {
     val cacheDir = cacheRoot / os.RelPath(fingerprint)
     val indexPath = cacheDir / "index.lmdb"
@@ -49,28 +50,29 @@ object SourceJarIndexer extends StrictLogging {
 
     logger.info(s"Indexing ${source.last} ($fingerprint) into $cacheDir")
     os.remove.all(cacheDir)
-    val table = new InMemorySymbolTable()
-    val scalaExtractor = new ScalaDefinitionsExtractor(table)
-    val javaExtractor = new JavaDefinitionsExtractor(table)
     val srcRoot = cacheDir / "src"
 
-    try {
+    val sink = try {
       val zip = new ZipFile(source.toIO)
       try {
-        zip.entries().asScala.foreach { entry =>
-          if (!entry.isDirectory && isSourceEntry(entry.getName)) {
-            try {
-              val entryPath = entry.getName
-              val content = new String(zip.getInputStream(entry).readAllBytes(), "UTF-8")
-              // the recorded def path is where the file WILL live once extracted
-              val extractedPath = srcRoot / os.RelPath(entryPath)
-              if (entryPath.endsWith(".java"))
-                javaExtractor.extractFromContent(entryPath, content, extractedPath)
-              else
-                scalaExtractor.extractFromContent(entryPath, content, extractedPath)
-            } catch {
-              case NonFatal(e) =>
-                logger.warn(s"Skipping unindexable entry ${entry.getName} in $source: ${e.getMessage}")
+        LmdbSerializer.streamingSave(indexPath, cacheDir) { sink =>
+          val scalaExtractor = new ScalaDefinitionsExtractor(sink)
+          val javaExtractor = new JavaDefinitionsExtractor(sink)
+          zip.entries().asScala.foreach { entry =>
+            if (!entry.isDirectory && isSourceEntry(entry.getName)) {
+              try {
+                val entryPath = entry.getName
+                val content = new String(zip.getInputStream(entry).readAllBytes(), "UTF-8")
+                // the recorded def path is where the file WILL live once extracted
+                val extractedPath = srcRoot / os.RelPath(entryPath)
+                if (entryPath.endsWith(".java"))
+                  javaExtractor.extractFromContent(entryPath, content, extractedPath)
+                else
+                  scalaExtractor.extractFromContent(entryPath, content, extractedPath)
+              } catch {
+                case NonFatal(e) =>
+                  logger.warn(s"Skipping unindexable entry ${entry.getName} in $source: ${e.getMessage}")
+              }
             }
           }
         }
@@ -82,15 +84,14 @@ object SourceJarIndexer extends StrictLogging {
         throw e
     }
 
-    LmdbSerializer.save(table, indexPath)
     CacheMetadata.save(cacheDir, CacheMetadata(
       sourcePath = source.toString,
       sourceSize = os.size(source),
       sourceMtime = os.mtime(source),
-      packages = CacheMetadata.packagesOf(table),
+      packages = sink.packages.toList.sorted,
       formatVersion = CacheMetadata.FormatVersion
     ))
-    logger.info(s"Indexed ${table.all.size} symbols from ${source.last}")
+    logger.info(s"Indexed ${sink.count} symbols from ${source.last}")
   }
 
   /** Unpack ONE source entry into `<cacheDir>/src/<entryPath>`. Idempotent — no-op

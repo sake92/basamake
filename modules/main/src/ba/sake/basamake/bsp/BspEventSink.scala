@@ -1,6 +1,6 @@
 package ba.sake.basamake.bsp
 
-import ch.epfl.scala.bsp4j.{DidChangeBuildTarget, PublishDiagnosticsParams, TaskFinishParams, TaskStartParams}
+import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams, TaskFinishParams, TaskStartParams}
 import ba.sake.basamake.navigation.indexing.SemanticdbDirs
 
 /** Sink for BSP-originated notifications and internal basamake lifecycle events.
@@ -28,8 +28,9 @@ trait BspAfterCompileSink {
 }
 
 /** After-handshake hook for dependency source jars. Implemented by BspManager — fired by
-  * BspConnection.ensureConnected once the handshake's DependencySourcesResult is available,
-  * forwards the source jar paths to the dependency index for background caching. */
+  * BspConnection.ensureConnected once the handshake's DependencySourcesResult is available.
+  * Per-target map: the receiver registers the targets (cached jars only — nothing is
+  * indexed eagerly) and indexes deps of targets holding currently-open files. */
 trait BspDependencySourcesSink {
-  def onDependencySources(paths: List[os.Path]): Unit
+  def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit
 }

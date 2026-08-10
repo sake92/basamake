@@ -7,6 +7,7 @@ import ch.epfl.scala.bsp4j.*
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.util.{ProcessUtils, ScalacOptionsUtils, UriUtils}
 import ba.sake.basamake.navigation.indexing.SemanticdbDirs
+import ba.sake.tupson.{given, *}
 
 /** One BSP connection: process + liveness.
   *
@@ -157,7 +158,11 @@ class BspConnection private (
     sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
     classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
     semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
-    dependencySourcesByTarget = BspConnection.extractTargetDependencySources(result.dependencySources)
+    // Seed from the deps persisted in this connection's data.json (previous
+    // sessions), then merge the fresh handshake result — servers intermittently
+    // return empty DependencySourcesResult, which must never wipe known deps.
+    val freshDeps = BspConnection.extractTargetDependencySources(result.dependencySources)
+    dependencySourcesByTarget = BspConnection.mergeDeps(loadPersistedDependencySources(), freshDeps)
   }
 
   private def drainPendingCompiles(): Unit = {
@@ -184,29 +189,46 @@ class BspConnection private (
     writeTargetData()
   }
 
-  /** Fires the dependency-source sink once per connection (after handshake). */
+  /** Fires the dependency-source sink once per connection (after handshake).
+    * Per-target map — the sink registers targets lazily and indexes nothing eagerly. */
   private def notifyDependencySources(): Unit = {
-    val paths = dependencySourcesByTarget.values.flatten.toList.distinct
-    if (paths.nonEmpty) eventSink match {
-      case s: BspDependencySourcesSink => s.onDependencySources(paths)
+    if (dependencySourcesByTarget.nonEmpty) eventSink match {
+      case s: BspDependencySourcesSink => s.onDependencySources(dependencySourcesByTarget)
       case _ => ()
     }
   }
 
+  /** Dependency source jars for the BSP targets owning `uri` (source-root match,
+    * no RPC — safe to call synchronously from LSP request handlers). Empty when
+    * the connection isn't alive yet (handshake data unavailable — caller falls
+    * back to data.json warm data). */
+  def dependencySourcesFor(uri: String): List[os.Path] = {
+    if (!alive) return Nil
+    val tids = {
+      val rootMatches = BspConnection.targetIdsForUri(uri, sourceDirsByTarget)
+      if (rootMatches.nonEmpty) rootMatches
+      else if (sourceDirsByTarget.keys.nonEmpty) sourceDirsByTarget.keys.toList // all targets (last resort)
+      else Nil
+    }
+    tids.flatMap(tid => dependencySourcesByTarget.getOrElse(tid, Nil)).distinct
+  }
+
   /** Writes .basamake/bsp/<name>_<hash>/data.json with target metadata
-    * (source dirs + semanticdb dirs) for fast WorkspaceIndex startup. */
+    * (source dirs + semanticdb dirs) for fast WorkspaceIndex startup.
+    * Defensive: a target missing from scalacOptions (common before its first
+    * compile) falls back to defaults instead of throwing away persistence. */
   private def writeTargetData(): Unit = {
     try {
       val dirName = BspConnectionSpec.dirName(spec)
       val dataDir = spec.workspaceRoot / ".basamake" / "bsp" / dirName
       os.makeDir.all(dataDir)
-      val targetInfos = (sourceDirsByTarget.keySet ++ semanticdbDirByTarget.keySet).toList
+      val targetInfos = (sourceDirsByTarget.keySet ++ semanticdbDirByTarget.keySet ++ dependencySourcesByTarget.keySet).toList
         .map { tid =>
           BspTargetInfo(
             id = tid.getUri,
-            sourceRootDir = sourceRootDirByTarget(tid),
+            sourceRootDir = sourceRootDirByTarget.getOrElse(tid, spec.workspaceRoot),
           //  sourceDirs = sourceDirsByTarget.getOrElse(tid, Nil),
-            semanticdbDir = semanticdbDirByTarget(tid),
+            semanticdbDir = semanticdbDirByTarget.getOrElse(tid, classDirectoryByTarget.getOrElse(tid, spec.workspaceRoot)),
             dependencySources = dependencySourcesByTarget.getOrElse(tid, Nil).map(_.toString)
           )
         }
@@ -217,6 +239,71 @@ class BspConnection private (
       logger.debug(s"Wrote BSP target data to $dataDir")
     } catch {
       case e: Exception => logger.warn(s"Failed to write BSP target data: ${e.getMessage}")
+    }
+  }
+
+  /** Dependency sources persisted in this connection's own data.json (previous
+    * sessions). Seeds the handshake merge so an intermittently-empty
+    * DependencySourcesResult can never wipe deps we already know. */
+  private def loadPersistedDependencySources(): Map[BuildTargetIdentifier, List[os.Path]] = {
+    try {
+      val dirName = BspConnectionSpec.dirName(spec)
+      val dataFile = spec.workspaceRoot / ".basamake" / "bsp" / dirName / "data.json"
+      if (!os.exists(dataFile)) return Map.empty
+      val data = os.read(dataFile).parseJson[BspTargetData]
+      data.targets.flatMap { t =>
+        val deps = t.dependencySources.flatMap(s => try Some(os.Path(s)) catch { case _: Exception => None })
+        if (deps.nonEmpty) Some(new BuildTargetIdentifier(t.id) -> deps) else None
+      }.toMap
+    } catch {
+      case e: Exception =>
+        logger.debug(s"Failed to load persisted dependency sources: ${e.getMessage}")
+        Map.empty
+    }
+  }
+
+  /** Wraps the event sink handed to the build client so buildTargetDidChange
+    * notifications trigger a dependencySources refresh on the OWNING connection
+    * (the shared BspManager sink cannot know which connection a target belongs
+    * to). Everything else delegates unchanged. */
+  private def targetChangeAwareSink(sink: BspEventSink): BspEventSink = new BspEventSink {
+    override def onDiagnostics(p: PublishDiagnosticsParams): Unit = sink.onDiagnostics(p)
+    override def onTargetChanged(p: DidChangeBuildTarget): Unit = {
+      sink.onTargetChanged(p)
+      refreshDependencySourcesOnTargetChange(p)
+    }
+    override def onShowMessage(p: org.eclipse.lsp4j.MessageParams): Unit = sink.onShowMessage(p)
+    override def onTaskStart(p: TaskStartParams): Unit = sink.onTaskStart(p)
+    override def onTaskFinish(p: TaskFinishParams): Unit = sink.onTaskFinish(p)
+    override def onConnectionStarted(s: BspConnectionSpec): Unit = sink.onConnectionStarted(s)
+    override def onConnectionSucceeded(s: BspConnectionSpec, targetCount: Int): Unit = sink.onConnectionSucceeded(s, targetCount)
+    override def onConnectionFailed(s: BspConnectionSpec, error: String): Unit = sink.onConnectionFailed(s, error)
+  }
+
+  private def refreshDependencySourcesOnTargetChange(params: DidChangeBuildTarget): Unit = {
+    if (!alive) return
+    val tids = BspConnection.changedTargetIds(params)
+    if (tids.nonEmpty) refreshDependencySources(tids)
+  }
+
+  /** Re-request dependency sources for `tids` and merge (non-empty only — an
+    * empty result keeps the existing deps). Re-fires the dep sink and persists
+    * data.json when anything actually changed. */
+  private[bsp] def refreshDependencySources(tids: List[BuildTargetIdentifier]): Unit = {
+    if (buildServer == null) return
+    try {
+      val result = buildServer.buildTargetDependencySources(new DependencySourcesParams(tids.asJava))
+        .get(5, TimeUnit.SECONDS)
+      val fresh = BspConnection.extractTargetDependencySources(result)
+      val merged = BspConnection.mergeDeps(dependencySourcesByTarget, fresh)
+      if (merged != dependencySourcesByTarget) {
+        dependencySourcesByTarget = merged
+        logger.info(s"Refreshed dependency sources for ${fresh.size} target(s)")
+        notifyDependencySources()
+        writeTargetData()
+      }
+    } catch {
+      case e: Exception => logger.debug(s"dependencySources refresh failed: ${e.getMessage}")
     }
   }
 
@@ -297,13 +384,19 @@ class BspConnection private (
 }
 
 object BspConnection {
-  def apply(spec: BspConnectionSpec, eventSink: BspEventSink): BspConnection =
-    new BspConnection(
+  /** Production factory: wraps the event sink so buildTargetDidChange refreshes
+    * dependency sources on this connection. `conn` is captured by the spawn
+    * closure — it is non-null by the time spawnFn runs (post-construction). */
+  def apply(spec: BspConnectionSpec, eventSink: BspEventSink): BspConnection = {
+    var conn: BspConnection = null
+    conn = new BspConnection(
       spec,
-      () => BspHandshake.execute(spec, eventSink),
+      () => BspHandshake.execute(spec, conn.targetChangeAwareSink(eventSink)),
       p => ProcessUtils.terminateProcessTree(p),
       eventSink
     )
+    conn
+  }
 
   /** Test factory: inject spawn + killTree. */
   private[bsp] def forTesting(
@@ -312,6 +405,25 @@ object BspConnection {
       killTree: java.lang.Process => Unit,
       eventSink: BspEventSink
   ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink)
+
+  /** Merge fresh dependency sources into old. A fresh EMPTY list never replaces an
+    * existing non-empty one (servers intermittently return empty results — known
+    * deps stay authoritative); fresh non-empty lists win. */
+  private[bsp] def mergeDeps(
+      oldDeps: Map[BuildTargetIdentifier, List[os.Path]],
+      freshDeps: Map[BuildTargetIdentifier, List[os.Path]]
+  ): Map[BuildTargetIdentifier, List[os.Path]] =
+    freshDeps.foldLeft(oldDeps) { case (acc, (tid, paths)) =>
+      if (paths.nonEmpty) acc.updated(tid, paths) else acc
+    }
+
+  /** Target ids of a DidChangeBuildTarget event, excluding DELETED ones
+    * (deleted targets have nothing worth re-asking about). */
+  private[bsp] def changedTargetIds(params: DidChangeBuildTarget): List[BuildTargetIdentifier] =
+    Option(params.getChanges).toList.flatMap(_.asScala)
+      .filterNot(c => c.getKind == BuildTargetEventKind.DELETED)
+      .map(_.getTarget)
+      .distinct
 
   /** True when the exception (possibly ExecutionException-wrapped from future.get)
     * indicates the BSP stream is closed — i.e. a real error, not a busy server. */

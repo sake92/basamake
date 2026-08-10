@@ -139,9 +139,19 @@ object Baz {
 
     val deps = new IndexedSymbolTable
     deps.ensureIndexed(List(jarA, jarB))
-    assert(eventually(deps.get("com/example/Foo#").isDefined))
 
-    val first = deps.get("com/example/Foo#").map(_.path)
+    // wait for BOTH jars to be indexed + registered (a transient single-jar route
+    // would make the "first" sample differ from the settled first-wins result)
+    val deadline = System.currentTimeMillis() + 20000
+    var stable = false
+    var first: Option[os.Path] = None
+    while (!stable && System.currentTimeMillis() < deadline) {
+      val cur = deps.get("com/example/Foo#").map(_.path)
+      if (cur.isDefined && first == cur) stable = true
+      else { first = cur; Thread.sleep(100) }
+    }
+    assert(stable, s"route must settle on a deterministic result, last=$first")
+
     (1 to 5).foreach { _ =>
       assertEquals(deps.get("com/example/Foo#").map(_.path), first, "first-wins must be deterministic")
     }
@@ -188,5 +198,76 @@ object Baz {
     assertEquals(deps.get("com/example/Foo#"), None, "corrupt index must not crash the lookup")
     assert(eventually(deps.get("com/example/Foo#").isDefined), "lookup failure should trigger wipe + reindex")
     assert(os.exists(indexPath / "data.mdb"), "LMDB should be rebuilt as a directory")
+  }
+
+  // ── lazy, target-scoped indexing ─────────────────────────────
+
+  test("registerTarget registers cached jars but does NOT index uncached ones") {
+    val tempDir = os.temp.dir()
+    val jar = buildJar(tempDir, "test-sources.jar")
+    val fp = Fingerprint.fromJarPath(jar)
+    cleanCache(fp)
+
+    // 1. index the jar with one instance
+    val warmer = new IndexedSymbolTable
+    warmer.ensureIndexed(List(jar))
+    assert(eventually(warmer.get("com/example/Foo#").isDefined))
+
+    // 2. fresh instance: registerTarget must be routing-only (no indexing)
+    val deps = new IndexedSymbolTable
+    deps.registerTarget("target-1", List(jar))
+    assert(deps.get("com/example/Foo#").isDefined, "cached jars must resolve right after registerTarget")
+
+    // 3. uncached jar: registerTarget must NOT create an index
+    val coldJar = buildJar(tempDir, "cold-sources.jar")
+    val coldFp = Fingerprint.fromJarPath(coldJar)
+    cleanCache(coldFp)
+    deps.registerTarget("target-2", List(coldJar))
+    assert(!os.exists(cacheDir(coldFp)), "registerTarget must not index uncached jars")
+
+    // 4. ...but ensureIndexedFor indexes them
+    deps.ensureIndexedFor("target-2")
+    assert(eventually(os.exists(cacheDir(coldFp) / "index.lmdb")), "ensureIndexedFor should index the target's jars")
+  }
+
+  test("candidate lookup picks the target's jar on same-package collisions") {
+    val tempDirA = os.temp.dir()
+    val tempDirB = os.temp.dir()
+    val jarA = tempDirA / "a-sources.jar"
+    val jarB = tempDirB / "b-sources.jar"
+    val fooA = "package com.example;\npublic class Foo { public void a() {} }\n"
+    val fooB = "package com.example;\npublic class Foo { public void b() {} }\n"
+    def writeJar(path: os.Path, content: String): Unit = {
+      val zip = new ZipOutputStream(new FileOutputStream(path.toIO))
+      try { zip.putNextEntry(new ZipEntry("Foo.java")); zip.write(content.getBytes("UTF-8")); zip.closeEntry() }
+      finally zip.close()
+    }
+    writeJar(jarA, fooA)
+    writeJar(jarB, fooB)
+    cleanCache(Fingerprint.fromJarPath(jarA))
+    cleanCache(Fingerprint.fromJarPath(jarB))
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jarA, jarB))
+    assert(eventually(deps.get("com/example/Foo#").isDefined))
+
+    val inA = deps.get("com/example/Foo#", List(jarA)).map(_.path).get
+    val inB = deps.get("com/example/Foo#", List(jarB)).map(_.path).get
+    assert(inA.startsWith(cacheDir(Fingerprint.fromJarPath(jarA))), s"expected def from jarA, got $inA")
+    assert(inB.startsWith(cacheDir(Fingerprint.fromJarPath(jarB))), s"expected def from jarB, got $inB")
+    assert(inA != inB)
+  }
+
+  test("candidate lookup skips uncached jars, queues their index, retry works") {
+    val tempDir = os.temp.dir()
+    val jar = buildJar(tempDir, "test-sources.jar")
+    val fp = Fingerprint.fromJarPath(jar)
+    cleanCache(fp)
+
+    val deps = new IndexedSymbolTable
+    // no ensureIndexed/registerTarget at all — the lookup itself must queue the index
+    assertEquals(deps.get("com/example/Foo#", List(jar)), None, "uncached jar must not resolve yet")
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined),
+      "the lookup should have queued a background index; a retry must resolve")
   }
 }

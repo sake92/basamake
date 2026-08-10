@@ -35,6 +35,11 @@ class BspManager private (
   // Diagnostics: uri → (targetId → List[Diagnostic])
   private val diagnostics = mutable.Map.empty[String, Map[BuildTargetIdentifier, List[Diagnostic]]]
 
+  /** Warm-start dependency sources from .basamake/bsp data.json files: source root →
+    * source jars of that target. Used for lookups + indexing before the first BSP
+    * handshake of a session; live handshake data takes precedence once available. */
+  @volatile private var warmDepsBySourceRoot: List[(os.Path, List[os.Path])] = Nil
+
   private val DebounceMs = 500L
   // ScheduledExecutorService survives task exceptions (unlike java.util.Timer,
   // whose thread dies forever on an uncaught exception in a task).
@@ -48,8 +53,17 @@ class BspManager private (
   private var pendingDebounceTask: Option[ScheduledFuture[?]] = None
   private val shuttingDown = new AtomicBoolean(false)
 
-  def initialize(workspaceRoot: os.Path, lspClient: LanguageClient): Unit = {
+  def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, warmDeps: List[(os.Path, List[os.Path])] = Nil): Unit = {
     this.client = lspClient
+    warmDepsBySourceRoot = warmDeps
+    // Register warm-start dependency sources: cached jars become routable NOW,
+    // uncached jars stay unindexed until a file of that target is opened.
+    if (depsSymbolTable != null) {
+      warmDeps.foreach { case (srcRoot, deps) =>
+        try depsSymbolTable.registerTarget(srcRoot.toString, deps)
+        catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
+      }
+    }
     ignoreEngine = Some(newEngine())
     val discovered = BspDiscovery.discover(workspaceRoot, ignoreEngine.get)
     knownBspFiles = discovered.map(_.path).toSet
@@ -146,11 +160,59 @@ class BspManager private (
     try workspaceIndex.invalidate(roots)
     catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
 
-  // ---- BspDependencySourcesSink: forward to the dependency index ----
-  override def onDependencySources(paths: List[os.Path]): Unit = {
+  // ---- BspDependencySourcesSink: register targets lazily; index only for open files ----
+  override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = {
     if (depsSymbolTable == null) return
-    try depsSymbolTable.ensureIndexed(paths)
-    catch { case e: Exception => logger.warn(s"ensureIndexed failed: ${e.getMessage}", e) }
+    // Register per target — cached jars become routable, uncached ones stay
+    // unindexed until a file of that target is opened (or a lookup misses).
+    depsByTarget.foreach { case (tid, paths) =>
+      try depsSymbolTable.registerTarget(tid.getUri, paths)
+      catch { case e: Exception => logger.warn(s"registerTarget failed for $tid: ${e.getMessage}", e) }
+    }
+    // Catch-up: files already open (their didOpen ran before the handshake) get
+    // their target's deps indexed right away.
+    indexDepsForOpenFiles()
+  }
+
+  /** Dependency source jars relevant to `uri`: live per-target handshake data when
+    * the owning connection is alive, else the data.json warm-start mapping. */
+  def dependencySourcesFor(uri: String): List[os.Path] = {
+    val live = router.route(uri).flatMap(id => Option(connections.get(id))) match {
+      case Some(conn) => conn.dependencySourcesFor(uri)
+      case None       => Nil
+    }
+    if (live.nonEmpty) live
+    else warmDepsBySourceRoot.collectFirst {
+      case (root, deps) if uriPathUnderRoot(uri, root) => deps
+    }.getOrElse(Nil)
+  }
+
+  /** Ensure the current file's target deps are indexed (cached → registered, uncached
+    * → background, single-flight). Cheap when already done — call from didOpen/didSave
+    * and the definition/references request threads. */
+  def ensureDepsIndexedFor(uri: String): Unit = {
+    if (depsSymbolTable == null) return
+    val deps = dependencySourcesFor(uri)
+    if (deps.nonEmpty) {
+      try depsSymbolTable.ensureIndexed(deps)
+      catch { case e: Exception => logger.warn(s"ensureIndexed failed: ${e.getMessage}", e) }
+    }
+  }
+
+  /** Index deps of targets holding currently-open files — called after a handshake
+    * delivers dependency sources, so files opened before the handshake still get
+    * their jars indexed without waiting for the next didOpen. */
+  private def indexDepsForOpenFiles(): Unit = {
+    if (workspaceIndex == null) return
+    workspaceIndex.openPaths.foreach { p =>
+      val uriOpt = try Some(p.toNIO.toUri.toString) catch { case _: Exception => None }
+      uriOpt.foreach(ensureDepsIndexedFor)
+    }
+  }
+
+  private def uriPathUnderRoot(uri: String, root: os.Path): Boolean = {
+    val path = try os.Path(java.net.URI.create(uri)) catch { case _: Exception => return false }
+    path.startsWith(root)
   }
 
   override def onTargetChanged(params: DidChangeBuildTarget): Unit =

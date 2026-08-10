@@ -283,7 +283,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     result.result().distinct
   }
 
-  def gotoDefinitions(path: os.Path, line: Int, char: Int): Vector[SymbolDefinition] = {
+  def gotoDefinitions(path: os.Path, line: Int, char: Int, depCandidates: List[os.Path] = Nil): Vector[SymbolDefinition] = {
     val data = sourcesMap.get(path)
     // All occurrences are references (defs live in SymbolTable / open-file locals).
     val references = if (data == null) Vector.empty else data.occurrences
@@ -298,7 +298,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
       val candidates =
         if (local.nonEmpty) local
-        else referencesUnderCursor.flatMap(o => symbolTable.get(o.symbol))
+        else referencesUnderCursor.flatMap(o => getSymbol(o.symbol, depCandidates))
       // Filter out the location the cursor is already on (self-filter for refs).
       candidates.filterNot { sd =>
         sd.path == path && isInsideRange(line, char, sd.range)
@@ -308,7 +308,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
 
   /** v1: scan only occurrences in CURRENTLY OPEN FILES.
     * Cross-workspace references are explicitly out of scope for v1. */
-  def references(path: os.Path, line: Int, char: Int, includeDeclaration: Boolean): Vector[SymbolDefinition] = {
+  def references(path: os.Path, line: Int, char: Int, includeDeclaration: Boolean, depCandidates: List[os.Path] = Nil): Vector[SymbolDefinition] = {
     val targetSymbols = findSymbolsAt(path, line, char).toSet
     if (targetSymbols.isEmpty) return Vector.empty
 
@@ -336,8 +336,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
         if (d == null) Iterator.empty else d.locals.iterator
       }.toVector
       for (sym <- targetSymbols) {
-        // Try locals first, then SymbolTable
-        val defOpt = openLocals.find(ld => ld.symbol == sym).orElse(symbolTable.get(sym))
+        // Try locals first, then SymbolTable (dep lookups scoped to candidates)
+        val defOpt = openLocals.find(ld => ld.symbol == sym).orElse(getSymbol(sym, depCandidates))
         defOpt.foreach(d => results += d)
       }
     }
@@ -346,6 +346,20 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   }
 
   // ── internal helpers ─────────────────────────────────────────
+
+  /** Symbol lookup with optional dep-jar candidates (the file's BSP target deps).
+    * With candidates, dep lookups are scoped to those jars (precise + cheap);
+    * without, the plain lookup is used (global dep route / workspace table). */
+  private def getSymbol(symbol: String, depCandidates: List[os.Path]): Option[SymbolDefinition] =
+    if depCandidates.isEmpty then symbolTable.get(symbol)
+    else symbolTable match {
+      case c: CompositeSymbolTable => c.getWithCandidates(symbol, depCandidates)
+      case t                       => t.get(symbol)
+    }
+
+  /** Paths of currently open editor files (used by BspManager to index the right
+    * targets' deps right after a handshake). */
+  def openPaths: Set[os.Path] = openFiles.asScala.toSet
 
   private def refreshOpenBuffer(path: os.Path): Unit = {
     if (!openFiles.contains(path)) return

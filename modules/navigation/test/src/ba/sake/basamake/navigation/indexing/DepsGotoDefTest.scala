@@ -47,7 +47,8 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
 
       idx.onDidOpen(mainFile)
       val (l, c) = TestPositions.at(mainText, """(?<p>Foo)\(\)""")
-      val locs = idx.gotoDefinitions(mainFile, l, c)
+      // pass the jar as a dep candidate — the target-scoped lookup path
+      val locs = idx.gotoDefinitions(mainFile, l, c, depCandidates = List(jarPath))
 
       assert(locs.nonEmpty, s"expected jar def for Foo, got empty (depsReady=${depsTable.get("com/example/Foo#").isDefined})")
       val loc = locs.head

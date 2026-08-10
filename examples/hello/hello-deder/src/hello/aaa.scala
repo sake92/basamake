@@ -2,6 +2,6 @@ package hello
 
 object dederutils:
   def greet(name: String): String =
-    s"Hello, $namefdfs!"
+    s"Hello, $name!"
 
  
