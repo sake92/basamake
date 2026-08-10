@@ -125,4 +125,46 @@ object SymbolUtils {
     }
   }
 
+  /** Derives the display short name from a SemanticDB symbol: strips the owner
+    * prefix and all descriptor suffixes, keeping just the member name.
+    * Examples:
+    *   `com/example/Outer#run().`            → `run`
+    *   `com/example/Outer#run(+1).`          → `run`
+    *   `com/example/Outer#field.`            → `field`
+    *   `com/example/Outer#`                  → `Outer`
+    *   `com/example/Outer#run().(x)`         → `x`
+    *   `` com/example/Outer#`<init>`(). ``   → `` `<init>` ``
+    *   `_empty_/bla$package.`                → `bla$package`
+    *   `com/example/Foo#bar[T]().`           → `bar`
+    *   `java/lang/String#substring(II).`     → `substring`
+    *   `utils.` (short/best-effort symbol)   → `utils`
+    */
+  def shortNameOf(symbol: String): String = {
+    val afterOwner = symbol.drop(symbol.lastIndexOf('/') + 1)
+    // parameter symbol: `<method>.(name)`
+    val paramRe = """^.*\.\(([^()]*)\)$""".r
+    afterOwner match {
+      case paramRe(name) => return name
+      case _             => ()
+    }
+    // strip descriptor suffixes from the right: `().`, `(+1).`, `[T].`, `#`, trailing `.`
+    var cur = afterOwner
+    var changed = true
+    while (changed) {
+      changed = false
+      if (cur.endsWith(".")) { cur = cur.dropRight(1); changed = true }
+      else if (cur.endsWith("#")) { cur = cur.dropRight(1); changed = true }
+      else if (cur.endsWith(")")) {
+        val open = cur.lastIndexOf('(')
+        if (open > 0) { cur = cur.take(open); changed = true }
+      } else if (cur.endsWith("]")) {
+        val open = cur.lastIndexOf('[')
+        if (open > 0) { cur = cur.take(open); changed = true }
+      }
+    }
+    // take the last name segment (after the type `#` or term `.` separator)
+    val lastSep = math.max(cur.lastIndexOf('#'), cur.lastIndexOf('.'))
+    if (lastSep >= 0) cur.drop(lastSep + 1) else cur
+  }
+
 }

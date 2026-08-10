@@ -180,4 +180,42 @@ class SymbolUtilsTest extends FunSuite {
     val seq = SymbolUtils.termSymbol(scalaPkg, "??")
     assertEquals(seq, "scala/package.`??`.")
   }
+
+  // ── shortNameOf (display-name decoder) ───────────────────────
+
+  test("shortNameOf: methods and overloads") {
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#run()."), "run")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#run(+1)."), "run")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#run(+2)."), "run")
+    assertEquals(SymbolUtils.shortNameOf("java/lang/String#substring(II)."), "substring")
+  }
+
+  test("shortNameOf: nested member keeps the MEMBER name, not the owner") {
+    // regression: `takeWhile` on the first `.` used to return the owner's name
+    assertEquals(SymbolUtils.shortNameOf("basamake/sbt/sbtutils.getMsg()."), "getMsg")
+    assertEquals(SymbolUtils.shortNameOf("basamake/sbt/sbtutils.y."), "y")
+    assertEquals(SymbolUtils.shortNameOf("basamake/sbt/Main$package.hello()."), "hello")
+    assertEquals(SymbolUtils.shortNameOf("_empty_/utils.getMsg()."), "getMsg")
+  }
+
+  test("shortNameOf: types and terms") {
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#"), "Outer")
+    assertEquals(SymbolUtils.shortNameOf("scala/collection/immutable/List#"), "List")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#field."), "field")
+    assertEquals(SymbolUtils.shortNameOf("_empty_/bla$package."), "bla$package")
+    assertEquals(SymbolUtils.shortNameOf("_empty_/utils."), "utils")
+  }
+
+  test("shortNameOf: params, ctors, type params") {
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#run().(x)"), "x")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#`<init>`()."), "`<init>`")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Foo#bar[T]()."), "bar")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#copy$default$1()."), "copy$default$1")
+  }
+
+  test("shortNameOf: short / best-effort symbols without owner prefix") {
+    assertEquals(SymbolUtils.shortNameOf("utils."), "utils")
+    assertEquals(SymbolUtils.shortNameOf("Unit#"), "Unit")
+    assertEquals(SymbolUtils.shortNameOf("utils.getMsg()."), "getMsg")
+  }
 }

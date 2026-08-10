@@ -126,7 +126,7 @@ object SemanticdbIndexing extends StrictLogging {
         .map { occ =>
           val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
           val isType = occ.symbol.endsWith("#")
-          val shortName = inferShortName(occ.symbol)
+          val shortName = SymbolUtils.shortNameOf(occ.symbol)
           SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
         }
     }
@@ -159,7 +159,7 @@ object SemanticdbIndexing extends StrictLogging {
     val localDefs = definitions.filter(o => SymbolUtils.isLocalSymbol(o.symbol)).map { occ =>
       val range = occ.range.getOrElse(new SdbRange(0, 0, 0, 0))
       val isType = occ.symbol.endsWith("#")
-      val shortName = inferShortName(occ.symbol)
+      val shortName = SymbolUtils.shortNameOf(occ.symbol)
       SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
     }
     val complete = refs.forall(o => isFullSymbol(o.symbol))
@@ -172,12 +172,5 @@ object SemanticdbIndexing extends StrictLogging {
     * `local<N>` are document-scoped and considered complete. */
   private def isFullSymbol(symbol: String): Boolean =
     symbol.contains("/") || SymbolUtils.isLocalSymbol(symbol)
-
-  private def inferShortName(symbol: String): String = {
-    val last = symbol.lastIndexOf('/') match
-      case -1 => symbol
-      case i  => symbol.drop(i + 1)
-    last.takeWhile(c => c != '#' && c != '.' && c != '(')
-  }
 
 }

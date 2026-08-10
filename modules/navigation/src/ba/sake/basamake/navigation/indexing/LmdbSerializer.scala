@@ -227,13 +227,7 @@ object LmdbSerializer {
     SymbolDefinition(symbol, shortNameOf(symbol), isType, range, path)
   }
 
-  /** Derive the short name from the symbol: strip `(params`, trailing `#`/`.` and
-    * the owner prefix. E.g. `java/lang/Object#clone().` → `clone`, `java/lang/Object#`
-    * → `Object`. */
-  private def shortNameOf(symbol: String): String = {
-    val base = symbol.takeWhile(_ != '(').stripSuffix("#").stripSuffix(".")
-    val afterHash = base.substring(base.lastIndexOf('#') + 1)
-    val idx = afterHash.lastIndexOf('/')
-    if (idx >= 0) afterHash.substring(idx + 1) else afterHash
-  }
+  /** Derive the short name from the symbol — shared decoder, see `SymbolUtils.shortNameOf`.
+    * E.g. `java/lang/Object#clone().` → `clone`, `java/lang/Object#` → `Object`. */
+  private def shortNameOf(symbol: String): String = SymbolUtils.shortNameOf(symbol)
 }

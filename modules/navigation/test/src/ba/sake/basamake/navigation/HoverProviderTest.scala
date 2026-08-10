@@ -2,7 +2,7 @@ package ba.sake.basamake.navigation
 
 import munit.FunSuite
 import scala.meta.internal.semanticdb.Range
-import ba.sake.basamake.navigation.indexing.WorkspaceIndex
+import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, TestFixture, SemanticdbFixture, SemanticdbDirs}
 
 class HoverProviderTest extends FunSuite {
 
@@ -195,6 +195,45 @@ class HoverProviderTest extends FunSuite {
       assert(res._1.contains("case class Foo("), s"expected class decl, got: ${res._1}")
       assert(res._1.contains("x: Int"), s"expected continuation lines, got: ${res._1}")
       assertEquals(res._2, None)
+    } finally os.remove.all(root)
+  }
+
+  // ── semanticdb-paired sources ────────────────────────────────
+
+  test("hover on semanticdb-paired def shows AST signature + doc (not source fallback)") {
+    val root = TestFixture.copy("sbt", "hover-semdb")
+    try {
+      // add a scaladoc to the copy, then compile it — semanticdb is generated
+      // from the doc'd content, so the def range is current
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      os.write.over(utilsFile,
+        """object utils {
+          |  /** Returns a message. */
+          |  def getMsg(): String = "bla"
+          |}
+          |""".stripMargin)
+      val dirs = SemanticdbFixture.compile(root)
+
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      idx.initialize(List(dirs))
+      val provider = HoverProvider(idx)
+
+      // def site (probe: global defs from semanticdb)
+      val utilsText = os.read(utilsFile)
+      val (l, c) = posAt(utilsText, """def (?<p>getMsg)""")
+      val info = provider.hover(utilsFile, l, c).get
+      assertEquals(info.signature, "def getMsg(): String")
+      assertEquals(info.doc, Some("Returns a message."))
+
+      // call site in Main.scala (probe: semanticdb ref occurrences)
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      idx.onDidOpen(mainFile)
+      val mainText = os.read(mainFile)
+      val (l2, c2) = posAt(mainText, """utils\.(?<p>getMsg)\(\)""")
+      val info2 = provider.hover(mainFile, l2, c2).get
+      assertEquals(info2.signature, "def getMsg(): String")
+      assertEquals(info2.doc, Some("Returns a message."))
     } finally os.remove.all(root)
   }
 }

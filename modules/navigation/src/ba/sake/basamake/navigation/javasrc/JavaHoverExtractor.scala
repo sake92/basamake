@@ -4,6 +4,7 @@ import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.*
 import scala.util.control.NonFatal
 import com.github.javaparser.{JavaParser, ParseResult}
+import com.github.javaparser.Range as JpRange
 import com.github.javaparser.ast.{CompilationUnit, Node}
 import com.github.javaparser.ast.Modifier
 import com.github.javaparser.ast.NodeList
@@ -30,12 +31,46 @@ object JavaHoverExtractor {
     * start line + same name text) and render its signature + javadoc. */
   def extractCu(cu: CompilationUnit, shortName: String, range: Range): Option[(String, Option[String])] = {
     val targetLine = range.startLine + 1 // javaparser lines are 1-based
-    cu.findAll(classOf[Node]).asScala.iterator
+    val onLine = cu.findAll(classOf[Node]).asScala.iterator
       .flatMap(n => nameOf(n).map(n -> _))
-      .find { case (n, name) => name == shortName && nameLine(n) == targetLine }
+      .filter { case (n, _) => nameLine(n) == targetLine }
+      .toVector
+    findNode(onLine, shortName, range)
       .map { case (n, _) =>
         (renderSignature(n), javadocOf(n).map(DocCommentCleaner.clean))
       }
+  }
+
+  /** Match the node at `range`: primary (line + name), then (line + name-span
+    * containing the start column) for resilience against shortName/symbol drift. */
+  private def findNode(onLine: Vector[(Node, String)], shortName: String, range: Range): Option[(Node, String)] = {
+    val targetCol = range.startCharacter + 1 // javaparser columns are 1-based
+    onLine
+      .find { case (_, name) => name == shortName }
+      .orElse {
+        onLine.find { case (n, _) =>
+          nameRange(n).exists(r => r.begin.column <= targetCol && targetCol <= r.end.column)
+        }
+      }
+  }
+
+  /** Range of the NAME token for nodes matched by `nameOf`. */
+  private def nameRange(n: Node): Option[JpRange] = {
+    val nameNode: Option[Node] = n match {
+      case m: MethodDeclaration             => Some(m.getName)
+      case c: ConstructorDeclaration        => Some(c.getName)
+      case c: CompactConstructorDeclaration => Some(c.getName)
+      case c: ClassOrInterfaceDeclaration   => Some(c.getName)
+      case e: EnumDeclaration               => Some(e.getName)
+      case a: AnnotationDeclaration         => Some(a.getName)
+      case r: RecordDeclaration             => Some(r.getName)
+      case v: VariableDeclarator            => Some(v.getName)
+      case e: EnumConstantDeclaration       => Some(e.getName)
+      case a: AnnotationMemberDeclaration   => Some(a.getName)
+      case p: Parameter                     => Some(p.getName)
+      case _                                => None
+    }
+    nameNode.flatMap(_.getRange.toScala)
   }
 
   // ── node matching ────────────────────────────────────────────

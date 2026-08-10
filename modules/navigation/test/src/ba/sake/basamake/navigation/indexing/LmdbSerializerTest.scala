@@ -47,7 +47,8 @@ class LmdbSerializerTest extends FunSuite {
 
     assertEquals(LmdbSerializer.get(indexDir, "java/lang/Object#").map(_.shortName), Some("Object"))
     assertEquals(LmdbSerializer.get(indexDir, "java/lang/Object#clone().").map(_.shortName), Some("clone"))
-    assertEquals(LmdbSerializer.get(indexDir, "java/lang/Object#wait().(millis)").map(_.shortName), Some("wait"))
+    // parameter symbols derive their OWN name (millis), not the method's
+    assertEquals(LmdbSerializer.get(indexDir, "java/lang/Object#wait().(millis)").map(_.shortName), Some("millis"))
   }
 
   test("empty table roundtrip") {

@@ -36,10 +36,20 @@ object ScalaHoverExtractor {
   def extractSource(src: Source, shortName: String, range: Range): Option[(String, Option[String])] = {
     val candidates = mutable.ArrayBuffer.empty[Candidate]
     collectCandidates(src, candidates)
-    candidates
-      .find(c => c.pos.startLine == range.startLine && c.name == shortName)
+    findCandidate(candidates.toVector, shortName, range)
       .map { c =>
         (c.render(), findDocComment(src, c).map(DocCommentCleaner.clean))
+      }
+  }
+
+  /** Match the definition at `range`: primary (line + name), then (line + name-span
+    * containing the start column) for resilience against shortName/symbol drift. */
+  private def findCandidate(candidates: Vector[Candidate], shortName: String, range: Range): Option[Candidate] = {
+    val onLine = candidates.filter(_.pos.startLine == range.startLine)
+    onLine
+      .find(_.name == shortName)
+      .orElse {
+        onLine.find(c => c.pos.startColumn <= range.startCharacter && range.startCharacter < c.pos.endColumn)
       }
   }
 
