@@ -270,4 +270,26 @@ object Baz {
     assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined),
       "the lookup should have queued a background index; a retry must resolve")
   }
+
+  test("registered jars resolve WITHOUT metadata.json — packages served from memory") {
+    val tempDir = os.temp.dir()
+    val jar = buildJar(tempDir, "test-sources.jar")
+    val fp = Fingerprint.fromJarPath(jar)
+    cleanCache(fp)
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jar))
+    assert(eventually(deps.get("com/example/Foo#").isDefined))
+
+    // wipe metadata.json AFTER registration: metadata.json is immutable once the
+    // index is created, so lookups must keep working from the in-memory
+    // packagesByFp cache — a file re-read would make these fail (load → None)
+    os.remove(cacheDir(fp) / CacheMetadata.FileName)
+    assert(!os.exists(cacheDir(fp) / CacheMetadata.FileName), "metadata.json should be gone")
+
+    assertEquals(deps.get("com/example/Foo#", List(jar)).map(_.symbol), Some("com/example/Foo#"),
+      "candidate lookup must use cached packages, not re-read metadata.json")
+    assert(deps.get("com/example/Baz.").isDefined,
+      "global route lookup must also keep working from the in-memory route")
+  }
 }

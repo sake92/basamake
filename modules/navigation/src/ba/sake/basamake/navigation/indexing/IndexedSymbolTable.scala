@@ -37,6 +37,10 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
 
   // full dotted package (as listed in metadata.json) → fingerprints defining it
   private val route = new ConcurrentHashMap[String, java.util.Set[String]]()
+  // fingerprint → packages (metadata.json content, immutable once indexed).
+  // Cached in memory so candidate lookups skip the file read+JSON parse on
+  // every keystroke — `register` is the single validation point that fills it.
+  private val packagesByFp = new ConcurrentHashMap[String, Set[String]]()
   // fingerprint → source path (for reindex after corruption)
   private val sourcesByFp = new ConcurrentHashMap[String, os.Path]()
   // fingerprints whose index is cached AND registered in `route` — lets
@@ -182,6 +186,7 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private def register(fp: String, source: os.Path): Unit = {
     CacheMetadata.load(SourceJarIndexer.cacheRoot / os.RelPath(fp)) match {
       case Some(meta) if CacheMetadata.isValid(meta, source) =>
+        packagesByFp.put(fp, meta.packages.toSet) // put, not putIfAbsent — a re-register after reindex must overwrite
         meta.packages.foreach { pkg =>
           route.computeIfAbsent(pkg, _ => ConcurrentHashMap.newKeySet[String]()).add(fp)
         }
@@ -208,11 +213,22 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private def indexPath(fp: String): os.Path =
     SourceJarIndexer.cacheRoot / os.RelPath(fp) / "index.lmdb"
 
+  /** Packages of one fingerprint — pure in-memory lookup of the value captured
+    * at `register` time (metadata.json is immutable once the index is created,
+    * so no file read is ever needed for registered jars). Falls back to a
+    * one-time metadata.json read ONLY for the rare cached-but-not-yet-registered
+    * window and populates the cache — the steady state is a map hit. */
   private def metadataPackages(fp: String): Option[Set[String]] =
-    Option(sourcesByFp.get(fp)).flatMap { src =>
-      CacheMetadata.load(SourceJarIndexer.cacheRoot / os.RelPath(fp))
-        .filter(meta => CacheMetadata.isValid(meta, src))
-        .map(_.packages.toSet)
+    Option(packagesByFp.get(fp)).orElse {
+      Option(sourcesByFp.get(fp)).flatMap { src =>
+        CacheMetadata.load(SourceJarIndexer.cacheRoot / os.RelPath(fp))
+          .filter(meta => CacheMetadata.isValid(meta, src))
+          .map(meta => {
+            val pkgs = meta.packages.toSet
+            packagesByFp.put(fp, pkgs)
+            pkgs
+          })
+      }
     }
 
   /** Candidate-scoped point queries. Iterates the candidate jars in order; first

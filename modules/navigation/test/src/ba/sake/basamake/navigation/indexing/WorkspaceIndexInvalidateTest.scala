@@ -259,7 +259,10 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       idx.onDidSave(wtFile)
 
       val dump = os.read(root / ".basamake" / "index_sources.txt")
-      assert(!dump.contains(".worktrees"),
+      // assert on the gitignored file's path segment, not the literal ".worktrees"
+      // — the dump header prints the workspace path, which itself contains
+      // ".worktrees" when the repo lives in a worktree (e.g. .worktrees/<branch>/)
+      assert(!dump.contains("gitignore-roots"),
         s"gitignored files must not appear in the dump:\n$dump")
       assert(st.get("_empty_/WorktreeThing#").isEmpty,
         "no definitions may be extracted for gitignored files")
