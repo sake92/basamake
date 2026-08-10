@@ -349,8 +349,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
 
   /** Symbol lookup with optional dep-jar candidates (the file's BSP target deps).
     * With candidates, dep lookups are scoped to those jars (precise + cheap);
-    * without, the plain lookup is used (global dep route / workspace table). */
-  private def getSymbol(symbol: String, depCandidates: List[os.Path]): Option[SymbolDefinition] =
+    * without, the plain lookup is used (global dep route / workspace table).
+    * Public — used by HoverProvider (hover needs def resolution, including on
+    * def sites, where gotoDefinitions deliberately returns empty). */
+  def getSymbol(symbol: String, depCandidates: List[os.Path]): Option[SymbolDefinition] =
     if depCandidates.isEmpty then symbolTable.get(symbol)
     else symbolTable match {
       case c: CompositeSymbolTable => c.getWithCandidates(symbol, depCandidates)
