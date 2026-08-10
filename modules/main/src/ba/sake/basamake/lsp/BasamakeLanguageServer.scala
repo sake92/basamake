@@ -18,13 +18,21 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   @volatile private var client: LanguageClient = uninitialized
 
+  private val progressReporter = new IndexingProgressReporter
+  private val workspaceIndexingDone = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /** True once the background workspace indexing (launched by initialize) has
+    * finished — used by tests to await index readiness. */
+  private[lsp] def isWorkspaceIndexingDone: Boolean = workspaceIndexingDone.get()
+
   private val workspaceSymbolTable = new InMemorySymbolTable
-  private val depsSymbolTable = new IndexedSymbolTable
+  private val depsSymbolTable = new IndexedSymbolTable(progressReporter)
   private val symbolTable = new CompositeSymbolTable(workspaceSymbolTable, depsSymbolTable)
   private val workspaceIndex = new WorkspaceIndex(
     workspacePath,
     symbolTable,
-    BasamakeConfig.load(workspacePath).ignorePatterns.toVector
+    BasamakeConfig.load(workspacePath).ignorePatterns.toVector,
+    progressReporter
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
   private val hoverProvider = HoverProvider(workspaceIndex)
@@ -33,6 +41,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
     logger.debug(s"Client connected: ${client}")
     this.client = client
+    progressReporter.setClient(client)
   }
 
   // ----- LanguageServer
@@ -57,17 +66,31 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val wsCaps = new WorkspaceServerCapabilities()
     wsCaps.setFileOperations(fileOps)
     capabilities.setWorkspace(wsCaps)
+    // Progress needs the client's window/workDoneProgress/create handler, which
+    // vscode-languageclient registers only AFTER the initialize handshake completes
+    // — so indexing moves to a background thread and initialize returns early.
+    val workDoneProgress: Boolean = Option(params.getCapabilities)
+      .flatMap(c => Option(c.getWindow))
+      .flatMap(w => Option(w.getWorkDoneProgress))
+      .map(_.booleanValue()) // java.lang.Boolean → scala.Boolean
+      .getOrElse(false)
+    progressReporter.setEnabled(workDoneProgress)
+
     val (roots, warmDeps) = loadBspDataFromDataJson()
-    try {
-      workspaceIndex.initialize(roots)
-    } catch {
-      case e: Exception =>
-        logger.error(s"Failed to initialize workspace index: ${e.getMessage}")
-    }
+    Thread.ofVirtual().start(() => {
+      try {
+        workspaceIndex.initialize(roots)
+      } catch {
+        case e: Exception => logger.error(s"Failed to initialize workspace index: ${e.getMessage}")
+      } finally {
+        workspaceIndexingDone.set(true)
+      }
+    })
     // Dependency sources are NOT indexed eagerly: BspManager registers the warm-start
     // targets (cached jars only) and indexes a target's jars lazily when one of its
     // files is opened / poked. The JDK index still runs in the background — cached
-    // index loads lazily on first lookup; a cold JDK indexes once in the background.
+    // index loads lazily on first lookup; a cold JDK indexes once in the background,
+    // prioritized ahead of all dependency jars.
     try {
       depsSymbolTable.ensureJdkIndexed()
     } catch {

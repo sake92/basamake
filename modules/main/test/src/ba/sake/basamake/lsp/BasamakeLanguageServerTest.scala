@@ -65,6 +65,43 @@ class BasamakeLanguageServerTest extends FunSuite {
     (line, char)
   }
 
+  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    cond
+  }
+
+  /** LanguageClient fake that captures workDoneProgress create + notify calls. */
+  private def progressClient(created: java.util.List[WorkDoneProgressCreateParams],
+                             sent: java.util.List[ProgressParams]): LanguageClient =
+    new LanguageClient {
+      override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = ()
+      override def telemetryEvent(x: Any): Unit = ()
+      override def showMessage(p: MessageParams): Unit = ()
+      override def showMessageRequest(p: ShowMessageRequestParams) =
+        CompletableFuture.completedFuture(null.asInstanceOf[MessageActionItem])
+      override def logMessage(p: MessageParams): Unit = ()
+      override def applyEdit(p: ApplyWorkspaceEditParams) =
+        CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
+      override def createProgress(p: WorkDoneProgressCreateParams): CompletableFuture[Void] = {
+        created.add(p)
+        CompletableFuture.completedFuture(null.asInstanceOf[Void])
+      }
+      override def notifyProgress(p: ProgressParams): Unit = sent.add(p)
+    }
+
+  /** (token, kind, message) of one ProgressParams — kind+message live on the
+    * concrete Begin/Report/End classes, not on WorkDoneProgressNotification. */
+  private def progressEvent(p: ProgressParams): (String, String, String) = {
+    val n = p.getValue.getLeft
+    val msg = n match {
+      case b: WorkDoneProgressBegin  => b.getMessage
+      case r: WorkDoneProgressReport => r.getMessage
+      case e: WorkDoneProgressEnd    => e.getMessage
+    }
+    (p.getToken.getLeft, n.getKind.toString.toLowerCase, msg)
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // initialize capabilities: rename handling
   // ═══════════════════════════════════════════════════════════════
@@ -75,6 +112,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       val result = server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
       val didRename = result.getCapabilities.getWorkspace.getFileOperations.getDidRename
       assert(didRename != null, "server must advertise didRename")
       assert(didRename.getFilters != null && !didRename.getFilters.isEmpty,
@@ -93,6 +131,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(capturingClient(captured))
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val oldUri = "file:///x/old.scala"
       val newUri = "file:///x/new.scala"
@@ -113,6 +152,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(capturingClient(captured))
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val deletedUri = "file:///x/Deleted.scala"
       val createdUri = "file:///x/Created.scala"
@@ -139,6 +179,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
@@ -177,6 +218,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
@@ -217,6 +259,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
@@ -256,6 +299,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val mainText = os.read(mainFile)
@@ -281,6 +325,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val mainFile = root / "src" / "main" / "scala" / "Main.scala"
       val mainText = os.read(mainFile)
@@ -309,6 +354,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       val server = new BasamakeLanguageServer(root)
       server.connect(fakeClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
       val mainText = os.read(mainFile)
       server.didOpen(new DidOpenTextDocumentParams(
@@ -324,6 +370,45 @@ class BasamakeLanguageServerTest extends FunSuite {
       assert(locations.size() > 0,
         s"stale semanticdb should fall back to source parsing, got ${locations.size()}")
       assertEquals(os.Path(URI.create(locations.get(0).getUri)).last, "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // indexing progress via workDoneProgress
+  // ═══════════════════════════════════════════════════════════════
+
+  test("initialize: reports workspace indexing progress via workDoneProgress") {
+    val root = copyFixture("nopackages", "lsp-progress")
+    try {
+      val created = new java.util.concurrent.CopyOnWriteArrayList[WorkDoneProgressCreateParams]()
+      val sent = new java.util.concurrent.CopyOnWriteArrayList[ProgressParams]()
+      val server = new BasamakeLanguageServer(root)
+      server.connect(progressClient(created, sent))
+
+      val params = new InitializeParams()
+      val caps = new ClientCapabilities()
+      val win = new WindowClientCapabilities()
+      win.setWorkDoneProgress(true)
+      caps.setWindow(win)
+      params.setCapabilities(caps)
+      server.initialize(params).get(10, TimeUnit.SECONDS)
+
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
+
+      val tokens = created.asScala.map(_.getToken.getLeft).toSet
+      assert(tokens.contains("basamake-workspace"), s"workspace progress token must be created, got $tokens")
+
+      val wsEvents = sent.asScala.toList
+        .filter(_.getToken.getLeft == "basamake-workspace")
+        .map(progressEvent)
+      val kinds = wsEvents.map(_._2)
+      assertEquals(kinds.head, "begin")
+      assertEquals(kinds.last, "end")
+
+      val expectedTotal = os.walk(root).count(p => p.ext == "scala" || p.ext == "java")
+      val beginMsg = wsEvents.head._3
+      assert(beginMsg.startsWith(s"0/$expectedTotal"),
+        s"begin message should carry the total, got: $beginMsg")
     } finally os.remove.all(root)
   }
 }
