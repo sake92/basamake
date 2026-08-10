@@ -212,6 +212,7 @@ class IndexedSymbolTable(
   private def workerLoop(): Unit = {
     while (true) {
       val job = jobQueue.take()
+      var ok = false
       try {
         SourceJarIndexer.index(job.src, job.fp, (done, total, name) => {
           job.phase match {
@@ -223,16 +224,19 @@ class IndexedSymbolTable(
         })
         register(job.fp, job.src)
         registeredFps.add(job.fp)
+        ok = true
       } catch {
         case NonFatal(e) => logger.warn(s"Failed to index ${job.src}: ${e.getMessage}")
       } finally {
         indexing.remove(job.fp)
         job.phase match {
           case IndexingPhase.Jdk =>
-            progressListener.onProgress(IndexingPhase.Jdk, 1, 1, "JDK sources indexed")
+            progressListener.onProgress(IndexingPhase.Jdk, 1, 1,
+              if (ok) "JDK sources indexed" else "JDK sources failed")
           case _ =>
+            // a failed jar still counts as done — the phase total includes it
             depsDone.incrementAndGet()
-            reportDeps(s"Indexed ${job.src.last}")
+            reportDeps(if (ok) s"Indexed ${job.src.last}" else s"Failed ${job.src.last}")
         }
       }
     }
@@ -260,7 +264,8 @@ class IndexedSymbolTable(
 
   /** Corrupt/missing LMDB env surfaced by a query — wipe + reindex at most ONCE
     * per fingerprint: a concurrent reindex must not be killed by repeated wipes
-    * from polling lookups. */
+    * from polling lookups. A corrupt JDK index is re-enqueued as a JDK job
+    * (priority 0, Jdk phase) — it must not wait behind dependency jars. */
   private def handleCorrupt(fp: String, e: Throwable): Unit = {
     val dir = SourceJarIndexer.cacheRoot / os.RelPath(fp)
     logger.warn(s"Corrupt index at $dir — wiping and reindexing: ${e.getMessage}")
@@ -268,6 +273,9 @@ class IndexedSymbolTable(
       registeredFps.remove(fp)
       os.remove.all(dir)
       Option(sourcesByFp.get(fp)) match {
+        case Some(src) if fp.startsWith("jdk-") => // Fingerprint.fromJdk prefix
+          progressListener.onProgress(IndexingPhase.Jdk, 0, 1, "src.zip")
+          enqueue(fp, src, 0, IndexingPhase.Jdk)
         case Some(src) =>
           depsTotal.incrementAndGet()
           reportDeps(src.last)

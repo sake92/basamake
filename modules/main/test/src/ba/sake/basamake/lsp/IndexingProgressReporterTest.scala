@@ -89,8 +89,12 @@ class IndexingProgressReporterTest extends FunSuite {
     assertEquals(sent.size(), 0)
   }
 
-  test("disables permanently when createProgress fails — indexing must not throw") {
-    val failing = new LanguageClient {
+  test("a rejected createProgress is retried after cooldown, not fatal") {
+    // simulates the initialize-handshake window: the client has no
+    // window/workDoneProgress/create handler yet (MethodNotFound), then works
+    val sent = new CopyOnWriteArrayList[ProgressParams]()
+    var calls = 0
+    val flaky = new LanguageClient {
       override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = ()
       override def telemetryEvent(x: Any): Unit = ()
       override def showMessage(p: MessageParams): Unit = ()
@@ -99,14 +103,24 @@ class IndexingProgressReporterTest extends FunSuite {
       override def logMessage(p: MessageParams): Unit = ()
       override def applyEdit(p: ApplyWorkspaceEditParams) =
         CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
-      override def createProgress(p: WorkDoneProgressCreateParams): CompletableFuture[Void] =
-        throw new RuntimeException("client does not support progress")
+      override def createProgress(p: WorkDoneProgressCreateParams): CompletableFuture[Void] = {
+        calls += 1
+        if (calls == 1) throw new RuntimeException("MethodNotFound: no handler yet")
+        CompletableFuture.completedFuture(null.asInstanceOf[Void])
+      }
+      override def notifyProgress(p: ProgressParams): Unit = sent.add(p)
     }
     val rep = new IndexingProgressReporter
-    rep.setClient(failing)
+    rep.setClient(flaky)
     rep.setEnabled(true)
+    rep.setBeginRetryMillis(0) // retry immediately in the test
 
-    rep.onProgress(IndexingPhase.Jdk, 0, 1, "src.zip") // must NOT throw
-    rep.onProgress(IndexingPhase.Jdk, 1, 1, "src.zip") // must NOT throw
+    rep.onProgress(IndexingPhase.Jdk, 0, 570000, "src.zip") // rejected — must NOT throw
+    rep.onProgress(IndexingPhase.Jdk, 100, 570000, "src.zip") // retry succeeds → begin
+    rep.onProgress(IndexingPhase.Jdk, 570000, 570000, "src.zip") // end
+
+    assertEquals(sent.asScala.toList.map(progressEvent(_)._2), List("begin", "end"),
+      "a transiently rejected begin must recover on the next event")
+    assertEquals(calls, 2, "exactly one retry of createProgress")
   }
 }

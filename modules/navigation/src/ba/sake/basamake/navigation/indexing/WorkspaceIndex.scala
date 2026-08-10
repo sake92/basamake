@@ -127,6 +127,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     }
 
     report(s"Indexed $total files")
+    // Async initialize: files may be opened while indexing runs. The map
+    // re-seed above only preserved their PRESENCE — restore their buffer state
+    // (occurrences/locals) and prefer semanticdb occurrences now that pairing
+    // is done. Without this, goto-def in such tabs returns empty until the
+    // user edits or saves the file.
+    openFiles.forEach(p => refreshOpenBuffer(p))
     writeDebugDump()
   }
 

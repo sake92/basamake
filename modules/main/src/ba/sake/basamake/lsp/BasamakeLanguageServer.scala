@@ -88,15 +88,19 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     })
     // Dependency sources are NOT indexed eagerly: BspManager registers the warm-start
     // targets (cached jars only) and indexes a target's jars lazily when one of its
-    // files is opened / poked. The JDK index still runs in the background — cached
-    // index loads lazily on first lookup; a cold JDK indexes once in the background,
-    // prioritized ahead of all dependency jars.
-    try {
-      depsSymbolTable.ensureJdkIndexed()
-    } catch {
-      case e: Exception =>
-        logger.error(s"Failed to start JDK indexing: ${e.getMessage}")
-    }
+    // files is opened / poked. The JDK index runs on its OWN background thread — its
+    // first progress event (enqueue begin) must not fire on the initialize thread:
+    // the client's window/workDoneProgress/create handler only exists after the
+    // handshake, and a rejected createProgress would stall initialize for seconds.
+    // A cold JDK indexes once in the background, prioritized ahead of all dep jars.
+    Thread.ofVirtual().start(() => {
+      try {
+        depsSymbolTable.ensureJdkIndexed()
+      } catch {
+        case e: Exception =>
+          logger.error(s"Failed to start JDK indexing: ${e.getMessage}")
+      }
+    })
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(workspacePath, client, warmDeps)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
