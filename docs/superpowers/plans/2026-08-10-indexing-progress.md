@@ -457,7 +457,7 @@ object Baz {
     val deps = new IndexedSymbolTable(progressListener = listener)
     deps.ensureIndexed(List(jarA, jarB))
 
-    assert(eventually(listener.ofPhase(IndexingPhase.Dependencies).lastOption.exists(e => e._2 == e._3)),
+    assert(eventually(listener.ofPhase(IndexingPhase.Dependencies).lastOption.exists(e => e._1 == e._2)),
       "both jars must complete")
     val evs = listener.ofPhase(IndexingPhase.Dependencies) // snapshot AFTER the wait
     assertEquals(evs.head, (0L, 1L, "a-sources.jar"), "first event: 0/1 while the first jar is enqueued")
@@ -1345,7 +1345,7 @@ The tests that call `server.initialize(...)` then immediately `server.definition
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `deder exec -t test -m modules-main-test`
-Expected: PASS — the new progress test + all existing tests (definition/references/hover tests now await indexing). `LspTransportTest` needs no change: it sends no `window.workDoneProgress` capability, so the reporter stays disabled and the transport fake's default-throwing `notifyProgress` is never called.
+Expected: PASS — the new progress test + all existing tests (definition/references/hover tests now await indexing). `LspTransportTest` needs ONE change: it sends no `window.workDoneProgress` capability (reporter stays disabled, fake's default-throwing `notifyProgress` is never called) BUT its definition query now races with async indexing — insert a wait for `server.isWorkspaceIndexingDone` after `serverProxy.initialized(...)`, BEFORE the didOpen calls (the reference resolver needs the symbol table complete).
 
 - [ ] **Step 6: Commit**
 
