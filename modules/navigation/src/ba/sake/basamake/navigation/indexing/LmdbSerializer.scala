@@ -95,10 +95,16 @@ object LmdbSerializer {
     os.remove.all(tmpPath)
     os.makeDir.all(tmpPath)
     try {
-      val env = Env.create()
-        .setMapSize(MapSize)
-        .setMaxDbs(1)
-        .open(tmpPath.toIO)
+      val env =
+        try {
+          Env.create()
+            .setMapSize(MapSize)
+            .setMaxDbs(1)
+            .open(tmpPath.toIO)
+        } catch {
+          case e: Exception =>
+            throw new LmdbException(s"Failed to open LMDB env for writing at $tmpPath", e)
+        }
 
       val sink = try {
         val db = env.openDbi("symbols", DbiFlags.MDB_CREATE)
@@ -132,12 +138,19 @@ object LmdbSerializer {
 
   /** Point lookup of one symbol — opens the env per call (mmap, ~µs), never loads
     * the index into memory. Throws when the env is corrupt/missing (caller decides
-    * how to recover — IndexedSymbolTable wipes and reindexes). */
+    * how to recover — IndexedSymbolTable wipes and reindexes). Failures include
+    * the env path so a missing/corrupt index is diagnosable from the error. */
   def get(path: os.Path, symbol: String): Option[SymbolDefinition] = {
-    val env = Env.create()
-      .setMapSize(MapSize)
-      .setMaxDbs(1)
-      .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
+    val env =
+      try {
+        Env.create()
+          .setMapSize(MapSize)
+          .setMaxDbs(1)
+          .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
+      } catch {
+        case e: Exception =>
+          throw new LmdbException(s"Failed to open LMDB env at $path (lookup of '$symbol')", e)
+      }
 
     try {
       val db = env.openDbi("symbols")

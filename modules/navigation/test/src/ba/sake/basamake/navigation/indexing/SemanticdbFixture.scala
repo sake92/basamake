@@ -15,10 +15,16 @@ object SemanticdbFixture {
     * exception on missing scala-cli, compile failure, or no semanticdb output.
     */
   def compile(root: os.Path): SemanticdbDirs = {
+    // `os.proc(...).call` THROWS when the binary is missing (raw IOException:
+    // "Cannot run program scala-cli") — catch it so the failure is descriptive.
     val scalaCli = Seq("scala-cli", "scala")
-      .find(cmd => os.proc(cmd, "version").call(check = false).exitCode == 0)
+      .find(cmd => {
+        try os.proc(cmd, "version").call(check = false).exitCode == 0
+        catch { case _: Exception => false }
+      })
       .getOrElse(throw new IllegalStateException(
-        "scala-cli not found on PATH — required to generate semanticdb test fixtures"))
+        "scala-cli (or scala) not found on PATH — required to generate semanticdb test fixtures. " +
+          "Install scala-cli (https://scala-cli.virtuslab.org) or add it to PATH (e.g. in CI)."))
 
     val semTarget = root / "target" / "scala-3.8.4" / "meta"
     os.makeDir.all(semTarget)

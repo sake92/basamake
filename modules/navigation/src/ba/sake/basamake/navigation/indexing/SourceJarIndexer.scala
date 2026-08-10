@@ -41,6 +41,10 @@ object SourceJarIndexer extends StrictLogging {
     val cacheDir = cacheRoot / os.RelPath(fingerprint)
     val indexPath = cacheDir / "index.lmdb"
 
+    // Defensive: the cache dir must exist before any check or LMDB open below
+    // (LMDB's mdb_env_open fails with ENOENT when the env directory is missing).
+    os.makeDir.all(cacheDir)
+
     CacheMetadata.load(cacheDir) match {
       case Some(meta) if CacheMetadata.isValid(meta, source) && os.isDir(indexPath) =>
         logger.debug(s"Loading cached index for $source ($fingerprint)")
