@@ -3,7 +3,7 @@ package ba.sake.basamake.navigation.indexing
 import munit.FunSuite
 import scala.jdk.CollectionConverters.*
 import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
-import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable}
+import ba.sake.basamake.navigation.InMemorySymbolTable
 
 /** Records IndexingProgressListener events as (phase, done, total, message). */
 final class RecordingProgressListener extends IndexingProgressListener {
@@ -86,6 +86,7 @@ class WorkspaceIndexProgressTest extends FunSuite {
 
       val evs = listener.ofPhase(IndexingPhase.Workspace)
       // both files paired via semanticdb (done jumps 0 → 2), no extraction pass
+      assertEquals(evs.head, (0L, 2L, "scanning workspace"))
       assertEquals(evs.map(_._1).distinct, List(0L, 2L))
       assertEquals(evs.last, (2L, 2L, "Indexed 2 files"))
     } finally os.remove.all(root)

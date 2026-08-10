@@ -73,12 +73,13 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     sourcesMap.clear()
     // a file opened between the walk and the clear must not be dropped
     openFiles.forEach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
-    (scalaFiles.toSet ++ javaFiles.toSet).foreach(p => sourcesMap.put(p, SourceData.empty))
+    val allFiles = scalaFiles.toSet ++ javaFiles.toSet
+    allFiles.foreach(p => sourcesMap.put(p, SourceData.empty))
 
-    val total = (scalaFiles.toSet ++ javaFiles.toSet).size.toLong
+    val total = allFiles.size.toLong
     var done = 0L
     def report(msg: String): Unit =
-      progressListener.onProgress(IndexingPhase.Workspace, done, total, msg)
+      progressListener.onProgress(IndexingPhase.Workspace, done.min(total), total, msg)
     report("scanning workspace")
 
     // Pass A: index semanticdb DEFINITION occurrences from BSP-provided
