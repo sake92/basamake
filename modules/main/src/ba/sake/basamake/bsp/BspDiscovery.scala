@@ -9,7 +9,8 @@ object BspDiscovery extends StrictLogging {
   /** Discover ALL .bsp JSON files recursively under workspace root.
     * Gitignored directories are pruned, EXCEPT `.bsp` dirs themselves — they are
     * typically gitignored but essential. Pass an engine built with
-    * `exemptLastNames = Set(".bsp")`. */
+    * `exemptLastNames = Set(".bsp")`.
+    * `.git` dirs and nested git repositories are never entered. */
   def discover(workspaceRoot: os.Path, engine: GitIgnoreEngine): List[BspConnectionSpec] = {
     val jsonFiles = findBspJsonFiles(workspaceRoot, engine)
     if jsonFiles.isEmpty then
@@ -29,9 +30,11 @@ object BspDiscovery extends StrictLogging {
     .toSet
 
   private def findBspDirs(root: os.Path, engine: GitIgnoreEngine): List[os.Path] =
-    os.walk(root, maxDepth = 10, skip = p => os.isDir(p) && engine.isIgnored(p, isDir = true))
-      .filter(p => os.isDir(p) && p.last == ".bsp")
-      .toList
+    os.walk(root, maxDepth = 10, skip = p =>
+      os.isDir(p) && (p.last == ".git" || engine.isIgnored(p, isDir = true))
+    )
+    .filter(p => os.isDir(p) && p.last == ".bsp")
+    .toList
 
   private def parseBspSpec(jsonPath: os.Path, workspaceRoot: os.Path): Option[BspConnectionSpec] =
     try

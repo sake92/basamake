@@ -49,4 +49,31 @@ class BspDiscoveryTest extends FunSuite {
       assertEquals(specs.map(_.content.name), List("sbt"))
     } finally os.remove.all(root)
   }
+
+  test(".bsp inside a nested git repo is not discovered") {
+    val root = os.temp.dir(prefix = "bsp-disc-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / ".bsp")
+      os.write(root / ".bsp" / "sbt.json", sbtJson)
+      os.makeDir.all(root / "nested" / ".git")
+      os.makeDir.all(root / "nested" / ".bsp")
+      os.write(root / "nested" / ".bsp" / "sbt.json", sbtJson)
+      val specs = BspDiscovery.discover(root, engine(root))
+      assertEquals(specs.map(_.content.name), List("sbt"))
+    } finally os.remove.all(root)
+  }
+
+  test("nothing is discovered inside .git internals (submodule git dirs)") {
+    val root = os.temp.dir(prefix = "bsp-disc-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / ".bsp")
+      os.write(root / ".bsp" / "sbt.json", sbtJson)
+      os.makeDir.all(root / ".git" / "modules" / "sub" / ".bsp")
+      os.write(root / ".git" / "modules" / "sub" / ".bsp" / "sbt.json", sbtJson)
+      val specs = BspDiscovery.discover(root, engine(root))
+      assertEquals(specs.map(_.content.name), List("sbt"))
+    } finally os.remove.all(root)
+  }
 }
