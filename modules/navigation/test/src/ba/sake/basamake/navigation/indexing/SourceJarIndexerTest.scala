@@ -192,4 +192,19 @@ object Baz {
       os.remove.all(cacheDir)
     }
   }
+
+  test("progress callback reports per-source-entry done/total") {
+    val tempDir = os.temp.dir()
+    val jarPath = buildSmallJar(tempDir) // 2 source entries (Foo.java, Baz.scala)
+
+    val fingerprint = "test_progress_bd5a1f"
+    cleanCache(fingerprint)
+
+    val events = scala.collection.mutable.ListBuffer[(Long, Long, String)]()
+    SourceJarIndexer.index(jarPath, fingerprint, (done, total, name) => events += ((done, total, name)))
+
+    assertEquals(events.last, (2L, 2L, jarPath.last), "total must count source entries only")
+    assertEquals(events.map(_._1).toList, List(1L, 2L), "done must increment per source entry")
+    assert(events.forall(_._2 == 2L), "every event carries the pre-counted total")
+  }
 }

@@ -85,6 +85,12 @@ class LspTransportTest extends FunSuite {
         assert(didRename != null && !didRename.getFilters.isEmpty, "didRename filters must be advertised")
         serverProxy.initialized(new InitializedParams())
 
+        // workspace indexing now runs on a background thread (launched by
+        // initialize) — the definition query below needs the symbol table ready
+        val deadline = System.currentTimeMillis() + 20000
+        while (!server.isWorkspaceIndexingDone && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        assert(server.isWorkspaceIndexingDone, "workspace index should finish")
+
         serverProxy.getTextDocumentService().didOpen(new DidOpenTextDocumentParams(
           new TextDocumentItem(mainFile.toNIO.toUri.toString, "scala", 1, mainText)))
         serverProxy.getTextDocumentService().didOpen(new DidOpenTextDocumentParams(

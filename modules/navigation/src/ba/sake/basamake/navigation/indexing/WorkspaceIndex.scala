@@ -20,7 +20,7 @@ private object SourceData {
   val empty: SourceData = SourceData(Vector.empty, Vector.empty, None)
 }
 
-class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty) extends StrictLogging {
+class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop) extends StrictLogging {
 
   // One map for ALL workspace sources (keyed by path): the keySet IS the live
   // source list (no separate knownSources), semanticdbPath is the pairing,
@@ -71,7 +71,16 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     logger.info(s"Found files: scala=${scalaFiles.size}, java=${javaFiles.size}")
 
     sourcesMap.clear()
-    (scalaFiles.toSet ++ javaFiles.toSet).foreach(p => sourcesMap.put(p, SourceData.empty))
+    // a file opened between the walk and the clear must not be dropped
+    openFiles.forEach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
+    val allFiles = scalaFiles.toSet ++ javaFiles.toSet
+    allFiles.foreach(p => sourcesMap.put(p, SourceData.empty))
+
+    val total = allFiles.size.toLong
+    var done = 0L
+    def report(msg: String): Unit =
+      progressListener.onProgress(IndexingPhase.Workspace, done.min(total), total, msg)
+    report("scanning workspace")
 
     // Pass A: index semanticdb DEFINITION occurrences from BSP-provided
     // (sourceRootDir, semanticdbDir) pairs into symbolTable, pair with sources.
@@ -83,6 +92,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
         val srcRoot = root.sourceRootDir
         val pairs = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
         pairs.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
+        done += pairs.size.toLong
+        report(s"semanticdb ${pairs.size} files")
         logger.info(s"Indexed ${pairs.size} semanticdb-paired source files from ${semDir}")
       }
       val paired = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
@@ -99,6 +110,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       } catch {
         case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
       }
+      done += 1
+      report(path.last)
     }
     for (path <- javaFiles if sourcesMap.get(path).semanticdbPath.isEmpty) {
       logger.debug(s"Extracting definitions from $path")
@@ -109,8 +122,17 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       } catch {
         case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
       }
+      done += 1
+      report(path.last)
     }
 
+    report(s"Indexed $total files")
+    // Async initialize: files may be opened while indexing runs. The map
+    // re-seed above only preserved their PRESENCE — restore their buffer state
+    // (occurrences/locals) and prefer semanticdb occurrences now that pairing
+    // is done. Without this, goto-def in such tabs returns empty until the
+    // user edits or saves the file.
+    openFiles.forEach(p => refreshOpenBuffer(p))
     writeDebugDump()
   }
 

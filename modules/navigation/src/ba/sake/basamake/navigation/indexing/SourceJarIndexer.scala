@@ -37,7 +37,7 @@ object SourceJarIndexer extends StrictLogging {
     * symbol table is ever built (the JDK index alone is 570k symbols; building a
     * table for it cost ~500MB of heap). Lookups go through `LmdbSerializer.get`
     * point queries. */
-  def index(source: os.Path, fingerprint: String): Unit = {
+  def index(source: os.Path, fingerprint: String, progress: (Long, Long, String) => Unit = (_, _, _) => ()): Unit = {
     val cacheDir = cacheRoot / os.RelPath(fingerprint)
     val indexPath = cacheDir / "index.lmdb"
 
@@ -59,11 +59,16 @@ object SourceJarIndexer extends StrictLogging {
     val sink = try {
       val zip = new ZipFile(source.toIO)
       try {
+        // pre-count source entries for honest progress totals
+        // (zip.size() includes directories and non-source files)
+        val totalEntries = zip.entries().asScala.count(e => !e.isDirectory && isSourceEntry(e.getName)).toLong
+        var doneEntries = 0L
         LmdbSerializer.streamingSave(indexPath, cacheDir) { sink =>
           val scalaExtractor = new ScalaDefinitionsExtractor(sink)
           val javaExtractor = new JavaDefinitionsExtractor(sink)
           zip.entries().asScala.foreach { entry =>
             if (!entry.isDirectory && isSourceEntry(entry.getName)) {
+              doneEntries += 1
               try {
                 val entryPath = entry.getName
                 val content = new String(zip.getInputStream(entry).readAllBytes(), "UTF-8")
@@ -77,6 +82,7 @@ object SourceJarIndexer extends StrictLogging {
                 case NonFatal(e) =>
                   logger.warn(s"Skipping unindexable entry ${entry.getName} in $source: ${e.getMessage}")
               }
+              progress(doneEntries, totalEntries, source.last)
             }
           }
         }

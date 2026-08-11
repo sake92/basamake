@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 import com.typesafe.scalalogging.StrictLogging
@@ -23,17 +23,20 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
   * resolved by symbol only. Since the index is immutable (`removeByPath` is a
   * no-op), an always-empty result can never go stale.
   *
-  * Indexing is LAZY and target-scoped: `registerTarget` only records a target's
-  * dependency sources (and registers already-cached jars for routing) — nothing
-  * is parsed. `ensureIndexed` / `ensureIndexedFor` kick off background indexing
-  * of the UNCACHED jars on virtual threads; a lookup that meets an uncached jar
-  * queues it too (single-flight) and returns empty — the next request succeeds.
-  *
-  * Memory: concurrent background indexing is bounded (`indexLimiter`, 2 permits —
-  * parsing ~90 source jars concurrently used to spike committed heap past 1GB;
-  * index writes are streamed into LMDB, so no in-memory symbol table is built).
+  * Indexing is LAZY, target-scoped and PRIORITIZED: `registerTarget` only records
+  * a target's dependency sources (and registers already-cached jars for routing) —
+  * nothing is parsed. `ensureIndexed` / `ensureIndexedFor` / lookup misses enqueue
+  * the UNCACHED jars on a shared priority queue (single-flight per fingerprint);
+  * `workerCount` worker threads pick jobs by priority: the JDK first (0 — enqueued
+  * during initialize, so it always starts before any dep jar), then scala-lang
+  * jars (1 — most user code depends on them), then everything else (2). Bounded
+  * concurrency: parsing ~90 source jars at once used to spike committed heap past
+  * 1GB; index writes are streamed into LMDB, so no in-memory symbol table is built.
   */
-class IndexedSymbolTable extends SymbolTable with StrictLogging {
+class IndexedSymbolTable(
+    progressListener: IndexingProgressListener = IndexingProgressListener.noop,
+    workerCount: Int = 2
+) extends SymbolTable with StrictLogging {
 
   // full dotted package (as listed in metadata.json) → fingerprints defining it
   private val route = new ConcurrentHashMap[String, java.util.Set[String]]()
@@ -50,9 +53,8 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private val targetDeps = new ConcurrentHashMap[String, List[os.Path]]()
   // per-fingerprint single-flight locks (per-file extraction only)
   private val fpLocks = new ConcurrentHashMap[String, Object]()
-  // fingerprints currently being indexed (dedupe across targets/calls)
+  // fingerprints currently queued or indexing (dedupe across targets/calls)
   private val indexing = ConcurrentHashMap.newKeySet[String]()
-  private val jdkIndexing = new AtomicBoolean(false)
   // fingerprint → the candidate jars of the request that first resolved a symbol
   // INTO this jar ("reach context"). When the user navigates from a workspace
   // file into dep source, we remember the owning target's deps, so lookups from
@@ -66,12 +68,19 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   private val recentFps = new ConcurrentHashMap[String, Long]()
   private val MaxRecentFps = 128 // clear-on-overflow — a cleared LRU degrades to version ordering
 
-  // Bounds concurrent background indexing. Parsing source jars with scalameta is
-  // memory-hungry — one virtual thread per jar meant ~90 jars parsed at once on
-  // startup, spiking the committed heap past 1GB. 2 concurrent indexes keep the
-  // peak low; wall time is barely affected (parsing is CPU-bound and was
-  // time-sliced anyway).
-  private val indexLimiter = new java.util.concurrent.Semaphore(2)
+  // ── priority job queue ────────────────────────────────────────
+  // JDK = 0 (always first), scala-lang = 1, everything else = 2.
+  // `seq` breaks ties FIFO. The worker threads ARE the concurrency bound.
+  private final case class IndexJob(priority: Int, seq: Long, fp: String, src: os.Path, phase: IndexingPhase)
+  private val jobQueue = new java.util.concurrent.PriorityBlockingQueue[IndexJob](16,
+    java.util.Comparator.comparingInt[IndexJob](_.priority).thenComparingLong(_.seq))
+  private val seqCounter = new AtomicLong(0)
+  private var workersStarted = false
+
+  // Dependencies-phase progress: jar-level done/total (entries within a jar are
+  // reported per-entry by SourceJarIndexer and forwarded as the message).
+  private val depsTotal = new AtomicLong(0)
+  private val depsDone = new AtomicLong(0)
 
   // ── public extra API ──────────────────────────────────────────
 
@@ -115,14 +124,17 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
           registeredFps.add(fp)
         } else if indexing.add(fp) then {
           logger.info(s"Indexing dependency source ${src.last} in background")
-          indexInBackground(src, fp)
+          depsTotal.incrementAndGet()
+          reportDeps(src.last)
+          enqueue(fp, src, priorityOf(fp, src.last), IndexingPhase.Dependencies)
         }
       }
     }
   }
 
   /** Ensure the JDK src.zip (`<java.home>/lib/src.zip`) is cached and registered.
-    * No-op when the runtime has no sources. */
+    * No-op when the runtime has no sources. Enqueued at priority 0 — the JDK is
+    * always indexed before any dependency jar. */
   def ensureJdkIndexed(): Unit = {
     val javaHome = os.Path(System.getProperty("java.home"))
     val srcZip = javaHome / "lib" / "src.zip"
@@ -134,25 +146,19 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
       else if isCached(fp, srcZip) then {
         register(fp, srcZip)
         registeredFps.add(fp)
-      } else if jdkIndexing.compareAndSet(false, true) then {
+      } else if indexing.add(fp) then {
         logger.info(s"Indexing JDK sources $srcZip in background")
-        Thread.ofVirtual().start(() => {
-          try {
-            indexLimiter.acquire()
-            try {
-              SourceJarIndexer.index(srcZip, fp)
-              register(fp, srcZip)
-              registeredFps.add(fp)
-            } catch {
-              case NonFatal(e) => logger.warn(s"Failed to index JDK sources: ${e.getMessage}")
-            } finally indexLimiter.release()
-          } finally jdkIndexing.set(false)
-        })
+        progressListener.onProgress(IndexingPhase.Jdk, 0, 1, "src.zip")
+        enqueue(fp, srcZip, 0, IndexingPhase.Jdk)
       }
     }
   }
 
-  // ── SymbolTable impl ──────────────────────────────────────────
+  /** Queue contents as file names, ordered by (priority, seq). Test seam — lets
+    * tests assert the priority order deterministically (workerCount = 0 freezes
+    * the queue). */
+  private[navigation] def queuedJobs: List[String] =
+    jobQueue.asScala.toList.sortBy(j => (j.priority, j.seq)).map(_.src.last)
 
   /** Candidate jars relevant to a file that lives INSIDE the deps cache (an
     * extracted dep source opened via goto-def): the jar owning the file (derived
@@ -192,6 +198,8 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
     (own ++ fromMeta ++ reached).distinct
   }
 
+  // ── SymbolTable impl ──────────────────────────────────────────
+
   /** Global-route lookup (fallback when no candidate jars are known). */
   override def get(symbol: String): Option[SymbolDefinition] = get(symbol, Nil)
 
@@ -227,6 +235,66 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
 
   // ── internals ─────────────────────────────────────────────────
 
+  /** Priority: 0 = JDK (enqueued by ensureJdkIndexed directly), 1 = scala-lang
+    * jars (maven group org.scala-lang, or flat names when no POM exists),
+    * 2 = everything else. */
+  private def priorityOf(fp: String, name: String): Int =
+    if fp.startsWith("org_scala-lang/") ||
+       name.startsWith("scala-library") || name.startsWith("scala3-library") ||
+       name.startsWith("scala-reflect") || name.startsWith("scala3-compiler") ||
+       name.startsWith("scala3-interfaces")
+    then 1 else 2
+
+  private def enqueue(fp: String, src: os.Path, priority: Int, phase: IndexingPhase): Unit = {
+    jobQueue.put(IndexJob(priority, seqCounter.incrementAndGet(), fp, src, phase))
+    ensureWorkers()
+  }
+
+  private def ensureWorkers(): Unit = {
+    if (!workersStarted) synchronized {
+      if (!workersStarted) {
+        workersStarted = true
+        (1 to workerCount).foreach(_ => Thread.ofVirtual().start(() => workerLoop()))
+      }
+    }
+  }
+
+  private def workerLoop(): Unit = {
+    while (true) {
+      val job = jobQueue.take()
+      var ok = false
+      try {
+        SourceJarIndexer.index(job.src, job.fp, (done, total, name) => {
+          job.phase match {
+            case IndexingPhase.Jdk =>
+              progressListener.onProgress(IndexingPhase.Jdk, done, total, name)
+            case _ =>
+              reportDeps(s"$name ${done * 100 / total}%")
+          }
+        })
+        register(job.fp, job.src)
+        registeredFps.add(job.fp)
+        ok = true
+      } catch {
+        case NonFatal(e) => logger.warn(s"Failed to index ${job.src}: ${e.getMessage}")
+      } finally {
+        indexing.remove(job.fp)
+        job.phase match {
+          case IndexingPhase.Jdk =>
+            progressListener.onProgress(IndexingPhase.Jdk, 1, 1,
+              if (ok) "JDK sources indexed" else "JDK sources failed")
+          case _ =>
+            // a failed jar still counts as done — the phase total includes it
+            depsDone.incrementAndGet()
+            reportDeps(if (ok) s"Indexed ${job.src.last}" else s"Failed ${job.src.last}")
+        }
+      }
+    }
+  }
+
+  private def reportDeps(msg: String): Unit =
+    progressListener.onProgress(IndexingPhase.Dependencies, depsDone.get(), depsTotal.get(), msg)
+
   private def isCached(fp: String, source: os.Path): Boolean =
     val dir = SourceJarIndexer.cacheRoot / os.RelPath(fp)
     CacheMetadata.load(dir).exists(meta =>
@@ -246,7 +314,8 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
 
   /** Corrupt/missing LMDB env surfaced by a query — wipe + reindex at most ONCE
     * per fingerprint: a concurrent reindex must not be killed by repeated wipes
-    * from polling lookups. */
+    * from polling lookups. A corrupt JDK index is re-enqueued as a JDK job
+    * (priority 0, Jdk phase) — it must not wait behind dependency jars. */
   private def handleCorrupt(fp: String, e: Throwable): Unit = {
     val dir = SourceJarIndexer.cacheRoot / os.RelPath(fp)
     logger.warn(s"Corrupt index at $dir — wiping and reindexing: ${e.getMessage}")
@@ -254,8 +323,14 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
       registeredFps.remove(fp)
       os.remove.all(dir)
       Option(sourcesByFp.get(fp)) match {
-        case Some(src) => indexInBackground(src, fp)
-        case None      => indexing.remove(fp)
+        case Some(src) if fp.startsWith("jdk-") => // Fingerprint.fromJdk prefix
+          progressListener.onProgress(IndexingPhase.Jdk, 0, 1, "src.zip")
+          enqueue(fp, src, 0, IndexingPhase.Jdk)
+        case Some(src) =>
+          depsTotal.incrementAndGet()
+          reportDeps(src.last)
+          enqueue(fp, src, priorityOf(fp, src.last), IndexingPhase.Dependencies)
+        case None => indexing.remove(fp)
       }
     }
   }
@@ -312,7 +387,9 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
           }
         } else if indexing.add(fp) then {
           logger.info(s"Indexing dependency source ${src.last} in background (lookup miss)")
-          indexInBackground(src, fp)
+          depsTotal.incrementAndGet()
+          reportDeps(src.last)
+          enqueue(fp, src, priorityOf(fp, src.last), IndexingPhase.Dependencies)
         }
       }
     }
@@ -400,24 +477,6 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
       i += 1
     }
     a.length.compare(b.length)
-  }
-
-  /** Index one source in the background (virtual thread). Caller must have claimed
-    * the fingerprint in `indexing`; the claim is released when the thread finishes.
-    * Concurrent work is bounded by `indexLimiter` (see above). */
-  private def indexInBackground(src: os.Path, fp: String): Unit = {
-    Thread.ofVirtual().start(() => {
-      try {
-        indexLimiter.acquire()
-        try {
-          SourceJarIndexer.index(src, fp)
-          register(fp, src)
-          registeredFps.add(fp)
-        } catch {
-          case NonFatal(e) => logger.warn(s"Failed to index $src: ${e.getMessage}")
-        } finally indexLimiter.release()
-      } finally indexing.remove(fp)
-    })
   }
 
   /** Lazy per-file unpacking: indexes are built eagerly (LMDB only), but individual
