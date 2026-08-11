@@ -30,6 +30,31 @@ class WorkspaceIndexTest extends FunSuite {
     } finally os.remove.all(root)
   }
 
+  test("file with given imports does not kill workspace indexing") {
+    val root = TestFixture.copy("sbt", "sbt-givens")
+    try {
+      val givensFile = root / "src" / "main" / "scala" / "Givens.scala"
+      os.write.over(givensFile,
+        """import scala.util.given
+          |import scala.util.{given Ordering}
+          |object Givens { val n: Int = 1 }
+          |""".stripMargin)
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      // file open BEFORE initialize — the scenario that stopped all indexing
+      idx.onDidOpen(givensFile)
+      idx.initialize(List.empty) // must not throw
+      // other files still index fine afterwards
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      idx.onDidOpen(mainFile)
+      val locs = idx.gotoDefinitions(mainFile, 10, 4)
+      assert(locs.nonEmpty, s"Expected locations for utils, got $locs")
+      // the given-import file itself resolves without crashing
+      idx.findSymbolsAt(givensFile, 0, 15)
+      assert(st.get("_empty_/Givens.").isDefined, "Expected _empty_/Givens. in symbol table")
+    } finally os.remove.all(root)
+  }
+
   test("findSymbolsAt resolves cross-file utils identifier") {
     val root = TestFixture.copy("sbt", "sbt-findsym")
     try {

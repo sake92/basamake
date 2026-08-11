@@ -24,16 +24,22 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     }
 
   /** Test-friendly entry point: filename + source string. */
-  def extractFromContent(fileName: String, content: String, path: os.Path): Unit = {
-    currentPath = path
-    require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 always wraps top-level defs under `<basename>$package.` and needs the filename to compute it")
-    parseSource(content) match {
-      case Right(src) =>
-        extractInternal(fileName, src)
-      case Left(err) =>
-        logger.error(s"Failed to parse Scala source '${path}': ${err}")
+  def extractFromContent(fileName: String, content: String, path: os.Path): Unit =
+    try {
+      currentPath = path
+      require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 always wraps top-level defs under `<basename>$package.` and needs the filename to compute it")
+      parseSource(content) match {
+        case Right(src) =>
+          extractInternal(fileName, src)
+        case Left(err) =>
+          logger.error(s"Failed to parse Scala source '${path}': ${err}")
+      }
+    } catch {
+      case NonFatal(e) =>
+        // One unhandled tree shape must never abort workspace indexing — log
+        // (MatchError's message names the tree class) and continue.
+        logger.warn(s"Failed to extract definitions from ${path}: ${e.getClass.getSimpleName}: ${e.getMessage}")
     }
-  }
 
   // ── parse ────────────────────────────────────────────────────
 

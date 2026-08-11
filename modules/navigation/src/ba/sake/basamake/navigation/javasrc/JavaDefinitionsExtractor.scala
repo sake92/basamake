@@ -37,13 +37,19 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
       case NonFatal(e) => logger.warn(s"Failed to parse Java source ${path}: ${e.getMessage}")
     }
 
-  def extractFromContent(fileName: String, content: String, path: os.Path): Unit = {
-    currentPath = path
-    parse(content) match {
-      case Some(cu) => extractCompilationUnit(cu)
-      case None     => ()
+  def extractFromContent(fileName: String, content: String, path: os.Path): Unit =
+    try {
+      currentPath = path
+      parse(content) match {
+        case Some(cu) => extractCompilationUnit(cu)
+        case None     => ()
+      }
+    } catch {
+      case NonFatal(e) =>
+        // One unhandled node shape must never abort workspace indexing — log
+        // and continue.
+        logger.warn(s"Failed to extract definitions from ${path}: ${e.getClass.getSimpleName}: ${e.getMessage}")
     }
-  }
 
   private def parse(content: String): Option[CompilationUnit] = {
     val res: ParseResult[CompilationUnit] = javaParser.parse(content)

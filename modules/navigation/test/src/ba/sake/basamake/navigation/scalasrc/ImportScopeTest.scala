@@ -98,4 +98,71 @@ class ImportScopeTest extends FunSuite {
       case _ => fail("parse failed")
     }
   }
+
+  test("named given import resolves and produces explicit entry") {
+    val code = "import a.b.{given Foo}"
+    val input = Input.String(code)
+    val tree = { given Dialect = Scala3Future; input.parse[Stat] }
+    tree match {
+      case Parsed.Success(imp: Import) =>
+        val st = new InMemorySymbolTable
+        st.add(SymbolDefinition("a/b/Foo.", "Foo", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+        val ss = new ScopeStack(st)
+        val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
+        val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
+        assertEquals(scopes.head.explicit.get("Foo"), Some("a/b/Foo."))
+        assert(emitted.exists(_ == ("Foo", "a/b/Foo.")))
+      case _ => fail("parse failed")
+    }
+  }
+
+  test("named given import (unresolved) does not throw") {
+    val code = "import a.b.{given Foo}"
+    val input = Input.String(code)
+    val tree = { given Dialect = Scala3Future; input.parse[Stat] }
+    tree match {
+      case Parsed.Success(imp: Import) =>
+        val st = new InMemorySymbolTable
+        val ss = new ScopeStack(st)
+        val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
+        val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
+        assert(scopes.nonEmpty)
+        assert(scopes.head.explicit.isEmpty)
+      case _ => fail("parse failed")
+    }
+  }
+
+  test("bare given import produces wildcard entry") {
+    val code = "import a.b.given"
+    val input = Input.String(code)
+    val tree = { given Dialect = Scala3Future; input.parse[Stat] }
+    tree match {
+      case Parsed.Success(imp: Import) =>
+        val st = new InMemorySymbolTable
+        val ss = new ScopeStack(st)
+        val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
+        val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
+        assert(scopes.head.wildcards.contains("a/b/"),
+          s"Expected wildcard a/b/, got: ${scopes.head.wildcards}")
+      case _ => fail("parse failed")
+    }
+  }
+
+  test("mixed named given + wildcard import produces both entries") {
+    val code = "import a.b.{given Foo, _}"
+    val input = Input.String(code)
+    val tree = { given Dialect = Scala3Future; input.parse[Stat] }
+    tree match {
+      case Parsed.Success(imp: Import) =>
+        val st = new InMemorySymbolTable
+        st.add(SymbolDefinition("a/b/Foo.", "Foo", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+        val ss = new ScopeStack(st)
+        val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
+        val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
+        assertEquals(scopes.head.explicit.get("Foo"), Some("a/b/Foo."))
+        assert(scopes.head.wildcards.contains("a/b/"),
+          s"Expected wildcard a/b/, got: ${scopes.head.wildcards}")
+      case _ => fail("parse failed")
+    }
+  }
 }

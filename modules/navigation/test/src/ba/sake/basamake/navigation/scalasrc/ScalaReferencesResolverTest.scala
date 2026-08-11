@@ -289,4 +289,19 @@ class ScalaReferencesResolverTest extends FunSuite {
     assertHasOccurrence(rf, "pkg/C#")
     assertHasOccurrence(rf, "pkg/C#m().")
   }
+
+  // ── R.GIVEN given imports (named + given-all) don't crash ───────
+
+  test("given imports don't crash resolution; other refs still resolve") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("pkg/Foo#", "Foo", isType = true, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    val code =
+      """package pkg
+        |import scala.util.given
+        |import scala.util.{given Ordering}
+        |class Bar { val f: Foo = null }
+        |""".stripMargin
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
+    assertHasOccurrence(rf, "pkg/Foo#")
+  }
 }

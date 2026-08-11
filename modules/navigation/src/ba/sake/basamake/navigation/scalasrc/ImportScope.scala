@@ -21,51 +21,80 @@ object ImportScope {
     imp.importers.toList.map { importer =>
       val prefix = resolveImportPrefix(importer.ref, scopeStack, emitRef)
       val explicit = Map.newBuilder[String, String]
+      val wildcards = List.newBuilder[String]
       val unimports = Set.newBuilder[String]
 
-      importer.importees.foreach {
-        case Importee.Name(n) =>
-          val name = n.value
-          resolveImportName(name, prefix, scopeStack.symbolTable) match {
-            case Some(sym) =>
-              emitRef(n, sym)
-              explicit += (name -> sym)
-            case None =>
-              emitRef(n, "")
-          }
+      importer.importees.foreach { importee =>
+        importee match {
+          case Importee.Name(n) =>
+            val name = n.value
+            resolveImportName(name, prefix, scopeStack.symbolTable) match {
+              case Some(sym) =>
+                emitRef(n, sym)
+                explicit += (name -> sym)
+              case None =>
+                emitRef(n, "")
+            }
 
-        case Importee.Rename(from, to) =>
-          val toName = to.value
-          resolveImportName(from.value, prefix, scopeStack.symbolTable) match {
-            case Some(sym) =>
-              emitRef(to, sym)
-              explicit += (toName -> sym)
-            case None =>
-              emitRef(to, "")
-          }
-          // Also emit ref for original name
-          resolveImportName(from.value, prefix, scopeStack.symbolTable) match {
-            case Some(sym) =>
-              emitRef(from, sym)
-              explicit += (from.value -> sym)
-            case None =>
-              emitRef(from, "")
-          }
+          case Importee.Rename(from, to) =>
+            val toName = to.value
+            resolveImportName(from.value, prefix, scopeStack.symbolTable) match {
+              case Some(sym) =>
+                emitRef(to, sym)
+                explicit += (toName -> sym)
+              case None =>
+                emitRef(to, "")
+            }
+            // Also emit ref for original name
+            resolveImportName(from.value, prefix, scopeStack.symbolTable) match {
+              case Some(sym) =>
+                emitRef(from, sym)
+                explicit += (from.value -> sym)
+              case None =>
+                emitRef(from, "")
+            }
 
-        case Importee.Unimport(n) =>
-          unimports += n.value
+          case Importee.Unimport(n) =>
+            unimports += n.value
 
-        case Importee.Wildcard() =>
-          // Wildcard: no individual refs; prefix resolved above
-          ()
+          case Importee.Wildcard() =>
+            // Wildcard: no individual refs; prefix resolved above
+            wildcards += prefix
+
+          case Importee.Given(tpe) =>
+            // `import a.b.{given Foo}` — resolve like a name import. v1: the
+            // given name goes into `explicit` so goto-def on the importee and
+            // on by-name given usages resolves; anonymous givens stay a non-goal.
+            typeNameOf(tpe).foreach { name =>
+              resolveImportName(name, prefix, scopeStack.symbolTable) match {
+                case Some(sym) =>
+                  emitRef(tpe, sym)
+                  explicit += (name -> sym)
+                case None =>
+                  emitRef(tpe, "")
+              }
+            }
+
+          case Importee.GivenAll() =>
+            // `import a.b.given` — all givens: same as a wildcard (v1)
+            wildcards += prefix
+        }
       }
 
       ImportScopeData(
         explicit = explicit.result(),
-        wildcards = if (importer.importees.exists(_.isInstanceOf[Importee.Wildcard])) List(prefix) else Nil,
+        wildcards = wildcards.result(),
         unimports = unimports.result()
       )
     }
+  }
+
+  /** Last name segment of a given-import type: `given Foo`, `given a.b.C`, `given Foo[Int]`. */
+  private def typeNameOf(tpe: Type): Option[String] = tpe match {
+    case Type.Name(n)         => Some(n)
+    case Type.Select(_, name) => Some(name.value)
+    case Type.Apply(head, _)  => typeNameOf(head)
+    case _                    => None
   }
 
   /** Resolve the prefix of an import statement (e.g. `a.b.C` in `import a.b.C._`). */

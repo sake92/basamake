@@ -5,6 +5,7 @@ local const navigationModules =
     root = "modules/navigation"
     template = new {
       scalaVersion = "3.7.4"
+      scalacOptions { "-Xfatal-warnings" } // non-exhaustive matches (e.g. scalameta trees) fail the build
       deps {
         "com.typesafe.scala-logging::scala-logging:3.9.5"
         "org.scalameta::semanticdb-shared:4.17.2"

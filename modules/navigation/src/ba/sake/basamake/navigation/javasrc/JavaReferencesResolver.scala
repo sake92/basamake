@@ -36,13 +36,20 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         ResolvedFile(Vector.empty, Vector.empty)
     }
 
-  def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile = {
-    currentPath = path
-    parse(content) match {
-      case Some(cu) => resolveInternal(cu)
-      case None => ResolvedFile(Vector.empty, Vector.empty)
+  def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile =
+    try {
+      currentPath = path
+      parse(content) match {
+        case Some(cu) => resolveInternal(cu)
+        case None => ResolvedFile(Vector.empty, Vector.empty)
+      }
+    } catch {
+      case NonFatal(e) =>
+        // One unhandled node shape must never abort workspace indexing — log
+        // and degrade to empty.
+        logger.warn(s"Failed to resolve references in ${path}: ${e.getClass.getSimpleName}: ${e.getMessage}")
+        ResolvedFile(Vector.empty, Vector.empty)
     }
-  }
 
   private def parse(content: String): Option[CompilationUnit] = {
     val res: ParseResult[CompilationUnit] = new JavaParser().parse(content)

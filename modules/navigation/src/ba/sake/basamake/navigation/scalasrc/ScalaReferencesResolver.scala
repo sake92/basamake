@@ -32,17 +32,24 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     }
 
   /** Test-friendly entry point: filename + source string. */
-  def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile = {
-    currentPath = path
-    require(fileName.nonEmpty, "fileName must be non-empty")
-    parseSource(content) match {
-      case Right(src) => 
-        resolveInternal(fileName, src)
-      case Left(err) => 
-        logger.error(s"Failed to parse Scala source '${path}': ${err}")
+  def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile =
+    try {
+      currentPath = path
+      require(fileName.nonEmpty, "fileName must be non-empty")
+      parseSource(content) match {
+        case Right(src) =>
+          resolveInternal(fileName, src)
+        case Left(err) =>
+          logger.error(s"Failed to parse Scala source '${path}': ${err}")
+          ResolvedFile.empty
+      }
+    } catch {
+      case NonFatal(e) =>
+        // One unhandled tree shape must never abort workspace indexing — log
+        // (MatchError's message names the tree class) and degrade to empty.
+        logger.warn(s"Failed to resolve references in ${path}: ${e.getClass.getSimpleName}: ${e.getMessage}")
         ResolvedFile.empty
     }
-  }
 
   // ── parse ────────────────────────────────────────────────────
 
