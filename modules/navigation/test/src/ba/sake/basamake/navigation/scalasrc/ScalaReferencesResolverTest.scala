@@ -304,4 +304,24 @@ class ScalaReferencesResolverTest extends FunSuite {
     val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
     assertHasOccurrence(rf, "pkg/Foo#")
   }
+
+  // ── .sbt build definitions ────────────────────────────────────
+
+  test("sbt: ref to val defined in same build.sbt resolves under _empty_/build.") {
+    val st = new InMemorySymbolTable
+    val code = "lazy val core = project\nlazy val cli = project.dependsOn(core)"
+    new ScalaDefinitionsExtractor(st).extractFromContent("build.sbt", code, os.pwd / "build.sbt")
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("build.sbt", code, os.pwd / "build.sbt")
+    assertHasOccurrence(rf, "_empty_/build.core.")
+  }
+
+  // ── Scala 3 top-level statements ──────────────────────────────
+
+  test("scala 3 top-level: ref to top-level val from method resolves under X$package") {
+    val st = new InMemorySymbolTable
+    val code = "val greeting = \"hello\"\ndef main(): Unit = println(greeting)"
+    new ScalaDefinitionsExtractor(st).extractFromContent("Main.scala", code, os.pwd / "Main.scala")
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("Main.scala", code, os.pwd / "Main.scala")
+    assertHasOccurrence(rf, "_empty_/Main$package.greeting.")
+  }
 }
