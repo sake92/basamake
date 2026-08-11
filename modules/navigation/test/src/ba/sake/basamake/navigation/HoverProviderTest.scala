@@ -178,6 +178,31 @@ class HoverProviderTest extends FunSuite {
     } finally os.remove.all(root)
   }
 
+  // ── sbt hover ────────────────────────────────────────────────
+
+  test("hover on .sbt def goes through the sbt parse dispatch") {
+    val root = os.pwd / "tmp" / s"hover-sbt-${System.currentTimeMillis()}"
+    try {
+      val buildFile = root / "build.sbt"
+      os.makeDir.all(root)
+      os.write(buildFile, "lazy val root = project\n")
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      idx.initialize(List.empty)
+      // sbt globals only enter the table via onDidSave; onDidOpen here resolves
+      // refs only — seed the def directly (non-local symbol, table accepts it)
+      st.add(SymbolDefinition("_empty_/build.root.", "root", isType = false,
+        new Range(0, 9, 0, 13), buildFile))
+      idx.onDidOpen(buildFile)
+      val provider = HoverProvider(idx)
+
+      val buildText = os.read(buildFile)
+      val (l, c) = posAt(buildText, """val (?<p>root)""")
+      val info = provider.hover(buildFile, l, c).get
+      assertEquals(info.signature, "lazy val root")
+    } finally os.remove.all(root)
+  }
+
   // ── fallback ─────────────────────────────────────────────────
 
   test("fallback extracts declaration lines for synthetic symbols") {

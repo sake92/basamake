@@ -142,5 +142,6 @@ class ScalaHoverExtractorTest extends FunSuite {
     val src = ScalaHoverExtractor.parse("build.sbt", "lazy val root = project").get
     val res = ScalaHoverExtractor.extractSource(src, "root", new Range(0, 0, 0, 0))
     assert(res.isDefined, s"expected hover for root, got $res")
+    assertEquals(res.map(_._1), Some("lazy val root"))
   }
 }
