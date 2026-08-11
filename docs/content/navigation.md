@@ -19,6 +19,8 @@ When a workspace is opened, Basamake builds an index of all definitions and refe
    Scala is parsed with [scalameta](https://scalameta.org/), Java with [JavaParser](https://github.com/javaparser/javaparser).
 
 Files that don't match your `.gitignore` are skipped, so huge build outputs stay out of the index.
+Directories containing their own `.git` (nested git repositories) are treated as separate
+workspaces and never indexed — open them directly to work on them.
 While the index is being built, progress is reported to the editor
 (so it doesn't look frozen on big projects).
 
