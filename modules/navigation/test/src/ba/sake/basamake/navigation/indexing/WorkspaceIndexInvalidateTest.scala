@@ -268,4 +268,25 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
         "no definitions may be extracted for gitignored files")
     } finally os.remove.all(root)
   }
+
+  test("nested repo paths never enter the index via open/save/create") {
+    val root = buildSbtLikeFixture()
+    try {
+      os.makeDir.all(root / "nested" / ".git")
+      val (idx, st) = freshIndexAt(root)
+      val nestedFile = root / "nested" / "sub" / "A.scala"
+      os.write(nestedFile, "object NestedThing\n", createFolders = true)
+
+      // all entry points must be no-ops for nested-repo paths
+      idx.onFilesCreated(Set(nestedFile))
+      idx.onDidOpen(nestedFile)
+      idx.onDidSave(nestedFile)
+
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(!dump.contains("NestedThing"),
+        s"nested repo files must not appear in the dump:\n$dump")
+      assert(st.get("_empty_/NestedThing#").isEmpty,
+        "no definitions may be extracted for nested repo files")
+    } finally os.remove.all(root)
+  }
 }

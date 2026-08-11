@@ -924,4 +924,18 @@ class WorkspaceIndexTest extends FunSuite {
       assert(st.get("_empty_/GenByConfig#").isEmpty, "config pattern should skip src/Gen.scala")
     } finally os.remove.all(root)
   }
+
+  test("nested git repo sources are not indexed") {
+    val root = os.temp.dir(prefix = "ws-gitignore-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "src")
+      os.write(root / "src" / "Main.scala", "class RealMain\n")
+      os.makeDir.all(root / "nested" / ".git")
+      os.write(root / "nested" / "Main.scala", "class NestedMain\n")
+      val (_, st) = freshIndexAt(root)
+      assert(st.get("_empty_/RealMain#").isDefined, "src/Main.scala should be indexed")
+      assert(st.get("_empty_/NestedMain#").isEmpty, "nested repo sources must not be indexed")
+    } finally os.remove.all(root)
+  }
 }
