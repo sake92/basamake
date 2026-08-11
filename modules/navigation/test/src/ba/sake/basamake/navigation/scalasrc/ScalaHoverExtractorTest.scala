@@ -137,4 +137,10 @@ class ScalaHoverExtractorTest extends FunSuite {
     val code = "/** Docs for bar. */\nobject A {\n  def bar(): Int = 1\n  def foo(): Int = 2\n}"
     assertEquals(extractAt(code, "foo", "def foo").map(_._2), Some(None))
   }
+
+  test("sbt: build.sbt parses and extracts val signature") {
+    val src = ScalaHoverExtractor.parse("build.sbt", "lazy val root = project").get
+    val res = ScalaHoverExtractor.extractSource(src, "root", new Range(0, 0, 0, 0))
+    assert(res.isDefined, s"expected hover for root, got $res")
+  }
 }
