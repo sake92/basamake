@@ -1,5 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
+import scala.compiletime.uninitialized
+
 /** Test helper: copies a named fixture from test/resources/examples/<name> into
   * a fresh ./tmp/<testName>-<timestamp>/ directory. Caller cleans up with
   * os.remove.all() in a finally block.
@@ -41,8 +43,8 @@ object TestFixture {
 object TestCacheRootState {
 
   private var activeSuites = 0
-  private var originalCacheRoot: os.Path = _
-  private var sharedTestCacheRoot: os.Path = _
+  private var originalCacheRoot: os.Path = uninitialized
+  private var sharedTestCacheRoot: os.Path = uninitialized
 
   /** Enter a suite that needs an isolated dep cache. Returns the shared tmp root. */
   def acquire(): os.Path = synchronized {
@@ -67,7 +69,7 @@ object TestCacheRootState {
 
 trait TestCacheRoot { self: munit.FunSuite =>
 
-  private var testCacheRoot: os.Path = _
+  private var testCacheRoot: os.Path = uninitialized
 
   override def beforeAll(): Unit = {
     testCacheRoot = TestCacheRootState.acquire()

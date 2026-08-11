@@ -278,7 +278,12 @@ class IndexedSymbolTable(
         registeredFps.add(job.fp)
         ok = true
       } catch {
-        case NonFatal(e) => logger.warn(s"Failed to index ${job.src}: ${e.getMessage}")
+        // Throwable, not just NonFatal: an Error (e.g. NoClassDefFoundError from
+        // a failed LMDB/native init) must NOT kill the worker permanently -
+        // workers are started exactly once, so a dead worker silently queues all
+        // later dep/JDK jobs forever. Log and keep draining (finally clears the
+        // `indexing` marker, letting a later ensure* call retry the job).
+        case e: Throwable => logger.warn(s"Failed to index ${job.src}: ${e.getClass.getSimpleName}: ${e.getMessage}")
       } finally {
         indexing.remove(job.fp)
         job.phase match {

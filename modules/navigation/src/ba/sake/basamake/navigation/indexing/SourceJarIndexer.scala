@@ -21,6 +21,18 @@ object SourceJarIndexer extends StrictLogging {
   // overridable in tests — they must never write into the real home cache
   @volatile var cacheRoot: os.Path = defaultCacheRoot
 
+  // Serialize index() calls per fingerprint: several servers can race to index
+  // the SAME jar/JDK into the same cache dir (each LSP server spawns its own
+  // IndexedSymbolTable). Without the lock they'd wipe each other's partial work
+  // (index() does os.remove.all + writes the shared <fp>/index.lmdb.tmp) and the
+  // cache would never complete - while every waiter re-enqueues and churns. With
+  // the lock, losers wait, then hit the cache-valid check and skip.
+  // NOTE: ReentrantLock, NOT synchronized - index() runs on virtual threads and
+  // a waiter blocked on `synchronized` PINNS a carrier thread (cannot unmount),
+  // so N concurrent servers would occupy N carriers for the whole index; lock()
+  // parks instead, freeing the carrier. (A JDK index takes ~40-60s cold.)
+  private val indexLocks = new java.util.concurrent.ConcurrentHashMap[String, java.util.concurrent.locks.ReentrantLock]()
+
   /** XDG-compliant cache root: `$XDG_CACHE_HOME/basamake/deps` on Linux/mac
     * (default `~/.cache/basamake/deps`), `%LOCALAPPDATA%\basamake\deps` on Windows. */
   def defaultCacheRoot: os.Path = {
@@ -38,6 +50,16 @@ object SourceJarIndexer extends StrictLogging {
     * table for it cost ~500MB of heap). Lookups go through `LmdbSerializer.get`
     * point queries. */
   def index(source: os.Path, fingerprint: String, progress: (Long, Long, String) => Unit = (_, _, _) => ()): Unit = {
+    val lock = indexLocks.computeIfAbsent(fingerprint, _ => new java.util.concurrent.locks.ReentrantLock())
+    lock.lock()
+    try {
+      indexLocked(source, fingerprint, progress)
+    } finally {
+      lock.unlock()
+    }
+  }
+
+  private def indexLocked(source: os.Path, fingerprint: String, progress: (Long, Long, String) => Unit): Unit = {
     val cacheDir = cacheRoot / os.RelPath(fingerprint)
     val indexPath = cacheDir / "index.lmdb"
 
