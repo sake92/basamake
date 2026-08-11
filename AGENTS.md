@@ -17,6 +17,8 @@
 | All tests | `deder exec -t test` |
 | Fat JAR (for VS Code) | `deder exec -t assembly -m modules-main` → `.deder/out/modules-main/assembly/out.jar` |
 | Clean build state | `deder clean && deder exec` |
+| Build docs | `./scripts/build-docs.sh` |
+| Serve docs (dev) | `./scripts/build-docs.sh serve` → http://localhost:5555 |
 
 ## Git hygiene
 
@@ -53,6 +55,14 @@
 - VS Code may accumulate zombie basamake processes — kill them manually (`jps -vlm`)
 - Registers `.scala`/`.sbt` associations; with Metals installed, VS Code prompts which LSP to use
 
+## Docs (flatmark SSG)
+
+- User docs: `docs/content/*.md` — YAML frontmatter (`title`, `description`; `pagination: enabled: false` on index); root-relative links ending in `.html`
+- Build: `scripts/build-docs.sh` (build) / `scripts/build-docs.sh serve`; output `docs/_site/` (gitignored)
+- Theme: default `sake92/flatmark-themes` (cloned to gitignored `docs/.flatmark-cache/themes`); project overrides: `docs/_layouts/base.html`, `docs/static/`, `docs/_config.yaml`
+- Docs stay **user-facing and basic** (mechanisms, not internals) — deep architecture lives in `.agents/AGENTS.md`
+- CI: `.github/workflows/ghpages.yml` builds with `FLATMARK_BASE_URL` and deploys `docs/_site` to GitHub Pages
+
 ## External references
 
 | Need | File |
@@ -82,3 +92,4 @@
 | `modules/navigation/src/ba/sake/basamake/navigation/indexing/SourceJarIndexer.scala` | Dep/JDK sources cache (LMDB index, lazy unpack) |
 | `modules/navigation/src/ba/sake/basamake/navigation/indexing/IndexedSymbolTable.scala` | Read-only dep/JDK symbol lookups |
 | `examples/hello/` | Manual-test project (VS Code extension; per-machine `.bsp` via README flow) |
+| `docs/content/` | User-facing docs (flatmark SSG; build via `scripts/build-docs.sh`) |
