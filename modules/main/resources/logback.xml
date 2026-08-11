@@ -6,7 +6,10 @@
     </encoder>
   </appender>
 
-  <root level="DEBUG">
+  <!-- INFO by default: hot-path debug logs (route fallback, per-keystroke
+       source resolution, watcher event dumps) would flood the log file.
+       Flip to DEBUG for troubleshooting. -->
+  <root level="INFO">
     <appender-ref ref="STDERR"/>
   </root>
 </configuration>

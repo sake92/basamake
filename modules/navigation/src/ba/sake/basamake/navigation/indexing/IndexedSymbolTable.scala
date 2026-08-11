@@ -55,6 +55,8 @@ class IndexedSymbolTable(
   private val fpLocks = new ConcurrentHashMap[String, Object]()
   // fingerprints currently queued or indexing (dedupe across targets/calls)
   private val indexing = ConcurrentHashMap.newKeySet[String]()
+  // fingerprints with no known source — warn once, not per lookup
+  private val noSourceFps = ConcurrentHashMap.newKeySet[String]()
   // fingerprint → the candidate jars of the request that first resolved a symbol
   // INTO this jar ("reach context"). When the user navigates from a workspace
   // file into dep source, we remember the owning target's deps, so lookups from
@@ -494,7 +496,7 @@ class IndexedSymbolTable(
             try SourceJarIndexer.extractEntry(src, fp, entryPath)
             catch { case NonFatal(e) => logger.warn(s"Failed to extract $entryPath for $fp: ${e.getMessage}") }
           case None =>
-            logger.warn(s"No source known for $fp — cannot extract")
+            if (noSourceFps.add(fp)) logger.warn(s"No source known for $fp — cannot extract")
         }
       }
     }

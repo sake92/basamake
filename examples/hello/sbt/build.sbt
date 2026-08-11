@@ -13,6 +13,5 @@ lazy val root = project
     scalaVersion := scala3Version,
     scalacOptions += "-Ybest-effort",
     libraryDependencies += "com.lihaoyi" %% "upickle" % "4.0.0",
-    libraryDependencies += "com.lihaoyi" %% "pprint" % "0.9.6",
     libraryDependencies += "org.scalameta" %% "munit" % "1.3.2" % Test
   )
