@@ -411,4 +411,34 @@ class BasamakeLanguageServerTest extends FunSuite {
         s"begin message should carry the total, got: $beginMsg")
     } finally os.remove.all(root)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // goto-definition from build.sbt (Task 6: .sbt in LSP gates)
+  // ═══════════════════════════════════════════════════════════════
+
+  test("LSP definition: goto core from build.sbt returns build.sbt location") {
+    val root = copyFixture("sbtbuild", "lsp-sbt-goto")
+    try {
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
+
+      val buildFile = root / "build.sbt"
+      val buildText = os.read(buildFile)
+      server.didOpen(new DidOpenTextDocumentParams(
+        new TextDocumentItem(buildFile.toNIO.toUri.toString, "scala", 1, buildText)))
+
+      val (l, c) = posAt(buildText, """dependsOn\((?<p>core)\)""")
+      val params = new DefinitionParams()
+      params.setTextDocument(new TextDocumentIdentifier(buildFile.toNIO.toUri.toString))
+      params.setPosition(new Position(l, c))
+
+      val result = server.definition(params).get(10, TimeUnit.SECONDS)
+      val locations = result.getLeft
+      assert(locations.size() > 0, s"expected at least one location, got ${locations.size()}")
+      val loc = locations.get(0)
+      assertEquals(os.Path(URI.create(loc.getUri)).last, "build.sbt")
+    } finally os.remove.all(root)
+  }
 }
