@@ -924,4 +924,35 @@ class WorkspaceIndexTest extends FunSuite {
       assert(st.get("_empty_/GenByConfig#").isEmpty, "config pattern should skip src/Gen.scala")
     } finally os.remove.all(root)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // .sbt build-definition files
+  // ═══════════════════════════════════════════════════════════════
+
+  test(".sbt: initialize indexes build.sbt definitions") {
+    val root = TestFixture.copy("sbtbuild", "sbtbuild-init")
+    try {
+      val (_, st) = freshIndexAt(root)
+      val coreSym = st.get("_empty_/build.core.")
+      assert(coreSym.isDefined, "Expected _empty_/build.core. in symbol table")
+      assertEquals(coreSym.get.path.last, "build.sbt")
+      assert(st.get("_empty_/build.cli.").isDefined, "Expected _empty_/build.cli. in symbol table")
+    } finally os.remove.all(root)
+  }
+
+  test(".sbt: gotoDefinitions on ref inside build.sbt resolves to def in same file") {
+    val root = TestFixture.copy("sbtbuild", "sbtbuild-goto")
+    try {
+      val buildFile = root / "build.sbt"
+      val (idx, _) = freshIndexAt(root)
+      idx.onDidOpen(buildFile)
+      val text = os.read(buildFile)
+      val refStart = text.indexOf("dependsOn(core)") + "dependsOn(".length
+      val line = text.substring(0, refStart).count(_ == '\n')
+      val char = refStart - text.substring(0, refStart).lastIndexOf('\n') - 1
+      val locs = idx.gotoDefinitions(buildFile, line, char)
+      assert(locs.nonEmpty, s"Expected locations for core, got $locs")
+      assertEquals(locs.head.path, buildFile)
+    } finally os.remove.all(root)
+  }
 }
