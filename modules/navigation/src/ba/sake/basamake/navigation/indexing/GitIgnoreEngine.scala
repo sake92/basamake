@@ -38,6 +38,10 @@ object GitIgnoreEngine {
   * `exemptLastNames`: path segments that are NEVER ignored (e.g. ".bsp" — gitignored
   * but required by BspDiscovery and the file watcher).
   *
+  * Directories containing a `.git` entry (dir or file) below the root are
+  * nested git repositories — workspace boundaries. Their contents are always
+  * ignored, regardless of gitignore rules or exemptions.
+  *
   * The rules cache is guarded by a reentrant lock, so concurrent `isIgnored`
   * calls (file-watcher thread + BSP debounce timer) are safe. `baseLayers` is
   * written only at construction; `reload()` takes the same lock. */
@@ -85,6 +89,20 @@ final class GitIgnoreEngine(
     if os.isFile(f) then Vector(dir -> GitIgnore.readGitignorePatterns(f)) else Vector.empty
   }
 
+  /** True when `path` is inside a nested git repository: `path` itself (if a
+    * dir) or any ancestor up to (excluding) `root` contains a `.git` entry — a
+    * dir for normal repos, a file for worktrees/submodules. The root itself is
+    * exempt: it IS the workspace. Paths outside the root return false. */
+  def isInsideNestedRepo(path: os.Path): Boolean = {
+    if !path.startsWith(root) then return false
+    var cur = path
+    while cur.startsWith(root) && cur != root do {
+      if os.exists(cur / ".git") then return true
+      cur = cur / os.up
+    }
+    false
+  }
+
   /** True when `path` is ignored by the accumulated rules (last match wins across
     * all layers). A path is also ignored when ANY ancestor dir (up to, excluding,
     * the root) is ignored — git cannot re-include a file under an excluded dir.
@@ -92,6 +110,7 @@ final class GitIgnoreEngine(
     * Paths outside the root are treated as ignored (safe for watcher filters). */
   def isIgnored(path: os.Path, isDir: Boolean): Boolean = {
     if !path.startsWith(root) then return true
+    if isInsideNestedRepo(path) then return true
     if exemptLastNames.contains(path.last) then return false
     var cur = path / os.up
     while cur.startsWith(root) && cur != root do {

@@ -148,4 +148,67 @@ class GitIgnoreEngineTest extends FunSuite {
       assert(engine.isIgnored(root / os.up / "elsewhere" / ".bsp", isDir = true))
     }
   }
+
+  // ── nested git repos are workspace boundaries ───────────────
+
+  test("isInsideNestedRepo: nested git repos are boundaries") {
+    withRoot { root =>
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "src")
+      os.makeDir.all(root / "nested" / ".git")
+      os.makeDir.all(root / "nested" / "src")
+      val engine = new GitIgnoreEngine(root)
+      // the workspace root contains .git but is never a nested repo
+      assert(!engine.isInsideNestedRepo(root))
+      assert(!engine.isInsideNestedRepo(root / "src"))
+      // the nested repo dir itself and everything under it
+      assert(engine.isInsideNestedRepo(root / "nested"))
+      assert(engine.isInsideNestedRepo(root / "nested" / "src"))
+      assert(engine.isInsideNestedRepo(root / "nested" / "src" / "Main.scala"))
+      // outside the root
+      assert(!engine.isInsideNestedRepo(root / os.up / "elsewhere"))
+    }
+  }
+
+  test("isInsideNestedRepo: .git as a file (worktree/submodule) is a boundary") {
+    withRoot { root =>
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "sub" / "src")
+      os.write(root / "sub" / ".git", "gitdir: /main/.git/modules/sub\n")
+      val engine = new GitIgnoreEngine(root)
+      assert(engine.isInsideNestedRepo(root / "sub"))
+      assert(engine.isInsideNestedRepo(root / "sub" / "src" / "Foo.scala"))
+    }
+  }
+
+  test("isInsideNestedRepo: non-git workspace root still excludes inner repos") {
+    withRoot { root =>
+      os.makeDir.all(root / "proj" / ".git")
+      val engine = new GitIgnoreEngine(root)
+      assert(engine.isInsideNestedRepo(root / "proj"))
+    }
+  }
+
+  test("isIgnored: nested repo contents are ignored") {
+    withRoot { root =>
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "nested" / ".git")
+      os.makeDir.all(root / "nested" / "src")
+      val engine = new GitIgnoreEngine(root)
+      assert(engine.isIgnored(root / "nested", isDir = true))
+      assert(engine.isIgnored(root / "nested" / "src" / "Main.scala", isDir = false))
+      assert(!engine.isIgnored(root / "src" / "Main.scala", isDir = false))
+    }
+  }
+
+  test("isIgnored: nested repo wins over .bsp exemption") {
+    withRoot { root =>
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / "nested" / ".git")
+      os.makeDir.all(root / "nested" / ".bsp")
+      val exempt = new GitIgnoreEngine(root, exemptLastNames = Set(".bsp"))
+      assert(exempt.isIgnored(root / "nested" / ".bsp", isDir = true))
+      assert(exempt.isIgnored(root / "nested" / ".bsp" / "sbt.json", isDir = false))
+    }
+  }
 }
