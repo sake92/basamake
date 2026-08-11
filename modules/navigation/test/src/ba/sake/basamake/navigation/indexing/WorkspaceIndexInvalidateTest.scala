@@ -285,7 +285,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       val dump = os.read(root / ".basamake" / "index_sources.txt")
       assert(!dump.contains("A.scala"),
         s"nested repo files must not appear in the dump:\n$dump")
-      assert(st.get("_empty_/NestedThing#").isEmpty,
+      assert(st.get("_empty_/NestedThing.").isEmpty,
         "no definitions may be extracted for nested repo files")
     } finally os.remove.all(root)
   }
