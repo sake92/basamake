@@ -289,4 +289,44 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
         "no definitions may be extracted for nested repo files")
     } finally os.remove.all(root)
   }
+
+  // ── semanticdb pairing guards (warm-start hardening) ─────────
+
+  test("invalidate: semanticdb roots inside a nested repo are skipped") {
+    val fixture = buildSbtLikeFixture()
+    val outer = os.pwd / "tmp" / s"semdb-nested-${System.currentTimeMillis()}"
+    os.makeDir.all(outer)
+    try {
+      os.makeDir.all(outer / ".git")
+      val nested = outer / "nested"
+      os.move(fixture, nested)
+      os.makeDir.all(nested / ".git")
+
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(outer, st)
+      idx.invalidate(List(SemanticdbDirs(nested, semanticdbDirOf(nested))))
+
+      assert(st.get("_empty_/utils.getMsg().").isEmpty,
+        "semanticdb from a nested repo must not be indexed")
+    } finally os.remove.all(outer)
+  }
+
+  test("initialize with roots: nested repo semanticdb roots are skipped") {
+    val fixture = buildSbtLikeFixture()
+    val outer = os.pwd / "tmp" / s"semdb-nested-${System.currentTimeMillis()}"
+    os.makeDir.all(outer)
+    try {
+      os.makeDir.all(outer / ".git")
+      val nested = outer / "nested"
+      os.move(fixture, nested)
+      os.makeDir.all(nested / ".git")
+
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(outer, st)
+      idx.initialize(List(SemanticdbDirs(nested, semanticdbDirOf(nested))))
+
+      assert(st.get("_empty_/utils.getMsg().").isEmpty,
+        "semanticdb from a nested repo must not be indexed at startup")
+    } finally os.remove.all(outer)
+  }
 }

@@ -90,11 +90,16 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       for (root <- roots if os.exists(root.semanticdbDir) && os.exists(root.sourceRootDir)) {
         val semDir = root.semanticdbDir
         val srcRoot = root.sourceRootDir
-        val pairs = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
-        pairs.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
-        done += pairs.size.toLong
-        report(s"semanticdb ${pairs.size} files")
-        logger.info(s"Indexed ${pairs.size} semanticdb-paired source files from ${semDir}")
+        if (ignoreEngine.isInsideNestedRepo(srcRoot)) {
+          logger.warn(s"Skipping semanticdb root inside nested git repo: $srcRoot")
+        } else {
+          val pairs = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
+          val accepted = pairs.filterNot((src, _) => ignoreEngine.isInsideNestedRepo(src))
+          accepted.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
+          done += accepted.size.toLong
+          report(s"semanticdb ${accepted.size} files")
+          logger.info(s"Indexed ${accepted.size} semanticdb-paired source files from ${semDir}")
+        }
       }
       val paired = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
       logger.info(s"Total semanticdb-paired source files: $paired")
@@ -257,12 +262,14 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       var paired = false
       for (doc <- docs.documents.toVector if doc.uri.nonEmpty) {
         SemanticdbIndexing.resolveSourcePath(semPath, doc.uri, sourceRoot, workspacePath) match {
-          case Some(src) =>
+          case Some(src) if !ignoreEngine.isInsideNestedRepo(src) =>
             setSemanticdbPath(src, semPath)
             symbolTable.removeByPath(src)
             SemanticdbIndexing.parseDefinitions(semPath, src).foreach(symbolTable.add)
             if (openFiles.contains(src)) refreshOpenBuffer(src)
             paired = true
+          case Some(src) =>
+            logger.warn(s"Source inside nested git repo, skipping semanticdb pair: $src")
           case None =>
             logger.warn(s"No source match for $semPath (uri=${doc.uri}, sourceRoot=$sourceRoot)")
         }
