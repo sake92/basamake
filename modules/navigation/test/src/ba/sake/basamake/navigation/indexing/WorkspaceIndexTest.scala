@@ -948,11 +948,25 @@ class WorkspaceIndexTest extends FunSuite {
       idx.onDidOpen(buildFile)
       val text = os.read(buildFile)
       val refStart = text.indexOf("dependsOn(core)") + "dependsOn(".length
+      assert(refStart > 0, s"ref 'dependsOn(core)' not found in $buildFile:\n$text")
       val line = text.substring(0, refStart).count(_ == '\n')
       val char = refStart - text.substring(0, refStart).lastIndexOf('\n') - 1
       val locs = idx.gotoDefinitions(buildFile, line, char)
       assert(locs.nonEmpty, s"Expected locations for core, got $locs")
       assertEquals(locs.head.path, buildFile)
+    } finally os.remove.all(root)
+  }
+
+  test(".sbt: onDidSave re-extracts defs from build.sbt") {
+    val root = TestFixture.copy("sbtbuild", "sbtbuild-save")
+    try {
+      val buildFile = root / "build.sbt"
+      val (idx, st) = freshIndexAt(root)
+      assert(st.get("_empty_/build.core.").isDefined, "Expected _empty_/build.core. in symbol table")
+      os.write.append(buildFile, "\nlazy val extra = project\n")
+      idx.onDidSave(buildFile)
+      assert(st.get("_empty_/build.extra.").isDefined, "Expected _empty_/build.extra. in symbol table after save")
+      assert(st.get("_empty_/build.core.").isDefined, "_empty_/build.core. must survive save re-extraction")
     } finally os.remove.all(root)
   }
 }
