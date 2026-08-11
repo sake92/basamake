@@ -432,7 +432,8 @@ class BspManager private (
       case None => true
       case Some(rel) if rel.segments.isEmpty => false
       case Some(rel) =>
-        if (rel.segments.toSeq.sliding(2).exists(_.toSeq == Seq(".basamake", "logs"))) true
+        if (rel.segments.toSeq.contains(".git")) true
+        else if (rel.segments.toSeq.sliding(2).exists(_.toSeq == Seq(".basamake", "logs"))) true
         else ignoreEngine match {
           case Some(engine) => engine.isIgnored(path, os.isDir(path))
           // pre-initialize (tests): keep the legacy hardcoded top-level list

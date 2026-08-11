@@ -57,4 +57,23 @@ class BspManagerWatchIgnoreTest extends FunSuite {
         "engine should reload after .gitignore change")
     } finally os.remove.all(root)
   }
+
+  test("watchIgnored: .git internals and nested repos are ignored") {
+    val root = os.temp.dir(prefix = "bsp-watch-")
+    try {
+      os.makeDir.all(root / ".git")
+      os.makeDir.all(root / ".git" / "objects")
+      os.makeDir.all(root / "nested" / ".git")
+      os.makeDir.all(root / "nested" / "src")
+      os.makeDir.all(root / "src")
+      val mgr = BspManager.forTesting(root)
+      mgr.initializeForTestingOnlyDiscover()
+      assert(mgr.watchIgnored(root / ".git" / "index.lock"))
+      assert(mgr.watchIgnored(root / ".git" / "objects" / "ab" / "cdef"))
+      assert(mgr.watchIgnored(root / "nested"))
+      assert(mgr.watchIgnored(root / "nested" / "src" / "Main.scala"))
+      assert(!mgr.watchIgnored(root / "src" / "Main.scala"))
+      assert(!mgr.watchIgnored(root / ".gitignore"))
+    } finally os.remove.all(root)
+  }
 }
