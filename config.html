@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="The optional .basamake/config.json file — BSP connection overrides and ignore patterns">
+  <title> Configuration | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav>
+    <ul>
+     <li><a href="https://sake92.github.io/basamake/">Home</a></li>
+    </ul>
+    <ul>
+     <li>
+      <form action="https://sake92.github.io/basamake/search/results.html" method="GET">
+       <input name="q" type="search" placeholder="Search">
+      </form>
+     </li>
+    </ul>
+    <ul></ul>
+   </nav>
+  </header>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details>
+      <summary>Table of Contents</summary>
+      <div>
+       <ul>
+        <li><a href="#configuration">Configuration</a>
+         <ul>
+          <li><a href="#bspoverrides">bspOverrides</a></li>
+          <li><a href="#ignorepatterns">ignorePatterns</a></li>
+          <li><a href="#logs">Logs</a></li>
+         </ul></li>
+       </ul>
+      </div>
+     </details>
+     <hr>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="configuration">Configuration<a href="#configuration" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <p>Basamake works with zero configuration. If you need to tweak something, create <code>.basamake/config.json</code> in the project root:</p>
+   <pre><code class="language-json hljs" data-highlighted="yes"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">"bspOverrides"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">"bspFile"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">"app/.bsp/sbt.json"</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">"enabled"</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">false</span></span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">"ignorePatterns"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">"generated/"</span><span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+</code></pre>
+   <h2 id="bspoverrides">bspOverrides<a href="#bspoverrides" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Per-connection overrides, matched by the <code>.bsp/*.json</code> path relative to the workspace root:</p>
+   <ul>
+    <li><code>enabled: false</code> — disable a connection entirely (stops its process, clears its diagnostics, removes routing); <code>true</code> re-enables it (still lazily started)</li>
+    <li><code>compileTimeoutSec</code> — compile timeout per connection, default <code>600</code> (10 minutes)</li>
+    <li><code>handshakeTimeoutSec</code> — startup/handshake timeout, default <code>120</code></li>
+   </ul>
+   <p>Overrides apply at startup and reactively when <code>.bsp/*.json</code> files change on disk.</p>
+   <h2 id="ignorepatterns">ignorePatterns<a href="#ignorepatterns" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Extra ignore patterns in gitignore syntax, relative to the project root. They are merged <em>after</em> <code>.gitignore</code> rules, so they can add or negate entries (e.g. un-ignore a folder that <code>.gitignore</code> skips).</p>
+   <h2 id="logs">Logs<a href="#logs" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <ul>
+    <li>Runtime logs: <code>.basamake/logs/basamake.log</code></li>
+    <li>Internal state: <code>.basamake/data.json</code>, <code>.basamake/status.json</code> (generated, don't edit)</li>
+   </ul>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>

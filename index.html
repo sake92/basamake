@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Minimalistic Scala language server — fast and stable navigation and build diagnostics for everyday work">
+  <title> Basamake | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav>
+    <ul>
+     <li><a href="https://sake92.github.io/basamake/">Home</a></li>
+    </ul>
+    <ul>
+     <li>
+      <form action="https://sake92.github.io/basamake/search/results.html" method="GET">
+       <input name="q" type="search" placeholder="Search">
+      </form>
+     </li>
+    </ul>
+    <ul></ul>
+   </nav>
+  </header>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details>
+      <summary>Table of Contents</summary>
+      <div>
+       <ul>
+        <li><a href="#basamake">Basamake</a>
+         <ul>
+          <li><a href="#why-basamake">Why Basamake?</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#site-map">Site map</a></li>
+         </ul></li>
+       </ul>
+      </div>
+     </details>
+     <hr>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="basamake">Basamake<a href="#basamake" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <p><strong>Basamake</strong> is a minimalistic Scala language server for everyday work. It connects your editor to one or more <a href="https://build-server-protocol.github.io/">BSP</a> build servers and gives you the essentials:</p>
+   <ul>
+    <li><strong>Go to definition</strong> and <strong>find references</strong> for Scala and Java code</li>
+    <li><strong>Build diagnostics</strong> (errors, warnings) reported by your build tool</li>
+    <li><strong>Multiple build tools per workspace</strong> (sbt, Mill, scala-cli, deder, ...) — all discovered and routed automatically</li>
+    <li><strong>Cached indexes</strong> for dependency jars and JDK sources — fast startup and snappy navigation</li>
+   </ul>
+   <p>No completion, hover, rename, or formatting. Just the bare minimum to get work done — fast and stable.</p>
+   <blockquote>
+    <p><strong>New here?</strong> Start with the <a href="https://sake92.github.io/basamake/install.html">Installation</a> guide, then read <a href="https://sake92.github.io/basamake/how-it-works.html">How it works</a>. Already set up? See the <a href="https://sake92.github.io/basamake/config.html">Configuration</a> page.</p>
+   </blockquote>
+   <h2 id="why-basamake">Why Basamake?<a href="#why-basamake" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <ul>
+    <li><strong>Snappy</strong> — BSP servers start lazily (nothing spawns at editor startup), dependency indexes are cached on disk and reused across sessions</li>
+    <li><strong>Stable</strong> — small surface area and a simple concurrency model, no heavy machinery</li>
+    <li><strong>Robust</strong> — workspaces with several build tools just work; crashed build servers don't leave orphan processes behind</li>
+    <li>See <a href="https://sake92.github.io/basamake/why-basamake.html">Why Basamake?</a> for the comparison with Metals and IntelliJ</li>
+   </ul>
+   <h2 id="features">Features<a href="#features" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <ul>
+    <li>go to definition, including into dependency jars and JDK sources</li>
+    <li>find references</li>
+    <li>build diagnostics from BSP servers</li>
+    <li>multiple BSP servers per workspace, lazily started</li>
+    <li>indexing progress reported to the editor while the workspace index is built</li>
+   </ul>
+   <h2 id="site-map">Site map<a href="#site-map" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <ul>
+    <li><a href="https://sake92.github.io/basamake/install.html">Installation</a> — VS Code extension and BSP setup</li>
+    <li><a href="https://sake92.github.io/basamake/how-it-works.html">How it works</a> — the main mechanisms, in short</li>
+    <li><a href="https://sake92.github.io/basamake/navigation.html">Navigation &amp; indexing</a> — how definitions and references are resolved</li>
+    <li><a href="https://sake92.github.io/basamake/config.html">Configuration</a> — <code>.basamake/config.json</code></li>
+    <li><a href="https://sake92.github.io/basamake/why-basamake.html">Why Basamake?</a> — Basamake vs Metals and IntelliJ</li>
+   </ul>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="How Basamake compares to Metals and IntelliJ — and what you give up">
+  <title> Why Basamake? | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav>
+    <ul>
+     <li><a href="https://sake92.github.io/basamake/">Home</a></li>
+    </ul>
+    <ul>
+     <li>
+      <form action="https://sake92.github.io/basamake/search/results.html" method="GET">
+       <input name="q" type="search" placeholder="Search">
+      </form>
+     </li>
+    </ul>
+    <ul></ul>
+   </nav>
+  </header>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details>
+      <summary>Table of Contents</summary>
+      <div>
+       <ul>
+        <li><a href="#why-basamake">Why Basamake?</a>
+         <ul>
+          <li><a href="#what-you-get">What you get</a></li>
+          <li><a href="#stability">Stability</a></li>
+          <li><a href="#trade-offs">Trade-offs</a></li>
+         </ul></li>
+       </ul>
+      </div>
+     </details>
+     <hr>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="why-basamake">Why Basamake?<a href="#why-basamake" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <p>Basamake is designed for <strong>everyday work</strong>: fast, stable, and predictable, without the complexity of a full-featured IDE backend.</p>
+   <h2 id="what-you-get">What you get<a href="#what-you-get" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <table>
+    <thead>
+     <tr>
+      <th></th>
+      <th>Basamake</th>
+      <th>Metals</th>
+      <th>IntelliJ</th>
+     </tr>
+    </thead>
+    <tbody>
+     <tr>
+      <td>Editor startup</td>
+      <td>instant — nothing is spawned or indexed up front</td>
+      <td>starts a build server and indexes on open</td>
+      <td>heavy project import and indexing</td>
+     </tr>
+     <tr>
+      <td>BSP setup</td>
+      <td>manual one-time command per tool (<code>sbt bspConfig</code>, ...)</td>
+      <td>similar, plus automatic "import build"</td>
+      <td>build-tool specific, slow import</td>
+     </tr>
+     <tr>
+      <td>Multiple build tools per workspace</td>
+      <td>first-class — discovered and routed automatically</td>
+      <td>partial</td>
+      <td>single build system per project</td>
+     </tr>
+     <tr>
+      <td>Dependency/JDK index</td>
+      <td>cached in LMDB, reused across sessions</td>
+      <td>re-indexed per project</td>
+      <td>cached, but tied to its own model</td>
+     </tr>
+     <tr>
+      <td>Feature surface</td>
+      <td>small — goto definition, references, diagnostics</td>
+      <td>very large</td>
+      <td>very large</td>
+     </tr>
+    </tbody>
+   </table>
+   <h2 id="stability">Stability<a href="#stability" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <ul>
+    <li><strong>Lazy everything</strong> — build servers spawn only when needed; a crashed server is just restarted on the next request, no manual "restart the language server"</li>
+    <li><strong>No orphan processes</strong> — Basamake shuts down its BSP connections when the editor closes</li>
+    <li><strong>Simple concurrency</strong> — a small, auditable codebase instead of a sprawling one</li>
+   </ul>
+   <h2 id="trade-offs">Trade-offs<a href="#trade-offs" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>You give up the fancy stuff: code completion, hover, rename refactoring, formatting, and workspace-wide symbol search. For projects where you mainly navigate, read, and iterate on compile errors, Basamake is faster to start, lighter on resources, and more predictable than the alternatives.</p>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>

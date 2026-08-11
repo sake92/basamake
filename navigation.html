@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="How Basamake resolves go to definition and find references — SemanticDB, source parsing, and the dependency/JDK index cache">
+  <title> Navigation &amp; indexing | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav>
+    <ul>
+     <li><a href="https://sake92.github.io/basamake/">Home</a></li>
+    </ul>
+    <ul>
+     <li>
+      <form action="https://sake92.github.io/basamake/search/results.html" method="GET">
+       <input name="q" type="search" placeholder="Search">
+      </form>
+     </li>
+    </ul>
+    <ul></ul>
+   </nav>
+  </header>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details>
+      <summary>Table of Contents</summary>
+      <div>
+       <ul>
+        <li><a href="#navigation--indexing">Navigation &amp; indexing</a>
+         <ul>
+          <li><a href="#workspace-index">Workspace index</a></li>
+          <li><a href="#dependency-and-jdk-sources">Dependency and JDK sources</a></li>
+          <li><a href="#not-supported-yet">Not supported (yet)</a></li>
+         </ul></li>
+       </ul>
+      </div>
+     </details>
+     <hr>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="navigation--indexing">Navigation &amp; indexing<a href="#navigation--indexing" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <p>Basamake supports <strong>go to definition</strong> and <strong>find references</strong> for Scala and Java. This page explains how they are resolved.</p>
+   <h2 id="workspace-index">Workspace index<a href="#workspace-index" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>When a workspace is opened, Basamake builds an index of all definitions and references:</p>
+   <ol>
+    <li><strong>SemanticDB first</strong> — if your build tool produces <code>.semanticdb</code> files (the compiler's structured metadata format), they are used: most accurate, no re-parsing.</li>
+    <li><strong>Source parsing fallback</strong> — otherwise sources are parsed directly in two passes: first definitions are extracted, then references are resolved. Scala is parsed with <a href="https://scalameta.org/">scalameta</a>, Java with <a href="https://github.com/javaparser/javaparser">JavaParser</a>.</li>
+   </ol>
+   <p>Files that don't match your <code>.gitignore</code> are skipped, so huge build outputs stay out of the index. While the index is being built, progress is reported to the editor (so it doesn't look frozen on big projects).</p>
+   <h2 id="dependency-and-jdk-sources">Dependency and JDK sources<a href="#dependency-and-jdk-sources" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Definitions inside dependency jars and the JDK resolve too. Sources are downloaded once, then <strong>cached on disk</strong> in an LMDB database (<code>~/.cache/basamake/deps</code>, XDG-compliant). Indexing happens lazily in the background with priorities: the JDK first, then <code>scala-library</code>/<code>scala3-library</code>, then everything else — so the sources you need most are ready first.</p>
+   <p>The cache survives restarts: the second time you open the same project, navigation into dependencies is instant, with no re-indexing.</p>
+   <h2 id="not-supported-yet">Not supported (yet)<a href="#not-supported-yet" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <ul>
+    <li>completion, hover, rename, formatting, workspace symbols</li>
+    <li><code>documentSymbol</code> (outline) is registered but returns nothing in v1</li>
+   </ul>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Installing the Basamake VS Code extension and setting up BSP connections for your build tools">
+  <title> Installation | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav>
+    <ul>
+     <li><a href="https://sake92.github.io/basamake/">Home</a></li>
+    </ul>
+    <ul>
+     <li>
+      <form action="https://sake92.github.io/basamake/search/results.html" method="GET">
+       <input name="q" type="search" placeholder="Search">
+      </form>
+     </li>
+    </ul>
+    <ul></ul>
+   </nav>
+  </header>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details>
+      <summary>Table of Contents</summary>
+      <div>
+       <ul>
+        <li><a href="#installation">Installation</a>
+         <ul>
+          <li><a href="#vs-code-extension">VS Code extension</a></li>
+          <li><a href="#bsp-setup">BSP setup</a></li>
+          <li><a href="#multiple-build-tools-in-one-workspace">Multiple build tools in one workspace</a></li>
+          <li><a href="#logs">Logs</a></li>
+         </ul></li>
+       </ul>
+      </div>
+     </details>
+     <hr>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="installation">Installation<a href="#installation" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <h2 id="vs-code-extension">VS Code extension<a href="#vs-code-extension" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Install the <a href="https://github.com/sake92/basamake-vscode">Basamake VS Code extension</a>: download the latest VSIX from the <a href="https://github.com/sake92/basamake-vscode/releases">releases page</a> and install it in VS Code (Extensions → <code>...</code> → Install from VSIX). There is also a <a href="https://github.com/sake92/basamake-vscode/releases#release-main">snapshot release</a> if you want the latest changes.</p>
+   <p>If you also have <strong>Metals</strong> installed, VS Code will prompt you which language server to use for <code>.scala</code>/<code>.sbt</code> files — select <strong>Basamake</strong>.</p>
+   <h2 id="bsp-setup">BSP setup<a href="#bsp-setup" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <blockquote>
+    <p><strong>You must install BSP manually — Basamake does not do it for you.</strong> There is no "import build" step in Basamake: it only <em>reads</em> <code>.bsp/</code> configs, it never generates them. Run the setup command of your build tool once per machine, per project.</p>
+   </blockquote>
+   <p>Basamake speaks the <a href="https://build-server-protocol.github.io/">Build Server Protocol</a>: it talks to your build tool through a small config file in a <code>.bsp/</code> directory. Most build tools can generate it for you:</p>
+   <ul>
+    <li><strong>deder</strong>: <code>deder bsp install</code></li>
+    <li><strong>sbt</strong>: <code>sbt bspConfig</code></li>
+    <li><strong>scala-cli</strong>: <code>scala setup-ide .</code></li>
+    <li><strong>Mill</strong>: <code>mill mill.bsp.BSP/install</code></li>
+   </ul>
+   <p>The generated <code>.bsp/*.json</code> files are usually gitignored (they are machine-specific), so re-run the setup command when you switch machines or clone a project.</p>
+   <h2 id="multiple-build-tools-in-one-workspace">Multiple build tools in one workspace<a href="#multiple-build-tools-in-one-workspace" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>A workspace may contain several projects, each with its own build tool and <code>.bsp/</code> directory (e.g. an sbt project in <code>app/</code> and a scala-cli script in <code>scripts/</code>).</p>
+   <p>Basamake discovers <strong>all</strong> <code>.bsp/</code> directories (up to 10 levels deep) and routes each editor request to the right build server automatically — you don't have to configure anything.</p>
+   <h2 id="logs">Logs<a href="#logs" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>All logs go to <code>.basamake/logs/basamake.log</code> in your project root. If something misbehaves, check that file first.</p>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>
