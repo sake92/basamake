@@ -53,6 +53,18 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   // fingerprints currently being indexed (dedupe across targets/calls)
   private val indexing = ConcurrentHashMap.newKeySet[String]()
   private val jdkIndexing = new AtomicBoolean(false)
+  // fingerprint → the candidate jars of the request that first resolved a symbol
+  // INTO this jar ("reach context"). When the user navigates from a workspace
+  // file into dep source, we remember the owning target's deps, so lookups from
+  // inside the dep file can continue along the same dependency chain instead of
+  // falling to the global package route (which can pick a DIFFERENT version of
+  // the same library — e.g. scala-library 2.12 instead of 3.8.4).
+  private val jarCandidates = new ConcurrentHashMap[String, List[os.Path]]()
+  // fingerprint → nanoTime of the last successful hit. Biases the route fallback
+  // toward what the user is actually browsing (recency beats version: a Scala
+  // 2.12 project and a Scala 3 project open side by side must not fight).
+  private val recentFps = new ConcurrentHashMap[String, Long]()
+  private val MaxRecentFps = 128 // clear-on-overflow — a cleared LRU degrades to version ordering
 
   // Bounds concurrent background indexing. Parsing source jars with scalameta is
   // memory-hungry — one virtual thread per jar meant ~90 jars parsed at once on
@@ -141,6 +153,44 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   }
 
   // ── SymbolTable impl ──────────────────────────────────────────
+
+  /** Candidate jars relevant to a file that lives INSIDE the deps cache (an
+    * extracted dep source opened via goto-def): the jar owning the file (derived
+    * from the cache path — `<cacheRoot>/<fp>/src/<entry>`), plus the candidate
+    * context that first resolved into that jar ([[jarCandidates]]), if any.
+    *
+    * The BspManager feeds this into `get(symbol, candidates)` so lookups from
+    * dep files stay scoped to the right jar. Without it they'd fall to the
+    * global package route, which can resolve a symbol from a DIFFERENT version
+    * of the same library (e.g. scala-library 2.12 instead of 3.8.4).
+    *
+    * JDK files are excluded: src.zip can't round-trip `Fingerprint.fromJarPath`,
+    * and the JDK is the only registerer of `java.*` packages, so the route
+    * already resolves them correctly.
+    *
+    * The source path is recovered from metadata.json when the jar isn't
+    * registered this session (file extracted by a previous session — indexing
+    * is lazy, so `sourcesByFp` may not know it yet). */
+  def candidatesForPath(path: os.Path): List[os.Path] = {
+    val root = SourceJarIndexer.cacheRoot
+    if (!path.startsWith(root)) return Nil
+    val segments = path.relativeTo(root).segments
+    val srcIdx = segments.indexOf("src")
+    if (srcIdx <= 0) return Nil // need at least the fingerprint segment before src/
+    val fp = segments.take(srcIdx).mkString("/")
+    if (fp.startsWith("jdk-")) return Nil
+    val own = Option(sourcesByFp.get(fp)).toList
+    val fromMeta = if (own.isEmpty) {
+      // not registered this session — recover the source jar from the cache metadata
+      CacheMetadata.load(root / os.RelPath(fp))
+        .map(_.sourcePath)
+        .filter(p => os.exists(os.Path(p)))
+        .map(os.Path(_))
+        .toList
+    } else Nil
+    val reached = Option(jarCandidates.get(fp)).getOrElse(Nil)
+    (own ++ fromMeta ++ reached).distinct
+  }
 
   /** Global-route lookup (fallback when no candidate jars are known). */
   override def get(symbol: String): Option[SymbolDefinition] = get(symbol, Nil)
@@ -251,6 +301,8 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
               try {
                 LmdbSerializer.get(indexPath(fp), symbol).foreach { d =>
                   ensureEntryExtracted(fp, d.path)
+                  jarCandidates.put(fp, candidates)
+                  touchRecent(fp)
                   result = Some(d)
                 }
               } catch {
@@ -268,8 +320,11 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
   }
 
   /** Fallback lookup through the package-route map (built from the metadata.json of
-    * every registered jar). First-wins by sorted fingerprint — can pick the wrong
-    * jar when two jars share a package; the candidate path above is preferred. */
+    * every registered jar). Ordering: recently-hit fingerprints first (recency LRU —
+    * the user's current working set wins, e.g. a Scala 2.12 project next to a Scala
+    * 3 project), then higher versions first (an old scala-library must never beat a
+    * new one), then lexicographic as a deterministic tie-break. The candidate path
+    * above is preferred — the route is only a best-effort fallback. */
   private def getFromRoute(symbol: String): Option[SymbolDefinition] = {
     val pkgOpt = SymbolUtils.packageOf(symbol)
     if pkgOpt.isEmpty then None
@@ -277,13 +332,30 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
       val fps = route.get(pkgOpt.get)
       if fps == null then None
       else {
+        val ordered = fps.asScala.toList.sortWith { (a, b) =>
+          val la = recentFps.getOrDefault(a, -1L)
+          val lb = recentFps.getOrDefault(b, -1L)
+          if (la != lb) la > lb
+          else {
+            val va = versionOf(a)
+            val vb = versionOf(b)
+            (va, vb) match {
+              case (Some(x), Some(y)) if x != y => cmpVersion(x, y) > 0
+              case _                            => a < b
+            }
+          }
+        }
+        if (fps.size() > 1) logger.debug(
+          s"Route fallback for $symbol: ${fps.size()} jar(s) register package $pkgOpt, picked ${ordered.headOption.getOrElse("?")}"
+        )
         var result: Option[SymbolDefinition] = None
-        val it = fps.asScala.toList.sorted.iterator // deterministic first-wins
+        val it = ordered.iterator
         while result.isEmpty && it.hasNext do {
           val fp = it.next()
           try {
             LmdbSerializer.get(indexPath(fp), symbol).foreach { d =>
               ensureEntryExtracted(fp, d.path)
+              touchRecent(fp)
               result = Some(d)
             }
           } catch {
@@ -293,6 +365,41 @@ class IndexedSymbolTable extends SymbolTable with StrictLogging {
         result
       }
     }
+  }
+
+  /** Record a successful hit for the route-fallback recency bias. Bounded: an
+    * overflowing LRU is cleared wholesale — a cold LRU just means the fallback
+    * degrades to version-first ordering. */
+  private def touchRecent(fp: String): Unit = {
+    recentFps.put(fp, System.nanoTime())
+    if (recentFps.size() > MaxRecentFps) recentFps.clear()
+  }
+
+  /** Numeric version of a fingerprint's last segment, for route ordering.
+    * `scala-library_3.8.4_<hash>` → Some(List(3, 8, 4)); unparseable names
+    * (`a-sources_<hash>`) → None (falls back to lexicographic). */
+  private val HashSuffixRe = "_[0-9a-f]{8}$$".r
+  private val VersionTailRe = "_([0-9][^_]*)$$".r
+  private def versionOf(fp: String): Option[List[Long]] = {
+    val name = HashSuffixRe.replaceFirstIn(fp.split('/').last, "")
+    // findFirstMatchIn, NOT the regex extractor — `case VersionTailRe(v)` would
+    // require a FULL-string match and never hit a version suffix
+    VersionTailRe.findFirstMatchIn(name).map(_.group(1)).flatMap { v =>
+      val parsed = v.split('.').toList.map(_.toLongOption)
+      if parsed.forall(_.isDefined) then Some(parsed.flatten) else None
+    }
+  }
+
+  /** Element-wise version comparison: [3, 8, 4] > [2, 12, 21]; a prefix is
+    * smaller (2.12 < 2.12.21). */
+  private def cmpVersion(a: List[Long], b: List[Long]): Int = {
+    val n = math.min(a.length, b.length)
+    var i = 0
+    while i < n do {
+      if (a(i) != b(i)) return a(i).compare(b(i))
+      i += 1
+    }
+    a.length.compare(b.length)
   }
 
   /** Index one source in the background (virtual thread). Caller must have claimed

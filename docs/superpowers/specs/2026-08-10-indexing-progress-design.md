@@ -59,16 +59,26 @@ Implements `IndexingProgressListener` over LSP `workDoneProgress`:
   `"basamake-jdk"`), title (`"Indexing workspace"`, `"Indexing dependencies"`,
   `"Indexing JDK sources"`), last-send timestamp, active flag.
 - `begin` on first event: `client.createProgress(WorkDoneProgressCreateParams(token))`
-  then `client.notifyProgress(begin)`.
+  then `client.notifyProgress(begin)`. Begin message carries the done count
+  (`"$done/$total $message"` — correct when a phase restarts with done > 0).
 - `report`: throttled — at most one notification per phase per 100ms; the
   first event and the final `done == total` event are always sent. Percentage
   = `done * 100 / total`.
 - `end` when `done == total`: always sent; phase state reset.
-- **Defensive**: `createProgress`/`notifyProgress` wrapped in try/catch —
-  lsp4j's default interface implementations throw
-  `UnsupportedOperationException` (also protects test fakes that don't
-  override them). Any failure disables the reporter permanently (logged once);
-  indexing continues silently exactly as today.
+- **Defensive + handshake-safe**: `createProgress`/`notifyProgress` wrapped in
+  try/catch — lsp4j's default interface implementations throw
+  `UnsupportedOperationException` (also protects test fakes that don't override
+  them). A rejected `createProgress` (e.g. MethodNotFound while the client is
+  still initializing — vscode-languageclient registers
+  `window/workDoneProgress/create` only AFTER the initialize handshake) is
+  TRANSIENT: the begin is retried after a per-phase cooldown (default 5s;
+  `setBeginRetryMillis` test seam) instead of permanently disabling the
+  reporter — a permanent disable would kill progress on cold caches, exactly
+  when it matters most. Only a broken transport (`notifyProgress` throwing)
+  disables the reporter. Nothing progress-related runs on the initialize
+  thread (the JDK enqueue runs on its own background thread; the workspace
+  indexing on another), so the handshake is never stalled by the bounded
+  5s `createProgress` wait.
 - Client late-binding: the reporter is constructed at server construction with
   `@volatile var client: LanguageClient = null` (set in `connect()`) and
   `@volatile var enabled = false` (set in `initialize()` from
@@ -123,13 +133,20 @@ entry; the reporter throttles the JDK's ~570k events down to ~10/s.
 2. Read `window.workDoneProgress` capability → `reporter.enable(...)`.
 3. Launch background thread: `workspaceIndex.initialize(roots)` (try/catch as
    today) — emits Workspace-phase events via the listener.
-4. `depsSymbolTable.ensureJdkIndexed()` — already background; now enqueues
-   the JDK job at priority 0 and emits Jdk-phase events.
+4. Launch background thread: `depsSymbolTable.ensureJdkIndexed()` — must NOT
+   run on the initialize thread: when the JDK is uncached its enqueue fires the
+   first Jdk-phase event synchronously, and a `createProgress` before the
+   handshake would be rejected (and could stall initialize up to 5s).
 5. `bspManager.initialize(...)` — unchanged (fast).
 6. Return `InitializeResult` immediately.
 
 Small safety fix in `WorkspaceIndex.initialize`: after `sourcesMap.clear()`,
-re-put `openFiles` entries so a file opened mid-walk is not dropped.
+re-put `openFiles` entries so a file opened mid-walk is not dropped. Because
+indexing is now async, a file opened during it can also have its buffer state
+(occurrences/locals) wiped by the map re-seed, and its semanticdb pairing
+lands after `didOpen` — so at the END of `initialize`, `refreshOpenBuffer` is
+re-run for every open file (restores occurrences and prefers semanticdb
+occurrences now that pairing is done).
 
 `WorkspaceIndex.invalidate` (post-compile re-index) emits no progress — it is
 fast, and flashing an item on every save would be noise.

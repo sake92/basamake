@@ -121,4 +121,65 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
       os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jarPath)))
     }
   }
+
+  /** Regression for the "Console.println → scala-library 2.12" bug: goto-def from
+    * INSIDE an extracted dep file must stay in the file's OWN jar when two jars
+    * share the package (the global route alone would pick sorted-first — the old
+    * scala-library). The dep-file candidates come from `candidatesForPath`. */
+  test("gotoDefinitions from a dep file stays in the owning jar on same-package collisions") {
+    val workspace = os.temp.dir(prefix = "deps-gotodef-ws3-")
+
+    def writeJar(dir: os.Path, name: String, fooMethod: String): os.Path = {
+      val jarPath = dir / name
+      val fooSource = s"package com.example;\npublic class Foo { public void $fooMethod() {} }\n"
+      val zip = new ZipOutputStream(new FileOutputStream(jarPath.toIO))
+      try {
+        zip.putNextEntry(new ZipEntry("com/example/Foo.java"))
+        zip.write(fooSource.getBytes("UTF-8"))
+        zip.closeEntry()
+      } finally zip.close()
+      jarPath
+    }
+
+    val jarDirA = os.temp.dir(prefix = "deps-gotodef-jarA-")
+    val jarDirB = os.temp.dir(prefix = "deps-gotodef-jarB-")
+    val jarA = writeJar(jarDirA, "old-lib-1.0.0-sources.jar", "a")
+    val jarB = writeJar(jarDirB, "new-lib-2.0.0-sources.jar", "b")
+    val fpA = Fingerprint.fromJarPath(jarA)
+    val fpB = Fingerprint.fromJarPath(jarB)
+
+    try {
+      val workspaceTable = new InMemorySymbolTable
+      val depsTable = new IndexedSymbolTable
+      depsTable.ensureIndexed(List(jarA, jarB))
+      val composite = new CompositeSymbolTable(workspaceTable, depsTable)
+      val idx = new WorkspaceIndex(workspace, composite)
+      idx.initialize(List.empty)
+
+      val deadline = System.currentTimeMillis() + 20000
+      while (depsTable.get("com/example/Foo#").isEmpty && System.currentTimeMillis() < deadline) Thread.sleep(50)
+
+      // the dep file: jar B's extracted Foo.java, opened like the editor opens it.
+      // Content references Foo from a SECOND class — the cursor sits on a real use.
+      val depFile = SourceJarIndexer.cacheRoot / os.RelPath(fpB) / "src" / "com" / "example" / "Foo.java"
+      val depText = "package com.example;\npublic class Bar { public Foo foo; }\n"
+      os.write.over(depFile, depText, createFolders = true)
+      idx.onDidOpen(depFile)
+
+      val (l, c) = TestPositions.at(depText, """(?<p>Foo)""")
+      val locs = idx.gotoDefinitions(depFile, l, c, depCandidates = depsTable.candidatesForPath(depFile))
+
+      assert(locs.nonEmpty, s"expected jar def for Foo, got empty")
+      val loc = locs.head
+      assertEquals(loc.symbol, "com/example/Foo#")
+      assert(loc.path.startsWith(SourceJarIndexer.cacheRoot / os.RelPath(fpB)),
+        s"expected def from the owning jar B, got ${loc.path}")
+    } finally {
+      os.remove.all(workspace)
+      os.remove.all(jarDirA)
+      os.remove.all(jarDirB)
+      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(fpA))
+      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(fpB))
+    }
+  }
 }

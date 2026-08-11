@@ -292,4 +292,126 @@ object Baz {
     assert(deps.get("com/example/Baz.").isDefined,
       "global route lookup must also keep working from the in-memory route")
   }
+
+  // ── dep-file candidates + route fallback ordering ─────────────
+
+  test("route fallback prefers the NEWER version on same-package collisions") {
+    val tempDirA = os.temp.dir()
+    val tempDirB = os.temp.dir()
+    // versioned jar names → versioned fingerprints (mylib_1.0.0_<hash> vs mylib_2.0.0_<hash>)
+    val jarOld = buildJar(tempDirA, "mylib-1.0.0-sources.jar")
+    val jarNew = buildJar(tempDirB, "mylib-2.0.0-sources.jar")
+    val fpOld = Fingerprint.fromJarPath(jarOld)
+    val fpNew = Fingerprint.fromJarPath(jarNew)
+    cleanCache(fpOld)
+    cleanCache(fpNew)
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jarOld, jarNew))
+
+    // wait for BOTH indexes to be fully written (register() runs right after in
+    // the background thread). The first route hit must see both jars — a
+    // transient single-jar route would record a recency bias that beats version
+    assert(eventually(os.isDir(cacheDir(fpOld) / "index.lmdb")), "old jar should finish indexing")
+    assert(eventually(os.isDir(cacheDir(fpNew) / "index.lmdb")), "new jar should finish indexing")
+    var viaRoute: Option[os.Path] = None
+    val deadline = System.currentTimeMillis() + 20000
+    while (viaRoute.isEmpty && System.currentTimeMillis() < deadline) {
+      Thread.sleep(100) // let register() (map puts right after index()) complete
+      viaRoute = deps.get("com/example/Foo#").map(_.path)
+    }
+    assert(viaRoute.isDefined, "route should resolve")
+    // regression: sorted-first-wins used to pick the OLDEST jar (2.12 vs 3.8.4)
+    assert(viaRoute.get.startsWith(cacheDir(fpNew)), s"expected def from newer jar, got ${viaRoute.get}")
+    assert(deps.get("com/example/Baz.").map(_.path).get.startsWith(cacheDir(fpNew)),
+      "global route must prefer the newer jar for term symbols too")
+  }
+
+  test("route fallback prefers recently hit jars over newer versions") {
+    val tempDirA = os.temp.dir()
+    val tempDirB = os.temp.dir()
+    val jarOld = buildJar(tempDirA, "mylib-1.0.0-sources.jar")
+    val jarNew = buildJar(tempDirB, "mylib-2.0.0-sources.jar")
+    val fpOld = Fingerprint.fromJarPath(jarOld)
+    val fpNew = Fingerprint.fromJarPath(jarNew)
+    cleanCache(fpOld)
+    cleanCache(fpNew)
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jarOld, jarNew))
+    assert(eventually(deps.get("com/example/Foo#", List(jarNew)).isDefined))
+    // hit the OLD jar last — it becomes the most recently used
+    assert(eventually(deps.get("com/example/Foo#", List(jarOld)).isDefined))
+
+    val viaRoute = deps.get("com/example/Foo#").map(_.path).get
+    assert(viaRoute.startsWith(cacheDir(fpOld)),
+      s"recency must beat version — expected the just-hit old jar, got $viaRoute")
+  }
+
+  test("candidatesForPath returns the owning jar for dep source files") {
+    val tempDir = os.temp.dir()
+    val jar = buildJar(tempDir, "test-sources.jar")
+    val fp = Fingerprint.fromJarPath(jar)
+    cleanCache(fp)
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jar))
+    assert(eventually(deps.get("com/example/Foo#").isDefined))
+
+    // the resolved def path IS a dep source file — its owning jar must come back
+    val depFile = deps.get("com/example/Foo#").map(_.path).get
+    val cands = deps.candidatesForPath(depFile)
+    assert(cands.contains(jar), s"expected owning jar $jar, got $cands")
+
+    // paths outside the cache (workspace files) → no candidates
+    assertEquals(deps.candidatesForPath(os.temp.dir() / "Main.scala"), Nil)
+    // JDK paths are deliberately excluded (route resolves them correctly)
+    assertEquals(deps.candidatesForPath(SourceJarIndexer.cacheRoot / "jdk-21_x" / "src" / "java/lang/Object.java"), Nil)
+    // cache paths without the fp/src/ layout → no candidates
+    assertEquals(deps.candidatesForPath(SourceJarIndexer.cacheRoot / "metadata.json"), Nil)
+  }
+
+  test("candidatesForPath recovers the source from metadata for unregistered jars") {
+    val tempDir = os.temp.dir()
+    val jar = buildJar(tempDir, "test-sources.jar")
+    val fp = Fingerprint.fromJarPath(jar)
+    cleanCache(fp)
+
+    val warmer = new IndexedSymbolTable
+    warmer.ensureIndexed(List(jar))
+    val deadline = System.currentTimeMillis() + 20000
+    var depFile: Option[os.Path] = None
+    while (depFile.isEmpty && System.currentTimeMillis() < deadline) depFile = warmer.get("com/example/Foo#").map(_.path)
+    assert(depFile.isDefined, "jar should index")
+    val extracted = depFile.get
+    assert(os.exists(extracted), "extracted source should exist on disk")
+
+    // a FRESH instance never registered the jar — the source must come from metadata.json
+    val deps = new IndexedSymbolTable
+    assert(deps.candidatesForPath(extracted).contains(jar),
+      s"expected owning jar from metadata, got ${deps.candidatesForPath(extracted)}")
+  }
+
+  test("candidate lookup from a dep file resolves to the file's own jar on collisions") {
+    val tempDirA = os.temp.dir()
+    val tempDirB = os.temp.dir()
+    val jarA = buildJar(tempDirA, "a-sources.jar")
+    val jarB = buildJar(tempDirB, "b-sources.jar")
+    val fpA = Fingerprint.fromJarPath(jarA)
+    val fpB = Fingerprint.fromJarPath(jarB)
+    cleanCache(fpA)
+    cleanCache(fpB)
+
+    val deps = new IndexedSymbolTable
+    deps.ensureIndexed(List(jarA, jarB))
+    assert(eventually(deps.get("com/example/Foo#").isDefined))
+
+    // simulate a file inside jar B's extracted sources, resolved with its own candidates
+    val depFileInB = cacheDir(fpB) / "src" / "Foo.java"
+    val cands = deps.candidatesForPath(depFileInB)
+    assert(cands.contains(jarB), s"expected owning jar $jarB, got $cands")
+    val inB = deps.get("com/example/Foo#", cands).map(_.path).get
+    assert(inB.startsWith(cacheDir(fpB)), s"expected def from jarB, got $inB")
+    assert(inB.startsWith(cacheDir(fpA)) == false, "must not resolve from the OTHER jar")
+  }
 }

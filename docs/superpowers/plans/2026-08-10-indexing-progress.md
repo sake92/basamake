@@ -1399,6 +1399,29 @@ git commit -m "Docs: priority indexing queue + progress reporting"
 
 ---
 
+## Post-review amendments (final code review)
+
+- **Reporter begin is retryable, not permanently disabling** (Task 4 code
+  superseded): a rejected `createProgress` (MethodNotFound during the client's
+  initialize handshake window) is retried after a per-phase cooldown (default
+  5s, `setBeginRetryMillis` test seam) instead of `enabled = false`. Begin
+  message carries the done count (`"$done/$total ..."`).
+- **JDK enqueue moved to its own background thread** (Task 5 code superseded):
+  `ensureJdkIndexed()` must not run on the initialize thread — an uncached JDK
+  fires the first Jdk-phase event synchronously, and a pre-handshake
+  `createProgress` would be rejected (and could stall initialize up to 5s).
+- **`WorkspaceIndex.initialize` re-runs `refreshOpenBuffer` for open files at
+  the end** (async move could wipe buffer state via the map re-seed and land
+  semanticdb pairing after `didOpen`).
+- **`IndexedSymbolTable`**: corrupt JDK indexes are re-enqueued as Jdk-phase
+  jobs at priority 0 (not Dependencies/2); completion messages distinguish
+  `Indexed` vs `Failed`.
+- Plan test code fixed during execution: `e._1 == e._2` (done vs total) in the
+  jar-level progress test; `ListBuffer.toList` in the SourceJarIndexer test;
+  `LspTransportTest` awaits `isWorkspaceIndexingDone` before didOpen.
+
+---
+
 ### Task 7: End-to-end verification + hygiene
 
 - [ ] **Step 1: Manual smoke test with the example project**

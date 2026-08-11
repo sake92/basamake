@@ -95,7 +95,13 @@ object SourceJarIndexer extends StrictLogging {
       packages = sink.packages.toList.sorted,
       formatVersion = CacheMetadata.FormatVersion
     ))
-    logger.info(s"Indexed ${sink.count} symbols from ${source.last}")
+    if (sink.count == 0) {
+      // e.g. some scala3-library artifacts publish EMPTY -sources jars (stub
+      // with only META-INF/MANIFEST.MF) — the index is built but resolves nothing
+      logger.warn(s"Indexed 0 symbols from ${source.last} — the sources jar may be an empty stub")
+    } else {
+      logger.info(s"Indexed ${sink.count} symbols from ${source.last}")
+    }
   }
 
   /** Unpack ONE source entry into `<cacheDir>/src/<entryPath>`. Idempotent — no-op

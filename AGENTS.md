@@ -18,6 +18,11 @@
 | Fat JAR (for VS Code) | `deder exec -t assembly -m modules-main` → `.deder/out/modules-main/assembly/out.jar` |
 | Clean build state | `deder clean && deder exec` |
 
+## Git hygiene
+
+- **Never `git add -f` (force-add) anything that is gitignored** — `docs/superpowers/` included. Gitignored files stay untracked; if a gitignored file is already tracked, leave it alone (don't stage, don't commit, don't unstage)
+- Only stage and commit intended, non-ignored changes
+
 ## Deder hygiene
 
 - Run `deder shutdown` when finished working — stale server processes block new connections and linger in git worktree dirs; also run it before branch switches or deleting the project

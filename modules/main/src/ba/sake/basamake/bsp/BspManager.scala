@@ -175,7 +175,9 @@ class BspManager private (
   }
 
   /** Dependency source jars relevant to `uri`: live per-target handshake data when
-    * the owning connection is alive, else the data.json warm-start mapping. */
+    * the owning connection is alive, else the data.json warm-start mapping, else
+    * (for dep sources opened via goto-def, which live outside the workspace and
+    * match neither) the jar owning the extracted file. */
   def dependencySourcesFor(uri: String): List[os.Path] = {
     val live = router.route(uri).flatMap(id => Option(connections.get(id))) match {
       case Some(conn) => conn.dependencySourcesFor(uri)
@@ -184,7 +186,17 @@ class BspManager private (
     if (live.nonEmpty) live
     else warmDepsBySourceRoot.collectFirst {
       case (root, deps) if uriPathUnderRoot(uri, root) => deps
-    }.getOrElse(Nil)
+    }.getOrElse(depFileCandidates(uri))
+  }
+
+  /** Candidates for a dep/JDK source file (`~/.cache/basamake/deps/<fp>/src/...`):
+    * the jar the file was extracted from, plus the dep context that reached it —
+    * keeps lookups from inside dep files on the right jar (e.g. scala-library
+    * 3.8.4, not the 2.12 that happens to sort first in the global route). */
+  private def depFileCandidates(uri: String): List[os.Path] = {
+    if (depsSymbolTable == null) return Nil
+    val path = try os.Path(java.net.URI.create(uri)) catch { case _: Exception => return Nil }
+    depsSymbolTable.candidatesForPath(path)
   }
 
   /** Ensure the current file's target deps are indexed (cached → registered, uncached
