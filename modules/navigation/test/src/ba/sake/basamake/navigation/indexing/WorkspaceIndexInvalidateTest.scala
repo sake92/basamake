@@ -329,4 +329,25 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
         "semanticdb from a nested repo must not be indexed at startup")
     } finally os.remove.all(outer)
   }
+
+  test("initialize with roots: pairs resolving into a nested repo are rejected") {
+    val fixture = buildSbtLikeFixture()
+    val outer = os.pwd / "tmp" / s"semdb-nested-${System.currentTimeMillis()}"
+    os.makeDir.all(outer)
+    try {
+      os.makeDir.all(outer / ".git")
+      val nested = outer / "nested"
+      os.move(fixture, nested)
+      os.makeDir.all(nested / ".git")
+
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(outer, st)
+      // sourceRoot = outer (NOT inside nested) — exercises the per-pair guard,
+      // not the root guard. The climb resolves URIs into outer/nested.
+      idx.initialize(List(SemanticdbDirs(outer, semanticdbDirOf(nested))))
+
+      assert(st.get("_empty_/utils.getMsg().").isEmpty,
+        "definitions for sources inside a nested repo must be purged")
+    } finally os.remove.all(outer)
+  }
 }

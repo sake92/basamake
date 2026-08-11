@@ -94,7 +94,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
           logger.warn(s"Skipping semanticdb root inside nested git repo: $srcRoot")
         } else {
           val pairs = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
-          val accepted = pairs.filterNot((src, _) => ignoreEngine.isInsideNestedRepo(src))
+          val (accepted, rejected) = pairs.partition((src, _) => !ignoreEngine.isInsideNestedRepo(src))
+          rejected.keySet.foreach { src =>
+            logger.warn(s"Source inside nested git repo, skipping semanticdb pair: $src")
+            symbolTable.removeByPath(src)
+          }
           accepted.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
           done += accepted.size.toLong
           report(s"semanticdb ${accepted.size} files")
@@ -240,7 +244,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     if (roots.isEmpty) return
     logger.info(s"Invalidating workspace index (${roots.size} semanticdb root(s))")
 
-    for (root <- roots if  os.exists(root.sourceRootDir) && os.exists(root.semanticdbDir)) {
+    for (root <- roots if os.exists(root.sourceRootDir) && os.exists(root.semanticdbDir) && !ignoreEngine.isInsideNestedRepo(root.sourceRootDir)) {
       val srcRoot = root.sourceRootDir
       val semDir = root.semanticdbDir
       val semFiles = os.walk(semDir).filter(_.ext == "semanticdb").toList
