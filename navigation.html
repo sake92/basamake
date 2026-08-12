@@ -55,14 +55,14 @@
     <div></div>
    </div>
    <h1 id="navigation--indexing">Navigation &amp; indexing<a href="#navigation--indexing" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
-   <p>Basamake supports <strong>go to definition</strong> and <strong>find references</strong> for Scala and Java. This page explains how they are resolved.</p>
+   <p>Basamake supports <strong>go to definition</strong> and <strong>find references</strong> for Scala and Java. sbt build definitions (<code>.sbt</code> files) are indexed too — vals and defs in <code>build.sbt</code>/<code>project/*.sbt</code> support go to definition, references, and hover. This page explains how they are resolved.</p>
    <h2 id="workspace-index">Workspace index<a href="#workspace-index" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <p>When a workspace is opened, Basamake builds an index of all definitions and references:</p>
    <ol>
     <li><strong>SemanticDB first</strong> — if your build tool produces <code>.semanticdb</code> files (the compiler's structured metadata format), they are used: most accurate, no re-parsing.</li>
     <li><strong>Source parsing fallback</strong> — otherwise sources are parsed directly in two passes: first definitions are extracted, then references are resolved. Scala is parsed with <a href="https://scalameta.org/">scalameta</a>, Java with <a href="https://github.com/javaparser/javaparser">JavaParser</a>.</li>
    </ol>
-   <p>Files that don't match your <code>.gitignore</code> are skipped, so huge build outputs stay out of the index. While the index is being built, progress is reported to the editor (so it doesn't look frozen on big projects).</p>
+   <p>Files that don't match your <code>.gitignore</code> are skipped, so huge build outputs stay out of the index. Directories containing their own <code>.git</code> (nested git repositories) are treated as separate workspaces and never indexed — open them directly to work on them. While the index is being built, progress is reported to the editor (so it doesn't look frozen on big projects).</p>
    <h2 id="dependency-and-jdk-sources">Dependency and JDK sources<a href="#dependency-and-jdk-sources" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <p>Definitions inside dependency jars and the JDK resolve too. Sources are downloaded once, then <strong>cached on disk</strong> in an LMDB database (<code>~/.cache/basamake/deps</code>, XDG-compliant). Indexing happens lazily in the background with priorities: the JDK first, then <code>scala-library</code>/<code>scala3-library</code>, then everything else — so the sources you need most are ready first.</p>
    <p>The cache survives restarts: the second time you open the same project, navigation into dependencies is instant, with no re-indexing.</p>
