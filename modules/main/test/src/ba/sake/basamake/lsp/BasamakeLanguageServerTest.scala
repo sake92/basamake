@@ -460,4 +460,25 @@ class BasamakeLanguageServerTest extends FunSuite {
       assert(dump.contains("New.sbt"), s"expected New.sbt in index_sources.txt dump, got:\n$dump")
     } finally os.remove.all(root)
   }
+
+  test("didChangeWatchedFiles: Changed events are forwarded (mixed batch still indexes created files)") {
+    val root = copyFixture("sbtbuild", "lsp-sbt-watched-changed")
+    try {
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
+
+      os.write.over(root / "New.sbt", "lazy val extra = project")
+      val newFileUri = (root / "New.sbt").toNIO.toUri.toString
+      val changedFileUri = (root / "build.sbt").toNIO.toUri.toString
+      server.didChangeWatchedFiles(new DidChangeWatchedFilesParams(
+        java.util.List.of(
+          new FileEvent(newFileUri, FileChangeType.Created),
+          new FileEvent(changedFileUri, FileChangeType.Changed))))
+
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(dump.contains("New.sbt"), s"expected New.sbt in index_sources.txt dump, got:\n$dump")
+    } finally os.remove.all(root)
+  }
 }

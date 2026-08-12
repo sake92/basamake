@@ -82,6 +82,23 @@ class BspManagerDiagnosticsTest extends FunSuite {
     assertEquals(published.size(), 0)
   }
 
+  test("onWatchedFilesChanged: changed source files flow through the batch (deleted still clears)") {
+    val (mgr, published, _) = BspManager.forTestingWithCapturedDiagnostics()
+    val deletedUri = "file:///x/Deleted.scala"
+    val changedUri = "file:///x/Changed.scala"
+    // Seed a diagnostic for the deleted file, then deliver a mixed batch
+    // (created=empty, deleted + changed source events — e.g. git checkout
+    // rewriting a file produces a Changed event).
+    val target = new BuildTargetIdentifier("bsp://A")
+    mgr.onDiagnostics(makeParams(deletedUri, target, "old-err", reset = true))
+    published.clear()
+    mgr.onWatchedFilesChanged(created = Nil, deleted = List(deletedUri), changed = List(changedUri))
+
+    val cleared = published.asScala.filter(_.getUri == deletedUri)
+    assert(cleared.nonEmpty, s"expected empty publish for deleted file, got ${published.asScala.map(_.getUri)}")
+    assertEquals(cleared.last.getDiagnostics.size(), 0)
+  }
+
   private def makeParams(uri: String, target: BuildTargetIdentifier, msg: String,
                          reset: Boolean): PublishDiagnosticsParams = {
     val list = new java.util.ArrayList[ch.epfl.scala.bsp4j.Diagnostic]()

@@ -268,11 +268,11 @@ class BspConnectionTest extends FunSuite {
     conn.simulateProcessExitForTesting()
     // Simulate: spawning in progress + compile queued
     conn.setSpawningFlagForTesting(true)
-    conn.compile("file:///test/Foo.scala")
+    conn.requestCompile("file:///test/Foo.scala")
     assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1)
     assertEquals(conn.pendingCompileTargetIdsForTesting.head, tid)
     // Duplicate compile during same spawn — addIfAbsent prevents dup
-    conn.compile("file:///test/Foo.scala")
+    conn.requestCompile("file:///test/Foo.scala")
     assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1, "addIfAbsent deduplicates")
     // Release spawn + drain
     conn.setSpawningFlagForTesting(false)
@@ -306,13 +306,130 @@ class BspConnectionTest extends FunSuite {
     conn.simulateProcessExitForTesting()
     // Simulate: spawning in progress + compile queued
     conn.setSpawningFlagForTesting(true)
-    conn.compile("file:///test/Bar.scala")
+    conn.requestCompile("file:///test/Bar.scala")
     assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1)
     conn.setSpawningFlagForTesting(false)
     // Second spawn: fail → queue must be cleared
     spawnSucceed = false
     try conn.ensureConnected() catch { case _: RuntimeException => () }
     assertEquals(conn.pendingCompileTargetIdsForTesting.size, 0, "pending compiles cleared on spawn failure")
+  }
+
+  // ── debounced, per-target coalesced compiles ─────────────────
+
+  test("requestCompile debounces: N rapid pokes for the same target → exactly 1 compile") {
+    var compileCount = new AtomicInteger(0)
+    val tid = new BuildTargetIdentifier("//debounce")
+    val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
+    val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        val server = new MockBuildServer {
+          override def buildTargetCompile(p: CompileParams) = {
+            compileCount.incrementAndGet()
+            CompletableFuture.completedFuture(new CompileResult(StatusCode.OK))
+          }
+        }
+        HandshakeResult(proc, server,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          sourcesResult,
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => (),
+      eventSink = noopSink,
+      debounceMs = 100
+    )
+    conn.ensureConnected()
+
+    // 5 rapid pokes for the same target (e.g. didOpen + didSave + watcher batch)
+    (1 to 5).foreach(_ => conn.requestCompile("file:///test/Foo.scala"))
+    Thread.sleep(50) // still inside the debounce window
+    assertEquals(compileCount.get(), 0, "no compile before the debounce fires")
+    Thread.sleep(200) // past the window
+    assertEquals(compileCount.get(), 1, "N pokes within the window → exactly one compile")
+  }
+
+  test("requestCompile during in-flight compile → exactly one follow-up, further pokes coalesce") {
+    val started = new java.util.concurrent.CountDownLatch(1)
+    val release = new java.util.concurrent.CountDownLatch(1)
+    var compileCount = new AtomicInteger(0)
+    val tid = new BuildTargetIdentifier("//inflight")
+    val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
+    val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        val server = new MockBuildServer {
+          override def buildTargetCompile(p: CompileParams) = {
+            compileCount.incrementAndGet()
+            started.countDown()
+            release.await(5, TimeUnit.SECONDS) // block until the test lets the compile finish
+            CompletableFuture.completedFuture(new CompileResult(StatusCode.OK))
+          }
+        }
+        HandshakeResult(proc, server,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          sourcesResult,
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => (),
+      eventSink = noopSink,
+      debounceMs = 100
+    )
+    conn.ensureConnected()
+
+    conn.requestCompile("file:///test/Foo.scala")
+    assert(started.await(5, TimeUnit.SECONDS), "first compile should be in flight")
+    // pokes while the compile runs — must collapse into ONE follow-up
+    (1 to 3).foreach(_ => conn.requestCompile("file:///test/Foo.scala"))
+    Thread.sleep(200) // follow-up debounce window elapses (task queued behind in-flight)
+    release.countDown()
+
+    val deadline = System.currentTimeMillis() + 5000
+    while (compileCount.get() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    assertEquals(compileCount.get(), 2, "one follow-up after the in-flight compile, not three")
+  }
+
+  test("requestCompile: distinct targets are scheduled independently") {
+    var compileCount = new AtomicInteger(0)
+    val tid1 = new BuildTargetIdentifier("//t1")
+    val tid2 = new BuildTargetIdentifier("//t2")
+    val sourceItem1 = new SourceItem("file:///a/", SourceItemKind.DIRECTORY, false)
+    val sourceItem2 = new SourceItem("file:///b/", SourceItemKind.DIRECTORY, false)
+    val sourcesResult = new SourcesResult(java.util.List.of(
+      new SourcesItem(tid1, java.util.List.of(sourceItem1)),
+      new SourcesItem(tid2, java.util.List.of(sourceItem2))))
+    val conn = BspConnection.forTesting(
+      spec = fakeSpec,
+      spawn = () => {
+        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        val server = new MockBuildServer {
+          override def buildTargetCompile(p: CompileParams) = {
+            compileCount.incrementAndGet()
+            CompletableFuture.completedFuture(new CompileResult(StatusCode.OK))
+          }
+        }
+        HandshakeResult(proc, server,
+          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+          sourcesResult,
+          new DependencySourcesResult(java.util.Collections.emptyList()),
+          emptyScalacOptions)
+      },
+      killTree = _ => (),
+      eventSink = noopSink,
+      debounceMs = 100
+    )
+    conn.ensureConnected()
+
+    conn.requestCompile("file:///a/Foo.scala")
+    conn.requestCompile("file:///b/Bar.scala")
+    Thread.sleep(300)
+    assertEquals(compileCount.get(), 2, "one compile per distinct target")
   }
 
   // ── sourceRootDirByTarget (semanticdb source-root resolution) ──

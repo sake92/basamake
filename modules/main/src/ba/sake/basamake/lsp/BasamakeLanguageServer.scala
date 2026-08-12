@@ -134,12 +134,14 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val changes = params.getChanges.asScala.toList
     val events = changes.map(e => s"${e.getType}=${e.getUri}").mkString(", ")
     logger.debug(s"didChangeWatchedFiles (${changes.size} event(s)): $events")
-    // React to creates/deletes (terminal mv, external tools — these never send
-    // didRenameFiles). Ignore change events: didSave already compiles those.
+    // React to creates/deletes/changes (terminal mv, git checkout, external tools —
+    // these never send didRenameFiles). Editor saves also produce a change event;
+    // the per-target debounce coalesces it with the didSave compile.
     val created = changes.filter(_.getType == FileChangeType.Created).map(_.getUri)
     val deleted = changes.filter(_.getType == FileChangeType.Deleted).map(_.getUri)
-    if (created.nonEmpty || deleted.nonEmpty) {
-      bspManager.onWatchedFilesChanged(created, deleted)
+    val changed = changes.filter(_.getType == FileChangeType.Changed).map(_.getUri)
+    if (created.nonEmpty || deleted.nonEmpty || changed.nonEmpty) {
+      bspManager.onWatchedFilesChanged(created, deleted, changed)
     }
     // keep the workspace source list live for created/deleted source files
     val createdPaths = created.flatMap(uriToSourcePath)
@@ -175,12 +177,12 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   // ----- TextDocumentService
   override def didOpen(params: DidOpenTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
-    logger.debug(s"didOpen: $uri")
+    logger.info(s"didOpen: $uri — scheduling compile")
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidOpen(path)
     Thread.ofVirtual().start(() => {
       bspManager.ensureDepsIndexedFor(uri)
-      bspManager.poke(uri, compile = false)
+      bspManager.poke(uri, compile = true)
     })
   }
 
@@ -194,7 +196,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
-    logger.debug(s"didSave: $uri")
+    logger.info(s"didSave: $uri — scheduling compile")
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
       bspManager.ensureDepsIndexedFor(uri)

@@ -78,15 +78,20 @@ class BspManager private (
     new GitIgnoreEngine(workspaceRoot, config.ignorePatterns.toVector, exemptLastNames = Set(".bsp"))
 
   // ---- poke: the one entry point from LSP handlers ----
-  // makes sure BSP connection is alive, respawns if needed, and triggers compile if requested.
+  // makes sure BSP connection is alive, respawns if needed, and (when requested)
+  // triggers a debounced, per-target-coalesced compile.
   def poke(uri: String, compile: Boolean): Unit = {
     if (shuttingDown.get()) return
     val connOpt = router.route(uri).flatMap(id => Option(connections.get(id)))
     connOpt match {
       case Some(conn) =>
         try {
-          if (compile || !conn.compiledOnce) conn.compile(uri)
-          else conn.poke()
+          if (compile) {
+            logger.info(s"Compile trigger for $uri → ${conn.spec.content.name}")
+            conn.requestCompile(uri)
+          } else {
+            conn.poke()
+          }
         } catch {
           case e: Exception => logger.warn(s"poke failed for $uri: ${e.getMessage}", e)
         }
@@ -107,15 +112,18 @@ class BspManager private (
     }
   }
 
-  /** React to filesystem create/delete events (workspace/didChangeWatchedFiles).
-    * Deleted files: clear diagnostics immediately. Created+deleted files: trigger
-    * a compile, once per connection (the client debounces watcher events into a
-    * single batch). Catches renames done outside VS Code's file-operation flow
-    * (e.g. terminal mv), which never send didRenameFiles. */
-  def onWatchedFilesChanged(created: List[String], deleted: List[String]): Unit = {
+  /** React to filesystem create/delete/change events (workspace/didChangeWatchedFiles).
+    * Deleted files: clear diagnostics immediately. Source events: trigger a compile,
+    * once per connection (the client debounces watcher events into a single batch;
+    * the per-target debounce coalesces bursts — including didSave + its watcher
+    * change event — into one build). Catches renames and edits done outside VS
+    * Code's file-operation flow (terminal mv, git checkout, sed), which never
+    * send didRenameFiles or didSave. */
+  def onWatchedFilesChanged(created: List[String], deleted: List[String], changed: List[String] = Nil): Unit = {
     deleted.foreach(clearDiagnostics)
-    val uris = (created ++ deleted).filter(isWatchedSource)
+    val uris = (created ++ deleted ++ changed).filter(isWatchedSource)
     if (uris.isEmpty) return
+    logger.info(s"watcher: ${created.size} created, ${deleted.size} deleted, ${changed.size} changed source event(s) — scheduling compile")
     Thread.ofVirtual().start(() => {
       val firstUriByConn = mutable.Map.empty[BspConnection, String]
       uris.foreach { uri =>
@@ -124,7 +132,7 @@ class BspManager private (
         }
       }
       firstUriByConn.foreach { case (conn, uri) =>
-        try conn.compile(uri)
+        try conn.requestCompile(uri)
         catch { case e: Exception => logger.warn(s"watcher-triggered compile failed for $uri: ${e.getMessage}") }
       }
     })

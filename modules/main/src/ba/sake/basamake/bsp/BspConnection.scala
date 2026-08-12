@@ -1,6 +1,6 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{CompletableFuture, CopyOnWriteArrayList, TimeUnit}
+import java.util.concurrent.{CompletableFuture, ConcurrentHashMap, CopyOnWriteArrayList, Executors, TimeUnit}
 import java.net.URI
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.*
@@ -13,23 +13,26 @@ import ba.sake.tupson.{given, *}
   *
   * Concurrency: spawnLock serializes spawnAndHandshake + killTree (ping-failure recovery).
   * Volatile spawning flag lets fast-path callers detect an in-progress spawn and queue/return
-  * without blocking. poke/compile on an alive connection may run concurrently (BSP server
-  * handles it). Pending compiles that arrive during spawn are queued in a CopyOnWriteArrayList
+  * without blocking. Pending compiles that arrive during spawn are queued in a CopyOnWriteArrayList
   * with deduplication (addIfAbsent) and drained after spawn succeeds. On spawn failure the
-  * queue is cleared; the next user action will attempt a fresh spawn. */
+  * queue is cleared; the next user action will attempt a fresh spawn.
+  *
+  * Compiles are DEBOUNCED per target: `requestCompile` schedules one compile per target at
+  * most, 500 ms after the first request; further requests for the same target within the
+  * window are coalesced, and a request arriving while a compile runs yields exactly ONE
+  * follow-up. The single-thread executor serializes all compiles on this connection. */
 class BspConnection private (
     val spec: BspConnectionSpec,
     spawnFn: () => HandshakeResult,
     killTreeFn: java.lang.Process => Unit,
-    eventSink: BspEventSink
+    eventSink: BspEventSink,
+    debounceMs: Long
 ) extends StrictLogging {
 
   @volatile private var process: java.lang.Process = null
   @volatile private var buildServer: BuildServer = null
   @volatile private var alive = false
   @volatile var inverseSourcesUnsupported = false
-  /** True after the first successful compile on this connection. Reset on respawn. */
-  @volatile var compiledOnce = false
 
 
   @volatile private var sourceRootDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
@@ -46,6 +49,14 @@ class BspConnection private (
   @volatile private var spawning = false
   /** Compile target IDs that arrived during spawn. Dedup via addIfAbsent. */
   private val pendingCompileTargetIds = new CopyOnWriteArrayList[BuildTargetIdentifier]()
+  /** Targets with a scheduled-but-not-started compile — the debounce/coalesce set. */
+  private val pendingCompileTargets = new ConcurrentHashMap[BuildTargetIdentifier, java.lang.Boolean]()
+  /** Serializes compiles on this connection (sbt can only run one build at a time). */
+  private val compileExecutor = Executors.newSingleThreadScheduledExecutor((r: Runnable) => {
+    val t = new Thread(r, "basamake-bsp-compile")
+    t.setDaemon(true)
+    t
+  })
   
   private val PingTimeoutSec = 3L
   private val ShutdownTimeoutSec = 2L
@@ -62,7 +73,6 @@ class BspConnection private (
         spawnAndHandshake()
         process.onExit().thenRun(() => alive = false)
         alive = true
-        compiledOnce = false
         eventSink.onConnectionSucceeded(spec, sourceDirsByTarget.size)
         // Index catch-up: push ALL targets' semanticdb dirs to the index right after
         // handshake, so pre-existing semanticdb output (e.g. from earlier builds) is
@@ -109,7 +119,10 @@ class BspConnection private (
     }
   }
 
-  def compile(uri: String): Unit = {
+  /** Request a compile for the target(s) owning `uri` — debounced and coalesced
+    * per target: at most one pending + one running compile per target, so a burst
+    * of didOpen/didSave/watcher events collapses into a single build. */
+  def requestCompile(uri: String): Unit = {
     if (!alive) {
       if (spawning) {
         val tids = selectTargets(uri)
@@ -121,23 +134,49 @@ class BspConnection private (
     }
     poke()                                // liveness check
     val targetIds = selectTargets(uri)
-    compileTargets(targetIds)
+    scheduleCompiles(targetIds)
+  }
+
+  private def scheduleCompiles(targetIds: List[BuildTargetIdentifier]): Unit = {
+    targetIds.foreach { tid =>
+      if (pendingCompileTargets.putIfAbsent(tid, java.lang.Boolean.TRUE) == null) {
+        logger.info(s"Compile scheduled (debounced): ${tid.getUri} in ${debounceMs}ms")
+        compileExecutor.schedule(new Runnable {
+          override def run(): Unit = {
+            // removed BEFORE compiling, so a poke during the in-flight compile
+            // re-schedules exactly one follow-up (and further pokes coalesce into it)
+            pendingCompileTargets.remove(tid)
+            if (!alive) {
+              // connection died between schedule and fire — back to the spawn queue
+              pendingCompileTargetIds.addIfAbsent(tid)
+              if (!spawning) ensureConnected()
+              return
+            }
+            compileTargets(List(tid))
+          }
+        }, debounceMs, TimeUnit.MILLISECONDS)
+      }
+    }
   }
 
   private def compileTargets(targetIds: List[BuildTargetIdentifier]): Unit = {
     if (targetIds.nonEmpty) {
+      val startTime = System.currentTimeMillis()
+      val idsStr = targetIds.map(_.getUri).mkString(", ")
+      logger.info(s"Compile start: $idsStr")
       try {
         val result = buildServer.buildTargetCompile(new CompileParams(targetIds.asJava))
           .get(spec.compileTimeoutSec, TimeUnit.SECONDS)
+        val took = System.currentTimeMillis() - startTime
+        logger.info(s"Compile finished: $idsStr — ${result.getStatusCode} in ${took}ms")
         if result.getStatusCode == StatusCode.OK || hasBestEffortFlag(targetIds) then
           onAfterCompile(targetIds)
       } catch {
         case e: Exception => 
-          logger.error(s"compile failed for ${targetIds.map(_.getUri).mkString(", ")}", e)
+          val took = System.currentTimeMillis() - startTime
+          logger.error(s"compile failed for $idsStr after ${took}ms", e)
           if hasBestEffortFlag(targetIds) then
             onAfterCompile(targetIds)
-      } finally {
-        compiledOnce = true
       }
     }
   }
@@ -146,6 +185,8 @@ class BspConnection private (
     alive = false
     spawning = false
     pendingCompileTargetIds.clear()
+    pendingCompileTargets.clear()
+    compileExecutor.shutdownNow()
     if (buildServer != null) tryGracefulShutdown()
     killTree()
   }
@@ -181,9 +222,12 @@ class BspConnection private (
       semDir <- semanticdbDirByTarget.get(tid)
       srcRoot = sourceRootDirByTarget.getOrElse(tid, spec.workspaceRoot)
     } yield SemanticdbDirs(srcRoot, semDir)
-    if (roots.nonEmpty) eventSink match {
-      case s: BspAfterCompileSink => s.onAfterCompile(roots)
-      case _ => ()
+    if (roots.nonEmpty) {
+      logger.info(s"Compile done → forwarding ${roots.size} semanticdb root(s) to index: ${roots.map(r => r.semanticdbDir.toString).mkString(", ")}")
+      eventSink match {
+        case s: BspAfterCompileSink => s.onAfterCompile(roots)
+        case _ => ()
+      }
     }
     // Persist BSP metadata for faster startup next time
     writeTargetData()
@@ -393,7 +437,8 @@ object BspConnection {
       spec,
       () => BspHandshake.execute(spec, conn.targetChangeAwareSink(eventSink)),
       p => ProcessUtils.terminateProcessTree(p),
-      eventSink
+      eventSink,
+      debounceMs = 500
     )
     conn
   }
@@ -403,8 +448,9 @@ object BspConnection {
       spec: BspConnectionSpec,
       spawn: () => HandshakeResult,
       killTree: java.lang.Process => Unit,
-      eventSink: BspEventSink
-  ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink)
+      eventSink: BspEventSink,
+      debounceMs: Long = 500
+  ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink, debounceMs)
 
   /** Merge fresh dependency sources into old. A fresh EMPTY list never replaces an
     * existing non-empty one (servers intermittently return empty results — known
