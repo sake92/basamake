@@ -9,7 +9,7 @@ import ba.sake.basamake.navigation.SymbolUtils
   * `computeWrapper` delegates to `ScalaParseUtils` — the single source of truth
   * for wrapper conventions. `extractPackageOwner`/`ifWrapperOwner`/
   * `isTopLevelPackageOwner` remain duplicated from the extractor deliberately
-  * (zero-risk boundary for the 21 extractor tests). */
+  * (zero-risk boundary for the extractor tests). */
 object ExtractorShared {
 
   /** Top-level wrapper for Scala 3 `X$package.` / `package$package.` and the

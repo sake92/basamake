@@ -58,4 +58,8 @@ class ScalaParseUtilsTest extends FunSuite {
   test("wrapper: sbt with non-empty package owner") {
     assertEquals(ScalaParseUtils.computeWrapper("build.sbt", "com/example/"), Some("com/example/build."))
   }
+
+  test("wrapper: file named exactly .sbt has no wrapper") {
+    assertEquals(ScalaParseUtils.computeWrapper(".sbt", "_empty_/"), None)
+  }
 }

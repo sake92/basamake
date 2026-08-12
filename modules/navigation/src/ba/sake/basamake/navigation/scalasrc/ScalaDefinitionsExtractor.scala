@@ -25,7 +25,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
   def extractFromContent(fileName: String, content: String, path: os.Path): Unit =
     try {
       currentPath = path
-      require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 always wraps top-level defs under `<basename>$package.` and needs the filename to compute it")
+      require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 wraps top-level defs under `<basename>$package.` (`.sbt` under `<basename>.`) and needs the filename to compute it")
       parseSource(fileName, content) match {
         case Right(src) =>
           extractInternal(fileName, src)
