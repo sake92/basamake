@@ -1,8 +1,9 @@
 package basamake.sbt
 
 object sbtutils {
-    val y = 1
+    val yys = 1
     
     /** Eeeeeeeeeeeee jah */
-    def getMsg() = "bla".map(_.toUpper)
-} 
+    def getMsg() = s"bla${yys}".map(_.toUpper)
+}
+
