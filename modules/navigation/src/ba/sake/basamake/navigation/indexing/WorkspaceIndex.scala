@@ -33,6 +33,57 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   // serialize debug-dump file writes (os.write.over is not atomic)
   private val dumpLock = new Object
 
+  // ── debug dump throttling ─────────────────────────────────────
+  // index_sources.txt stays SYNCHRONOUS (cheap, few ms — tests rely on it being
+  // fresh after invalidate). symbol_table.txt is the heavy one (serializes the
+  // whole symbol table, e.g. 12.9MB for msc-backend) — it used to run on the
+  // BSP event thread after EVERY compile; it's now deferred to a background
+  // flusher that writes at most once per interval, only when dirty.
+  private val DumpFlushIntervalMs = 60_000L
+  private val symbolTableDirty = new java.util.concurrent.atomic.AtomicBoolean(false)
+  private val dumpFlusherStarted = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /** Lazy-start the background symbol-table flusher (one virtual thread). */
+  private def ensureDumpFlusher(): Unit = {
+    if (!dumpFlusherStarted.compareAndSet(false, true)) return
+    Thread.ofVirtual().start(() => {
+      var running = true
+      while (running) {
+        try Thread.sleep(DumpFlushIntervalMs)
+        catch { case _: InterruptedException => running = false }
+        if (running && symbolTableDirty.getAndSet(false)) writeSymbolTableDump()
+      }
+    })
+  }
+
+  /** True while a BSP-compile invalidation is tearing down + rebuilding the
+    * symbol table — gotoDefinitions retries once in this window (see below). */
+  @volatile private var invalidating = false
+
+  /** disk (mtime, size) at the time of the last buffer refresh — lets onDidChange
+    * skip the per-keystroke re-parse: occurrences only depend on DISK content
+    * (semanticdb parse or source parse of the file on disk), so an unchanged
+    * disk file yields identical occurrences no matter how much the buffer moves. */
+  private val diskStamps = new ConcurrentHashMap[os.Path, (Long, Long)]()
+
+  /** .semanticdb path → (mtime, size) of the last successfully indexed file —
+    * invalidate skips unchanged files, so a compile no longer re-parses the
+    * whole semanticdb output (~1376 files ≈ 1.5s on the BSP thread) when
+    * nothing changed. */
+  private val semanticdbStamps = new ConcurrentHashMap[os.Path, (Long, Long)]()
+
+  // ── test seams ────────────────────────────────────────────────
+  private val semanticdbIndexCount = new java.util.concurrent.atomic.AtomicLong(0)
+  private val bufferRefreshCount = new java.util.concurrent.atomic.AtomicLong(0)
+  private[navigation] def indexedSemanticdbFiles: Long = semanticdbIndexCount.get()
+  private[navigation] def bufferRefreshCountValue: Long = bufferRefreshCount.get()
+  private[navigation] def symbolTableDumpDirty: Boolean = symbolTableDirty.get()
+  private[navigation] def flushSymbolTableDump(): Unit = {
+    symbolTableDirty.set(false)
+    writeSymbolTableDump()
+  }
+  private[navigation] def setInvalidating(v: Boolean): Unit = invalidating = v
+
   // gitignore engine — built once at construction, used by the walk AND by the
   // entry-point guards below. Replaced wholesale on .gitignore changes (volatile
   // so concurrent guard calls never see a half-mutated engine).
@@ -72,6 +123,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     logger.info(s"Found files: scala=${scalaFiles.size}, sbt=${sbtFiles.size}, java=${javaFiles.size}")
 
     sourcesMap.clear()
+    semanticdbStamps.clear()
     // a file opened between the walk and the clear must not be dropped
     openFiles.forEach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
     val allFiles = scalaFiles.toSet ++ sbtFiles.toSet ++ javaFiles.toSet
@@ -151,6 +203,21 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     * initialize AND refreshed after every index state change, so the dump always
     * reflects the latest source list + semanticdb pairing. */
   private def writeDebugDump(): Unit = {
+    writeIndexSourcesDump()
+    writeSymbolTableDump()
+  }
+
+  /** Cheap refresh after index state changes (invalidate / file create+delete):
+    * index_sources.txt synchronously (tests + freshness), symbol_table.txt
+    * deferred to the throttled background flusher — the full-table serialize
+    * (~13MB) must not run on the BSP event thread after every compile. */
+  private def refreshDebugDump(): Unit = {
+    writeIndexSourcesDump()
+    symbolTableDirty.set(true)
+    ensureDumpFlusher()
+  }
+
+  private def writeIndexSourcesDump(): Unit = {
     try {
       val pairs = sourcesMap.entrySet().asScala.flatMap { e =>
         e.getValue.semanticdbPath.map(sem => e.getKey -> sem)
@@ -161,10 +228,21 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       os.makeDir.all(dumpDir)
       dumpLock.synchronized {
         os.write.over(dumpDir / "index_sources.txt", dump)
-        os.write.over(dumpDir / "symbol_table.txt", symbolTable.all.toVector.sortBy(_.symbol).mkString("\n"), createFolders = true)
       }
     } catch {
       case e: Exception => logger.warn(s"Failed to write index_sources.txt: ${e.getMessage}")
+    }
+  }
+
+  private def writeSymbolTableDump(): Unit = {
+    try {
+      val dumpDir = workspacePath / ".basamake"
+      os.makeDir.all(dumpDir)
+      dumpLock.synchronized {
+        os.write.over(dumpDir / "symbol_table.txt", symbolTable.all.toVector.sortBy(_.symbol).mkString("\n"), createFolders = true)
+      }
+    } catch {
+      case e: Exception => logger.warn(s"Failed to write symbol_table.txt: ${e.getMessage}")
     }
   }
 
@@ -179,7 +257,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   def onDidChange(path: os.Path): Unit = {
     if isIgnoredWorkspacePath(path) then return
     openFiles.add(path)
-    refreshOpenBuffer(path)
+    // Occurrences only depend on DISK content — skip the re-parse while the
+    // disk file is unchanged (typing = no refresh; the old code re-parsed the
+    // whole file's semanticdb occurrences on EVERY keystroke, serializing the
+    // single lsp4j message thread).
+    if (diskStamps.get(path) != diskStampOf(path)) refreshOpenBuffer(path)
   }
 
   def onDidSave(path: os.Path): Unit = {
@@ -220,9 +302,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     paths.foreach { path =>
       openFiles.remove(path)
       sourcesMap.remove(path)
+      diskStamps.remove(path)
       symbolTable.removeByPath(path)
     }
-    writeDebugDump()
+    refreshDebugDump()
   }
 
   /** New source files on disk (watcher create events, rename new paths).
@@ -232,7 +315,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     val accepted = paths.filterNot(isIgnoredWorkspacePath)
     if (accepted.isEmpty) return
     accepted.foreach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
-    writeDebugDump()
+    refreshDebugDump()
   }
 
   // ── invalidate (BSP compile callback) ────────────────────────
@@ -244,18 +327,26 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   def invalidate(roots: List[SemanticdbDirs]): Unit = {
     if (roots.isEmpty) return
     logger.info(s"Invalidating workspace index (${roots.size} semanticdb root(s))")
-
-    for (root <- roots if os.exists(root.sourceRootDir) && os.exists(root.semanticdbDir) && !ignoreEngine.isInsideNestedRepo(root.sourceRootDir)) {
-      val srcRoot = root.sourceRootDir
-      val semDir = root.semanticdbDir
-      val semFiles = os.walk(semDir).filter(_.ext == "semanticdb").toList
-      var paired = 0
-      for (semPath <- semFiles) {
-        if (indexSemanticdbFile(semPath, srcRoot)) paired += 1
+    invalidating = true
+    try {
+      for (root <- roots if os.exists(root.sourceRootDir) && os.exists(root.semanticdbDir) && !ignoreEngine.isInsideNestedRepo(root.sourceRootDir)) {
+        val srcRoot = root.sourceRootDir
+        val semDir = root.semanticdbDir
+        val semFiles = os.walk(semDir).filter(_.ext == "semanticdb").toList
+        var paired = 0
+        for (semPath <- semFiles) {
+          // skip files unchanged since their last successful index — a compile
+          // rewrites ALL semanticdb files, but only the changed ones matter
+          if (semanticdbStamps.get(semPath) != stampOf(semPath)) {
+            if (indexSemanticdbFile(semPath, srcRoot)) paired += 1
+          }
+        }
+        logger.info(s"Invalidated $paired/${semFiles.size} semanticdb files from $semDir")
       }
-      logger.info(s"Invalidated $paired/${semFiles.size} semanticdb files from $semDir")
+    } finally {
+      invalidating = false
     }
-    writeDebugDump()
+    refreshDebugDump()
   }
 
   /** Index a single .semanticdb file: parse definitions, pair with source via direct
@@ -279,11 +370,18 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
             logger.warn(s"No source match for $semPath (uri=${doc.uri}, sourceRoot=$sourceRoot)")
         }
       }
+      // only record the stamp after a successful parse — a transient failure
+      // stays un-stamped and is retried on the next invalidate
+      semanticdbStamps.put(semPath, stampOf(semPath))
+      semanticdbIndexCount.incrementAndGet()
       paired
     } catch {
       case e: Exception => logger.warn(s"Failed to index $semPath: ${e.getMessage}"); false
     }
   }
+
+  private def stampOf(p: os.Path): (Long, Long) =
+    try (os.mtime(p), os.size(p)) catch { case _: Exception => (-1L, -1L) }
 
   private def setSemanticdbPath(src: os.Path, semPath: os.Path): Unit =
     sourcesMap.compute(src, (_, old) => {
@@ -318,6 +416,23 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   }
 
   def gotoDefinitions(path: os.Path, line: Int, char: Int, depCandidates: List[os.Path] = Nil): Vector[SymbolDefinition] = {
+    // An in-flight invalidation tears down + rebuilds the symbol table per file
+    // on the BSP thread; a lookup landing in that window can transiently return
+    // empty. Retry briefly (only when refs were found but resolution came up
+    // empty — a cursor on a def site must NOT trigger the wait).
+    var result = resolveDefinitions(path, line, char, depCandidates)
+    var attempts = 0
+    while (result.contains(Vector.empty) && invalidating && attempts < 20) {
+      Thread.sleep(50)
+      result = resolveDefinitions(path, line, char, depCandidates)
+      attempts += 1
+    }
+    result.getOrElse(Vector.empty)
+  }
+
+  /** One-shot resolution: None = no refs under the cursor (def site), Some =
+    * resolution outcome (possibly empty — symbol not found yet). */
+  private def resolveDefinitions(path: os.Path, line: Int, char: Int, depCandidates: List[os.Path]): Option[Vector[SymbolDefinition]] = {
     val data = sourcesMap.get(path)
     // All occurrences are references (defs live in SymbolTable / open-file locals).
     val references = if (data == null) Vector.empty else data.occurrences
@@ -327,16 +442,16 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     val referencesUnderCursor = references.filter(o => isInsideRange(line, char, o.range))
     // Cursor on a def site (not a ref) → return empty. "Go to definition" from the
     // definition itself is noise; the user wants references there, not "go to self".
-    if (referencesUnderCursor.isEmpty) Vector.empty
+    if (referencesUnderCursor.isEmpty) None
     else {
       val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
       val candidates =
         if (local.nonEmpty) local
         else referencesUnderCursor.flatMap(o => getSymbol(o.symbol, depCandidates))
       // Filter out the location the cursor is already on (self-filter for refs).
-      candidates.filterNot { sd =>
+      Some(candidates.filterNot { sd =>
         sd.path == path && isInsideRange(line, char, sd.range)
-      }
+      })
     }
   }
 
@@ -428,8 +543,13 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
           val base = if (old == null) SourceData.empty else old
           base.copy(occurrences = occs, locals = locals)
         })
+        diskStamps.put(path, diskStampOf(path))
+        bufferRefreshCount.incrementAndGet()
     }
   }
+
+  private def diskStampOf(p: os.Path): (Long, Long) =
+    try (os.mtime(p), os.size(p)) catch { case _: Exception => (-1L, -1L) }
 
   private def sourceResolve(path: os.Path, text: String): ResolvedFile =
     if (path.ext == "java") {
