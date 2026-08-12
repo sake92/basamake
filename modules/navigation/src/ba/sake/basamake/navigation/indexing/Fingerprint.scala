@@ -18,8 +18,29 @@ object Fingerprint {
 
   private val MavenName = "^(.+)-(\\d.*)$".r
 
+  // Fingerprint memo: jar paths (and their sibling POMs) are immutable in the
+  // coursier cache, so a parsed POM never goes stale. This matters because
+  // IndexedSymbolTable.getFromCandidates calls fromJarPath for EVERY candidate
+  // jar on every lookup — a DOM parse of the POM per call measured ~0.4-1.1ms,
+  // which with ~370 dep jars per target added up to ~100-400ms per goto-def/
+  // hover. Bounded: clear-on-overflow (same policy as recentFps).
+  private val MaxCachedFingerprints = 10000
+  private val fingerprintCache = new java.util.concurrent.ConcurrentHashMap[String, String]()
+
   /** Relative cache dir for a source jar / zip (e.g. a coursier-cached `-sources.jar`). */
   def fromJarPath(jarPath: os.Path): String = {
+    val key = jarPath.toString
+    val cached = fingerprintCache.get(key)
+    if cached != null then cached
+    else {
+      val computed = computeFingerprint(jarPath)
+      if fingerprintCache.size() >= MaxCachedFingerprints then fingerprintCache.clear()
+      fingerprintCache.put(key, computed)
+      computed
+    }
+  }
+
+  private def computeFingerprint(jarPath: os.Path): String = {
     val name = jarPath.last
     val stripped = name.stripSuffix("-sources.jar").stripSuffix(".jar")
     val readable = stripped match {

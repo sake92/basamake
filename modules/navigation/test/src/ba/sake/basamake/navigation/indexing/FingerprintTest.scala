@@ -95,4 +95,25 @@ class FingerprintTest extends FunSuite {
     val fp = Fingerprint.fromJdk(os.Path("/home/sake/.sdkman/candidates/java/21.0.2"), "21.0.2")
     assert(fp.matches("""^jdk-21\.0\.2_[0-9a-f]{8}$"""), s"unexpected fingerprint: $fp")
   }
+
+  test("fromJarPath is memoized: a POM change after the first call does not change the fingerprint") {
+    val base = os.temp.dir() / "com/example/memo/1.0.0"
+    os.makeDir.all(base)
+    val jar = base / "memo-1.0.0-sources.jar"
+    os.write.over(jar, "dummy")
+    val pom = base / "memo-1.0.0.pom"
+    os.write.over(pom,
+      "<project><groupId>com.example</groupId><artifactId>memo</artifactId><version>1.0.0</version></project>")
+
+    val fp1 = Fingerprint.fromJarPath(jar)
+    assert(fp1.startsWith("com_example/memo_1.0.0_"), s"unexpected fingerprint: $fp1")
+
+    // jar paths + their POMs are immutable in the coursier cache — the memo
+    // must NOT re-parse the POM on the next call (a per-lookup DOM parse of
+    // every candidate jar was the dominant goto-def cost)
+    os.write.over(pom,
+      "<project><groupId>org.changed</groupId><artifactId>memo</artifactId><version>1.0.0</version></project>")
+    val fp2 = Fingerprint.fromJarPath(jar)
+    assertEquals(fp1, fp2, "fingerprint must come from the memo, not a fresh POM parse")
+  }
 }

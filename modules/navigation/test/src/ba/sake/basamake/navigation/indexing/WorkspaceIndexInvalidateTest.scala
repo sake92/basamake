@@ -1,7 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
 import munit.FunSuite
-import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable}
+import ba.sake.basamake.navigation.{SymbolTable, InMemorySymbolTable, SymbolDefinition}
 import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
 
 /** Integration tests for WorkspaceIndex.invalidate / initialize semanticdb pairing.
@@ -349,5 +349,132 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       assert(st.get("_empty_/utils.getMsg().").isEmpty,
         "definitions for sources inside a nested repo must be purged")
     } finally os.remove.all(outer)
+  }
+
+  // ── perf: invalidate skips unchanged semanticdb files ─────────
+
+  test("invalidate skips unchanged .semanticdb files (re-invalidate is a no-op)") {
+    val root = buildSbtLikeFixture()
+    try {
+      val (idx, _) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      val afterFirst = idx.indexedSemanticdbFiles
+      assertEquals(afterFirst, 2L, "both semanticdb files indexed on first invalidate")
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assertEquals(idx.indexedSemanticdbFiles, afterFirst, "unchanged files must not be re-indexed")
+    } finally os.remove.all(root)
+  }
+
+  test("invalidate re-indexes only changed .semanticdb files") {
+    val root = buildSbtLikeFixture()
+    try {
+      val (idx, st) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      val afterFirst = idx.indexedSemanticdbFiles
+
+      // a compile produced one more source + semanticdb file
+      os.write(root / "src" / "main" / "scala" / "Extra.scala", "object Extra:\n  def extra() = 1\n")
+      val newDoc = TextDocument(
+        schema = Schema.SEMANTICDB4,
+        uri = "src/main/scala/Extra.scala",
+        text = "object Extra:\n  def extra() = 1\n",
+        language = Language.SCALA,
+        symbols = Nil,
+        occurrences = List(
+          SymbolOccurrence(symbol = "_empty_/Extra#", range = Some(SdbRange(0, 7, 0, 12)), role = SymbolOccurrence.Role.DEFINITION)
+        )
+      )
+      os.write(semanticdbDirOf(root) / "META-INF" / "semanticdb" / "src" / "main" / "scala" / "Extra.scala.semanticdb",
+        TextDocuments(List(newDoc)).toByteArray)
+
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assertEquals(idx.indexedSemanticdbFiles, afterFirst + 1, "only the new file is re-indexed")
+      assert(st.get("_empty_/Extra#").isDefined, "new file's defs are loaded")
+    } finally os.remove.all(root)
+  }
+
+  // ── perf: symbol_table.txt is throttled (index_sources.txt stays sync) ──
+
+  test("invalidate defers symbol_table.txt to the throttled flusher") {
+    val root = buildSbtLikeFixture()
+    try {
+      val (idx, _) = freshIndexAt(root) // init writes both dump files synchronously
+      val dumpFile = root / ".basamake" / "symbol_table.txt"
+      Thread.sleep(20) // separate mtimes — a sync rewrite would then be detectable
+      val before = os.mtime(dumpFile)
+
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(idx.symbolTableDumpDirty, "invalidate must mark the symbol table dump dirty")
+      assertEquals(os.mtime(dumpFile), before, "invalidate must NOT rewrite symbol_table.txt synchronously")
+
+      idx.flushSymbolTableDump()
+      assert(!idx.symbolTableDumpDirty, "flush clears the dirty flag")
+      assert(os.read(dumpFile).contains("_empty_/utils.getMsg()."),
+        "flushed dump contains the new defs")
+
+      // index_sources.txt IS refreshed synchronously — tests above assert content
+      val sources = os.read(root / ".basamake" / "index_sources.txt")
+      assert(sources.contains("src/main/scala/utils.scala"), "index_sources.txt refreshed synchronously")
+    } finally os.remove.all(root)
+  }
+
+  // ── perf: gotoDefinitions retries during an invalidation window ──
+
+  test("gotoDefinitions retries while an invalidation is in progress") {
+    val root = buildSbtLikeFixture()
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val (idx, st) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root)))) // semanticdb occurrences
+      idx.onDidOpen(mainFile)
+      st.removeByPath(utilsFile) // simulate the tear-down half of an invalidation
+
+      val fut = new java.util.concurrent.CompletableFuture[Vector[SymbolDefinition]]()
+      idx.setInvalidating(true)
+      Thread.ofVirtual().start(() => fut.complete(idx.gotoDefinitions(mainFile, 2, 18)))
+      Thread.sleep(150) // first resolution comes up empty → retry loop waits
+      st.add(SymbolDefinition("_empty_/utils.getMsg().", "getMsg", isType = false,
+        SdbRange(1, 6, 1, 12), utilsFile))
+
+      val locs = fut.get(5, java.util.concurrent.TimeUnit.SECONDS)
+      assert(locs.nonEmpty, s"retry must resolve the def that appeared mid-invalidation, got empty")
+      assertEquals(locs.head.path.last, "utils.scala")
+    } finally os.remove.all(root)
+  }
+
+  test("gotoDefinitions does not retry when the cursor is on a def site (no refs)") {
+    val root = buildSbtLikeFixture()
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      idx.onDidOpen(mainFile)
+      idx.setInvalidating(true)
+      // no occurrence at (0, 1) → None → no retry loop → immediate empty
+      val locs = idx.gotoDefinitions(mainFile, 0, 1)
+      assert(locs.isEmpty, s"def-site goto must return empty, got $locs")
+    } finally os.remove.all(root)
+  }
+
+  // ── perf: onDidChange skips refreshes while the disk file is unchanged ──
+
+  test("onDidChange skips buffer refresh while the disk file is unchanged") {
+    val root = buildSbtLikeFixture()
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val (idx, _) = freshIndexAt(root)
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      idx.onDidOpen(mainFile)
+      val afterOpen = idx.bufferRefreshCountValue
+
+      idx.onDidChange(mainFile) // typing with an unchanged disk file → no refresh
+      assertEquals(idx.bufferRefreshCountValue, afterOpen, "unchanged disk must skip the refresh")
+
+      // external disk change (different size) → next didChange refreshes
+      os.write.over(mainFile, "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.getMsg()); println(\"changed\")\n")
+      idx.onDidChange(mainFile)
+      assertEquals(idx.bufferRefreshCountValue, afterOpen + 1, "disk change must trigger a refresh")
+    } finally os.remove.all(root)
   }
 }
