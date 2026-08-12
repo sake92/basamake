@@ -3,26 +3,21 @@ package ba.sake.basamake.navigation.scalasrc
 import scala.meta.*
 import ba.sake.basamake.navigation.SymbolUtils
 
-/** Duplicated helpers from `ScalaDefinitionsExtractor` so the resolver can
-  * compute the SAME owner keys as the extractor without modifying the extractor.
-  * Guarantees the 21 extractor tests stay green (zero risk).
+/** Helpers shared with `ScalaDefinitionsExtractor` so the resolver computes the
+  * SAME owner keys as the extractor.
   *
-  * Strategy: duplicate, do NOT refactor the extractor. If later dedup desired,
-  * refactor ONLY after verifying `deder exec -t test -m navigation-test` is 100%
-  * green with the refactored extractor.
-  */
+  * `computeWrapper` delegates to `ScalaParseUtils` — the single source of truth
+  * for wrapper conventions. `extractPackageOwner`/`ifWrapperOwner`/
+  * `isTopLevelPackageOwner` remain duplicated from the extractor deliberately
+  * (zero-risk boundary for the extractor tests). */
 object ExtractorShared {
 
-  /** Top-level wrapper for Scala 3 `X$package.` / `package$package.`.
-    * Mirrors `ScalaDefinitionsExtractor.computeWrapper` exactly.
+  /** Top-level wrapper for Scala 3 `X$package.` / `package$package.` and the
+    * `.sbt` build-object convention (`build.sbt` → `_empty_/build.`).
+    * Delegates to `ScalaParseUtils` — the single source of truth.
     */
-  def computeWrapper(fileName: String, pkgOwner: String): Option[String] = {
-    if (fileName == "package.scala") Some(SymbolUtils.termSymbol(pkgOwner, "package$package"))
-    else {
-      val baseName = fileName.stripSuffix(".scala")
-      Some(SymbolUtils.termSymbol(pkgOwner, s"${baseName}$$package"))
-    }
-  }
+  def computeWrapper(fileName: String, pkgOwner: String): Option[String] =
+    ScalaParseUtils.computeWrapper(fileName, pkgOwner)
 
   /** Extract the top-level package owner from source stats.
     * Mirrors `ScalaDefinitionsExtractor.extractPackageOwner` exactly.

@@ -6,6 +6,8 @@ description: How Basamake resolves go to definition and find references — Sema
 # Navigation & indexing
 
 Basamake supports **go to definition** and **find references** for Scala and Java.
+sbt build definitions (`.sbt` files) are indexed too — vals and defs in
+`build.sbt`/`project/*.sbt` support go to definition, references, and hover.
 This page explains how they are resolved.
 
 ## Workspace index

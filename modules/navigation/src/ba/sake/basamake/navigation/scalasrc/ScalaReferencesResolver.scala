@@ -3,8 +3,6 @@ package ba.sake.basamake.navigation.scalasrc
 import java.io.InputStream
 import scala.compiletime.uninitialized
 import scala.meta.*
-import scala.meta.dialects.{Scala3Future, Scala213}
-import scala.meta.inputs.Input
 import com.typesafe.scalalogging.StrictLogging
 import scala.util.control.NonFatal
 import scala.collection.mutable
@@ -36,7 +34,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     try {
       currentPath = path
       require(fileName.nonEmpty, "fileName must be non-empty")
-      parseSource(content) match {
+      parseSource(fileName, content) match {
         case Right(src) =>
           resolveInternal(fileName, src)
         case Left(err) =>
@@ -53,19 +51,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── parse ────────────────────────────────────────────────────
 
-  private def parseSource(content: String): Either[String, Source] = {
-    val input = Input.String(content)
-    val scala3Result ={ given Dialect = Scala3Future; input.parse[Source] } 
-    scala3Result match {
-      case Parsed.Success(source) => Right(source)
-      case Parsed.Error(_, msg1, _) =>
-        val scala2Result = { given Dialect = Scala213; input.parse[Source] }
-        scala2Result match {
-          case Parsed.Success(source) => Right(source)
-          case Parsed.Error(_, msg2, _) => Left(s"""scala3: "${msg1}"; scala2: "${msg2}";""")
-        }
-    }
-  }
+  private def parseSource(fileName: String, content: String): Either[String, Source] =
+    ScalaParseUtils.parseSource(fileName, content)
 
   // ── mutable state (cleared per resolve call) ──────────────────
 

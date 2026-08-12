@@ -148,11 +148,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     if (deletedPaths.nonEmpty) workspaceIndex.onFilesDeleted(deletedPaths.toSet)
   }
 
-  /** Convert a watched-file URI to a source path (.scala/.java only). */
+  /** Convert a watched-file URI to a source path (.scala/.java/.sbt only). */
   private def uriToSourcePath(uri: String): Option[os.Path] =
     try {
       val p = os.Path(URI.create(uri))
-      if (p.ext == "scala" || p.ext == "java") Some(p) else None
+      if (p.ext == "scala" || p.ext == "java" || p.ext == "sbt") Some(p) else None
     } catch { case _: Exception => None }
 
   /** VS Code sends workspace/didRenameFiles when user renames a file.
@@ -166,7 +166,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val oldPath = try Some(os.Path(URI.create(rename.getOldUri))) catch { case _: Exception => None }
       oldPath.foreach(p => workspaceIndex.onFilesDeleted(Set(p)))
       val newPath = os.Path(URI.create(rename.getNewUri))
-      if (newPath.ext == "scala" || newPath.ext == "java") workspaceIndex.onFilesCreated(Set(newPath))
+      if (newPath.ext == "scala" || newPath.ext == "java" || newPath.ext == "sbt") workspaceIndex.onFilesCreated(Set(newPath))
       workspaceIndex.onDidOpen(newPath)
       Thread.ofVirtual().start(() => bspManager.poke(rename.getNewUri, compile = true))
     }

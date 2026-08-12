@@ -81,7 +81,7 @@ class HoverProvider(val workspaceIndex: WorkspaceIndex) extends StrictLogging {
 
       val content = os.read(path)
       val parsed: Option[ParsedFile] = path.ext match {
-        case "scala" => ScalaHoverExtractor.parse(content).map(ParsedScala(path, _))
+        case "scala" | "sbt" => ScalaHoverExtractor.parse(path.last, content).map(ParsedScala(path, _))
         case "java"  => JavaHoverExtractor.parse(content).map(ParsedJava(path, _))
         case _       => None
       }

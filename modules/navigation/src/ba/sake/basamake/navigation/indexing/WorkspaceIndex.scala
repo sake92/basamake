@@ -58,7 +58,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   // ── initialize ──────────────────────────────────────────────
   def initialize(roots: List[SemanticdbDirs]): Unit = {
     logger.info(s"Initializing workspace index at $workspacePath")
-    val relevantExtensions = Set("scala", "java")
+    val relevantExtensions = Set("scala", "java", "sbt")
     def skip(p: os.Path): Boolean =
       if os.isDir(p) then GitIgnoreEngine.alwaysSkipDirNames.contains(p.last) || ignoreEngine.isIgnored(p, isDir = true)
       else if os.isFile(p) then !relevantExtensions.contains(p.ext) || ignoreEngine.isIgnored(p, isDir = false)
@@ -67,13 +67,14 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     val sources = os.walk(workspacePath, skip = skip)
     val fileGroups = sources.groupBy(_.ext)
     val scalaFiles = fileGroups.getOrElse("scala", Vector.empty)
+    val sbtFiles = fileGroups.getOrElse("sbt", Vector.empty)
     val javaFiles = fileGroups.getOrElse("java", Vector.empty)
-    logger.info(s"Found files: scala=${scalaFiles.size}, java=${javaFiles.size}")
+    logger.info(s"Found files: scala=${scalaFiles.size}, sbt=${sbtFiles.size}, java=${javaFiles.size}")
 
     sourcesMap.clear()
     // a file opened between the walk and the clear must not be dropped
     openFiles.forEach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
-    val allFiles = scalaFiles.toSet ++ javaFiles.toSet
+    val allFiles = scalaFiles.toSet ++ sbtFiles.toSet ++ javaFiles.toSet
     allFiles.foreach(p => sourcesMap.put(p, SourceData.empty))
 
     val total = allFiles.size.toLong
@@ -110,7 +111,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     }
 
     // Pass B: extract from source AST for files WITHOUT semanticdb
-    for (path <- scalaFiles if sourcesMap.get(path).semanticdbPath.isEmpty) {
+    for (path <- scalaFiles ++ sbtFiles if sourcesMap.get(path).semanticdbPath.isEmpty) {
       logger.debug(s"Extracting definitions from $path")
       try {
         val content = os.read(path)
@@ -193,7 +194,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
         val defs = SemanticdbIndexing.parseDefinitions(data.semanticdbPath.get, path)
         defs.foreach(symbolTable.add)
       } catch { case _: Exception => () }
-    } else if (path.ext == "scala") {
+    } else if (path.ext == "scala" || path.ext == "sbt") {
       val content = try os.read(path) catch { case _ => "" }
       val extractor = ScalaDefinitionsExtractor(symbolTable)
       extractor.extractFromContent(path.last, content, path)

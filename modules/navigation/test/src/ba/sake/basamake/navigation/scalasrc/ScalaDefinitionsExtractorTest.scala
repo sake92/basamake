@@ -411,4 +411,51 @@ def topLevelMethod(): Int = 42"""
       sym("com/example/Features$package."),
     ))
   }
+
+  // ── .sbt build definitions ────────────────────────────────────
+  test("sbt: build.sbt top-level vals/defs live under _empty_/build.") {
+    val code = """ThisBuild / scalaVersion := "3.3.1"
+                  |
+                  |lazy val root = (project in file("."))
+                  |  .settings(name := "hello")
+                  |
+                  |def buildInfo = "v1"""".stripMargin
+    assertSymbols("build.sbt", code, Set(
+      sym("_empty_/build."),
+      sym("_empty_/build.root."),
+      sym("_empty_/build.buildInfo()."),
+    ))
+  }
+
+  test("sbt: plugins.sbt under _empty_/plugins.") {
+    assertSymbols("plugins.sbt",
+      """val customSetting = settingKey[String]("desc")""",
+      Set(
+        sym("_empty_/plugins."),
+        sym("_empty_/plugins.customSetting."),
+      ))
+  }
+
+  test("sbt: scala 3 named given parses via toplevel dialect") {
+    assertSymbols("build.sbt",
+      "given myOrdering: Ordering[Int] with\n  def compare(a: Int, b: Int) = a - b",
+      Set(
+        sym("_empty_/build."),
+        sym("_empty_/build.myOrdering."),
+        sym("_empty_/build.myOrdering.compare()."),
+        sym("_empty_/build.myOrdering.compare().(a)"),
+        sym("_empty_/build.myOrdering.compare().(b)"),
+      ))
+  }
+
+  // ── Scala 3 top-level statements (regression guard) ───────────
+  test("scala 3 top-level statements: val + def under X$package") {
+    val code = """val greeting = "hello"
+                  |def main(): Unit = println(greeting)""".stripMargin
+    assertSymbols("top_level.scala", code, Set(
+      sym("_empty_/top_level$package."),
+      sym("_empty_/top_level$package.greeting."),
+      sym("_empty_/top_level$package.main()."),
+    ))
+  }
 }

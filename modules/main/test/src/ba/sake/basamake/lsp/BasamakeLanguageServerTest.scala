@@ -411,4 +411,53 @@ class BasamakeLanguageServerTest extends FunSuite {
         s"begin message should carry the total, got: $beginMsg")
     } finally os.remove.all(root)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // .sbt build-definition navigation via LSP
+  // ═══════════════════════════════════════════════════════════════
+
+  test("LSP definition: goto core from build.sbt returns build.sbt location") {
+    val root = copyFixture("sbtbuild", "lsp-sbt-goto")
+    try {
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
+
+      val buildFile = root / "build.sbt"
+      val buildText = os.read(buildFile)
+      server.didOpen(new DidOpenTextDocumentParams(
+        new TextDocumentItem(buildFile.toNIO.toUri.toString, "scala", 1, buildText)))
+
+      val (l, c) = posAt(buildText, """dependsOn\((?<p>core)\)""")
+      val params = new DefinitionParams()
+      params.setTextDocument(new TextDocumentIdentifier(buildFile.toNIO.toUri.toString))
+      params.setPosition(new Position(l, c))
+
+      val result = server.definition(params).get(10, TimeUnit.SECONDS)
+      val locations = result.getLeft
+      assert(locations.size() > 0, s"expected at least one location, got ${locations.size()}")
+      val loc = locations.get(0)
+      assertEquals(os.Path(URI.create(loc.getUri)).last, "build.sbt")
+    } finally os.remove.all(root)
+  }
+
+  test("didChangeWatchedFiles: created .sbt file is indexed via the watcher gate") {
+    val root = copyFixture("sbtbuild", "lsp-sbt-watched")
+    try {
+      val server = new BasamakeLanguageServer(root)
+      server.connect(fakeClient)
+      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
+
+      os.write.over(root / "New.sbt", "lazy val extra = project")
+
+      val newFileUri = (root / "New.sbt").toNIO.toUri.toString
+      server.didChangeWatchedFiles(new DidChangeWatchedFilesParams(
+        java.util.List.of(new FileEvent(newFileUri, FileChangeType.Created))))
+
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      assert(dump.contains("New.sbt"), s"expected New.sbt in index_sources.txt dump, got:\n$dump")
+    } finally os.remove.all(root)
+  }
 }

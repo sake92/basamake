@@ -1,8 +1,6 @@
 package ba.sake.basamake.navigation.scalasrc
 
 import scala.meta.*
-import scala.meta.dialects.{Scala3Future, Scala213}
-import scala.meta.inputs.Input
 import scala.meta.internal.semanticdb.Range
 import scala.meta.tokens.Token
 import scala.collection.mutable
@@ -16,20 +14,13 @@ import ba.sake.basamake.navigation.DocCommentCleaner
   * AND dep/JDK sources (both are real files on disk). */
 object ScalaHoverExtractor {
 
-  /** Parse with Scala 3 first, fall back to Scala 2 — mirrors ScalaDefinitionsExtractor. */
-  def parse(content: String): Option[Source] = {
-    val input = Input.String(content)
-    given Dialect = Scala3Future
-    input.parse[Source] match {
-      case Parsed.Success(src) => Some(src)
-      case Parsed.Error(_, _, _) =>
-        given Dialect = Scala213
-        input.parse[Source] match {
-          case Parsed.Success(src) => Some(src)
-          case _                   => None
-        }
-    }
-  }
+  /** Parse with the file-appropriate cascade (Scala 3 top-level first, then
+    * `Sbt1`/Scala 2 fallbacks) — mirrors `ScalaDefinitionsExtractor`/resolver. */
+  def parse(fileName: String, content: String): Option[Source] =
+    ScalaParseUtils.parseSource(fileName, content).toOption
+
+  /** Convenience for plain `.scala` content (kept for tests/callers). */
+  def parse(content: String): Option[Source] = parse("file.scala", content)
 
   /** Find the definition whose NAME position matches `range` (tolerant: same
     * start line + same name text) and render its signature + doc comment. */
