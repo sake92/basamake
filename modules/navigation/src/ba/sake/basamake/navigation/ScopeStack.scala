@@ -111,6 +111,30 @@ class ScopeStack(val symbolTable: SymbolTable) {
                   idx += 1
                 }
               }
+
+              // `import foo._` also exposes the package OBJECT's members
+              // (`foo/package.<name>`) — e.g. `file`/`uri`/`url` from
+              // sbt's `package object sbt`. Only for package prefixes.
+              if (prefix.endsWith("/")) {
+                val pkgObj = prefix + "package."
+                if (isType) {
+                  val ts = SymbolUtils.typeSymbol(pkgObj, name)
+                  if (symbolTable.get(ts).isDefined) break(Some(ts))
+                  val te = SymbolUtils.termSymbol(pkgObj, name)
+                  if (symbolTable.get(te).isDefined) break(Some(te))
+                } else {
+                  if (inCallContext) {
+                    var idx = 0
+                    while (idx <= 8) {
+                      val methodSym = SymbolUtils.methodSymbol(pkgObj, name, idx)
+                      if (symbolTable.get(methodSym).isDefined) break(Some(methodSym))
+                      idx += 1
+                    }
+                  }
+                  val termSym = SymbolUtils.termSymbol(pkgObj, name)
+                  if (symbolTable.get(termSym).isDefined) break(Some(termSym))
+                }
+              }
             }
           }
       }

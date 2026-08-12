@@ -983,4 +983,26 @@ class WorkspaceIndexTest extends FunSuite {
       assert(st.get("_empty_/build.core.").isDefined, "_empty_/build.core. must survive save re-extraction")
     } finally os.remove.all(root)
   }
+
+  test("debug dump: outside files listed last, as absolute paths, after a marker comment") {
+    val root = TestFixture.copy("sbtbuild", "sbtbuild-dump")
+    try {
+      val (idx, _) = freshIndexAt(root)
+      // a dep-style source OUTSIDE the workspace, opened via goto-def
+      val outsideDir = os.pwd / "tmp" / s"deps-outside-${System.currentTimeMillis()}"
+      os.makeDir.all(outsideDir)
+      val outsideFile = outsideDir / "Keys.scala"
+      os.write(outsideFile, "object Keys\n")
+      idx.onDidOpen(outsideFile)
+      // trigger a dump refresh (onFilesCreated writes the dump)
+      idx.onFilesCreated(Set(root / "New.scala"))
+      val dump = os.read(root / ".basamake" / "index_sources.txt")
+      val newIdx = dump.indexOf("New.scala")
+      val commentIdx = dump.indexOf("# files outside the workspace (opened via goto-def)")
+      val keysIdx = dump.indexOf(outsideFile.toString)
+      assert(newIdx >= 0 && newIdx < commentIdx, s"workspace files must come before the marker comment:\n$dump")
+      assert(keysIdx > commentIdx, s"outside file must come after the marker comment, as absolute path:\n$dump")
+      assert(!dump.contains("../../"), s"no relative ../ paths may appear in the dump:\n$dump")
+    } finally os.remove.all(root)
+  }
 }

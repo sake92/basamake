@@ -315,6 +315,49 @@ class ScalaReferencesResolverTest extends FunSuite {
     assertHasOccurrence(rf, "_empty_/build.core.")
   }
 
+  // ── sbt implicit imports (build.sbt only) ─────────────────────
+
+  test("sbt: key from implicit Keys._ import resolves to sbt/Keys") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("sbt/Keys.semanticdbEnabled.", "semanticdbEnabled", isType = false, new Range(0,0,0,0), os.pwd / "Keys.scala"))
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("build.sbt", """ThisBuild / semanticdbEnabled := true""", os.pwd / "build.sbt")
+    assertHasOccurrence(rf, "sbt/Keys.semanticdbEnabled.")
+  }
+
+  test("sbt: name key in settings resolves to sbt/Keys") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("sbt/Keys.name.", "name", isType = false, new Range(0,0,0,0), os.pwd / "Keys.scala"))
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("build.sbt", """name := "hello"""", os.pwd / "build.sbt")
+    assertHasOccurrence(rf, "sbt/Keys.name.")
+  }
+
+  test("sbt: package-object member via implicit sbt._ import (file)") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("sbt/package.file().", "file", isType = false, new Range(0,0,0,0), os.pwd / "package.scala"))
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("build.sbt", """lazy val root = (project in file("."))""", os.pwd / "build.sbt")
+    assertHasOccurrence(rf, "sbt/package.file().")
+  }
+
+  test("sbt: user val shadows the implicit sbt key") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("sbt/Keys.name.", "name", isType = false, new Range(0,0,0,0), os.pwd / "Keys.scala"))
+    st.add(SymbolDefinition("_empty_/build.name.", "name", isType = false, new Range(0,0,0,0), os.pwd / "build.sbt"))
+    val code = """lazy val name = "mine"
+                  |lazy val cli = project.dependsOn(name)""".stripMargin
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("build.sbt", code, os.pwd / "build.sbt")
+    assertHasOccurrence(rf, "_empty_/build.name.")
+    assert(rf.occurrences.forall(_.symbol != "sbt/Keys.name."),
+      s"shadowed key must not resolve: ${rf.occurrences.map(_.symbol)}")
+  }
+
+  test("scala style: no implicit sbt imports (no leakage)") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("sbt/Keys.semanticdbEnabled.", "semanticdbEnabled", isType = false, new Range(0,0,0,0), os.pwd / "Keys.scala"))
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("Main.scala", """ThisBuild / semanticdbEnabled := true""", os.pwd / "Main.scala")
+    assert(rf.occurrences.forall(_.symbol.isEmpty),
+      s"scala style must not resolve sbt keys: ${rf.occurrences.map(_.symbol)}")
+  }
+
   // ── Scala 3 top-level statements ──────────────────────────────
 
   test("scala 3 top-level: ref to top-level val from method resolves under X$package") {

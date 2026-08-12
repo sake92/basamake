@@ -98,15 +98,27 @@ object SemanticdbIndexing extends StrictLogging {
     }
   }
 
-  /** DEBUG: dump a textual map sourcePath -> semanticdbPath for inspection. */
+  /** DEBUG: dump a textual map sourcePath -> semanticdbPath for inspection.
+    * Workspace sources are listed first, relative to the workspace root; files
+    * OUTSIDE the workspace (dep/JDK sources opened via goto-def) are listed
+    * LAST, after a marker comment, serialized as ABSOLUTE paths — they are
+    * never semanticdb-paired. */
   def dumpPairs(pairs: Map[os.Path, os.Path], allSources: Set[os.Path], workspaceRoot: os.Path): String = {
     val sb = new StringBuilder
     sb.append(s"# semanticdb pair dump (workspace=$workspaceRoot)\n")
     sb.append(s"# paired sources: ${pairs.size} / ${allSources.size}\n")
-    allSources.toList.sorted.foreach { src =>
+    val (inside, outside) = allSources.toList.sorted.partition(_.startsWith(workspaceRoot))
+    inside.foreach { src =>
       val relSem = pairs.get(src).map(_.relativeTo(workspaceRoot).toString).getOrElse("<<NO SEMANTICDB>>")
       val relSrc = src.relativeTo(workspaceRoot)
       sb.append(s"$relSrc  =>  $relSem\n")
+    }
+    if (outside.nonEmpty) {
+      sb.append(s"# files outside the workspace (opened via goto-def)\n")
+      outside.foreach { src =>
+        val sem = pairs.get(src).map(_.toString).getOrElse("<<NO SEMANTICDB>>")
+        sb.append(s"$src  =>  $sem\n")
+      }
     }
     sb.toString
   }

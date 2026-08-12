@@ -83,12 +83,22 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     currentOwnerIsType = false
 
     val topLevelOwner = wrapper.getOrElse(topLevelPkgOwner)
+    // sbt's implicit imports (`import sbt._` + `import Keys._`, Keys shadowing
+    // sbt) — only for `.sbt` files. Pushed FIRST so the file's own top-level
+    // owner scope and locals stay above and shadow them, and explicit `import`
+    // statements in the file (pushed later on top) shadow them too.
+    val sbtImplicitImports =
+      if (ScalaFileStyle.fromFileName(fileName) == ScalaFileStyle.Sbt)
+        Some(ImportScopeData(explicit = Map.empty, wildcards = List("sbt/Keys.", "sbt/"), unimports = Set.empty))
+      else None
+    sbtImplicitImports.foreach(scopeStack.push)
     scopeStack.push(OwnerScope(topLevelOwner))
     scopeStack.push(LocalScope(collection.mutable.Map.empty[String, String]))
     try resolveStats(src.stats)
     finally {
       scopeStack.pop()
       scopeStack.pop()
+      sbtImplicitImports.foreach(_ => scopeStack.pop())
     }
 
     ResolvedFile(occurrences.toVector, locals.toVector)
