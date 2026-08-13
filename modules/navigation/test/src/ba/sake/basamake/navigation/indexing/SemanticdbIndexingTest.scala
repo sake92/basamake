@@ -71,4 +71,100 @@ class SemanticdbIndexingTest extends FunSuite {
         s"defs must not leak into refs, got ${rf.occurrences.map(_.symbol)}")
     } finally os.remove.all(dir)
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // pairSourceFromRoot — direct single-source pairing (onDidOpen fast path)
+  // ═══════════════════════════════════════════════════════════════
+
+  /** Build a fixture with source at `src/main/scala/Main.scala` and a semanticdb
+    * file at the conventional `<semDir>/META-INF/semanticdb/<uri>.semanticdb`
+    * layout, with the given TextDocument `uri`. */
+  private def buildPairFixture(uri: String): (os.Path, os.Path, os.Path, os.Path) = {
+    val root = os.temp.dir(prefix = "pair-root-")
+    val srcDir = root / "src" / "main" / "scala"
+    os.makeDir.all(srcDir)
+    val semDir = root / "target" / "scala-3.8.4" / "meta"
+    os.makeDir.all(semDir / "META-INF" / "semanticdb" / "src" / "main" / "scala")
+    val srcPath = srcDir / "Main.scala"
+    os.write(srcPath, "object Main:\n  def m() = 1\n")
+    val doc = TextDocument(
+      schema = Schema.SEMANTICDB4,
+      uri = uri,
+      text = "object Main:\n  def m() = 1\n",
+      language = Language.SCALA,
+      symbols = Nil,
+      occurrences = List(
+        SymbolOccurrence(symbol = "_empty_/Main.", range = Some(SdbRange(0, 7, 0, 11)), role = SymbolOccurrence.Role.DEFINITION)
+      )
+    )
+    val semPath = semDir / "META-INF" / "semanticdb" / "src" / "main" / "scala" / "Main.scala.semanticdb"
+    os.write(semPath, TextDocuments(List(doc)).toByteArray)
+    (root, srcPath, semDir, semPath)
+  }
+
+  test("pairSourceFromRoot: conventional candidate under the root pairs and indexes defs") {
+    val (root, srcPath, semDir, semPath) = buildPairFixture("src/main/scala/Main.scala")
+    try {
+      val st = new ba.sake.basamake.navigation.InMemorySymbolTable
+      val res = SemanticdbIndexing.pairSourceFromRoot(srcPath, root, semDir, root, st)
+      assertEquals(res, Some(semPath), "candidate with matching uri must be returned")
+      assert(st.get("_empty_/Main.").isDefined, "definition occurrences must be indexed")
+    } finally os.remove.all(root)
+  }
+
+  test("pairSourceFromRoot: source outside the root returns None") {
+    val (root, _, semDir, _) = buildPairFixture("src/main/scala/Main.scala")
+    try {
+      val outside = os.temp.dir(prefix = "pair-outside-")
+      try {
+        val st = new ba.sake.basamake.navigation.InMemorySymbolTable
+        val res = SemanticdbIndexing.pairSourceFromRoot(outside / "Other.scala", root, semDir, root, st)
+        assertEquals(res, None, "source outside the root must not be paired")
+      } finally os.remove.all(outside)
+    } finally os.remove.all(root)
+  }
+
+  test("pairSourceFromRoot: absent candidate returns None silently") {
+    val (root, srcPath, _, _) = buildPairFixture("src/main/scala/Main.scala")
+    try {
+      // a source under the root with NO semanticdb file at the conventional path
+      val unpaired = root / "src" / "main" / "scala" / "Unpaired.scala"
+      os.write(unpaired, "object Unpaired\n")
+      val st = new ba.sake.basamake.navigation.InMemorySymbolTable
+      val res = SemanticdbIndexing.pairSourceFromRoot(unpaired, root, root / "target" / "scala-3.8.4" / "meta", root, st)
+      assertEquals(res, None, "missing candidate must be an ordinary None (not yet present)")
+    } finally os.remove.all(root)
+  }
+
+  test("pairSourceFromRoot: candidate whose uri maps to another source returns None") {
+    val (root, srcPath, semDir, _) = buildPairFixture("src/main/scala/Other.scala")
+    try {
+      // Other.scala exists on disk, so resolveSourcePath succeeds — but it is
+      // NOT the requested source, so the pairing must be rejected
+      os.write(root / "src" / "main" / "scala" / "Other.scala", "object Other\n")
+      val st = new ba.sake.basamake.navigation.InMemorySymbolTable
+      val res = SemanticdbIndexing.pairSourceFromRoot(srcPath, root, semDir, root, st)
+      assertEquals(res, None, "candidate for a different source must not be used")
+      assert(st.get("_empty_/Main.").isEmpty, "no defs may be indexed for a rejected candidate")
+    } finally os.remove.all(root)
+  }
+
+  test("pairSourceFromRoot: candidate uri resolving to a nonexistent source returns None") {
+    val (root, srcPath, semDir, _) = buildPairFixture("no/such/file.scala")
+    try {
+      val st = new ba.sake.basamake.navigation.InMemorySymbolTable
+      val res = SemanticdbIndexing.pairSourceFromRoot(srcPath, root, semDir, root, st)
+      assertEquals(res, None, "candidate whose uri matches no source file must be rejected")
+    } finally os.remove.all(root)
+  }
+
+  test("pairSourceFromRoot: malformed candidate data does not throw") {
+    val (root, srcPath, semDir, semPath) = buildPairFixture("src/main/scala/Main.scala")
+    try {
+      os.write.over(semPath, "not a semanticdb protobuf".getBytes("UTF-8"))
+      val st = new ba.sake.basamake.navigation.InMemorySymbolTable
+      val res = SemanticdbIndexing.pairSourceFromRoot(srcPath, root, semDir, root, st)
+      assertEquals(res, None, "malformed candidate must degrade to None, not throw")
+    } finally os.remove.all(root)
+  }
 }

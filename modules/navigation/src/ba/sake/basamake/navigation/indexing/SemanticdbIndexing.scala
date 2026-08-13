@@ -7,6 +7,10 @@ import ba.sake.basamake.navigation.{SymbolDefinition, SymbolUtils, ReferenceOccu
 // TODO check how works under Scala 3 -Ybest-effort (partial symbols)
 object SemanticdbIndexing extends StrictLogging {
 
+  /** Result of a broad semanticdb dir walk: source→semanticdb pairings plus the
+    * number of definition occurrences indexed (for startup phase diagnostics). */
+  final case class SemanticdbIndexResult(pairs: Map[os.Path, os.Path], definitionsIndexed: Int)
+
   /** Index `.semanticdb` files from a single BSP target's output directory.
     *
     * Walks `semanticdbDir`, reads each file's `TextDocument.uri`, and resolves it
@@ -21,25 +25,76 @@ object SemanticdbIndexing extends StrictLogging {
     * @param sourceRoot    source root path for URI resolution (BSP-provided)
     * @param workspaceRoot upper bound for the ancestor-climbing fallback
     * @param symbolTable   target table; definition occurrences are added here
-    * @return Map: sourcePath -> semanticdbPath (caller stores it for didOpen/didSave)
+    * @return paired sources (sourcePath -> semanticdbPath) + definitions indexed
     */
   def indexSemanticdbDir(
       semanticdbDir: os.Path,
       sourceRoot: os.Path,
       workspaceRoot: os.Path,
       symbolTable: ba.sake.basamake.navigation.SymbolTable
-  ): Map[os.Path, os.Path] = {
+  ): SemanticdbIndexResult = {
     val result = scala.collection.mutable.Map.empty[os.Path, os.Path]
+    var definitionsIndexed = 0
     val semFiles = os.walk(semanticdbDir).filter(_.ext == "semanticdb").toList
     semFiles.foreach { semPath =>
       readUri(semPath).foreach { uri =>
         resolveSourcePath(semPath, uri, sourceRoot, workspaceRoot) match {
-          case Some(src) => pairAndIndex(semPath, src, symbolTable, result)
+          case Some(src) => definitionsIndexed += pairAndIndex(semPath, src, symbolTable, result)
           case None => logger.warn(s"No source match for $semPath (uri=$uri, sourceRoot=$sourceRoot)")
         }
       }
     }
-    result.toMap
+    SemanticdbIndexResult(result.toMap, definitionsIndexed)
+  }
+
+  /** Direct pairing for ONE known source file under ONE semanticdb root — the
+    * onDidOpen fast path. Derives the conventional candidate path
+    * (`<semanticdbDir>/META-INF/semanticdb/<uri>.semanticdb`), parses its
+    * `TextDocument`, verifies the `uri` resolves back to exactly `sourcePath`,
+    * and only then indexes its definitions into `symbolTable`.
+    *
+    * Ordinary "not present yet" cases return None WITHOUT warnings: source
+    * outside the root, absent candidate, or a candidate whose uri maps to a
+    * different source. WARN is logged only for malformed/unreadable candidate
+    * data (matching the broad walk's error style).
+    *
+    * Does not replace [[indexSemanticdbDir]] — broad walking is still needed
+    * for generated/unusual layouts and for sources that are not open.
+    *
+    * @param sourcePath    the opened source file to pair
+    * @param sourceRoot    source root for SemanticDB URI resolution
+    * @param semanticdbDir SemanticDB output directory (contains `META-INF/semanticdb`)
+    * @param workspaceRoot upper bound for the ancestor-climbing fallback
+    * @param symbolTable   target table; validated definition occurrences are added here
+    * @return the paired `.semanticdb` path on success, else None
+    */
+  def pairSourceFromRoot(
+      sourcePath: os.Path,
+      sourceRoot: os.Path,
+      semanticdbDir: os.Path,
+      workspaceRoot: os.Path,
+      symbolTable: ba.sake.basamake.navigation.SymbolTable
+  ): Option[os.Path] = {
+    if !sourcePath.startsWith(sourceRoot) then return None
+    // conventional layout: <semanticdbDir>/META-INF/semanticdb/<uri>.semanticdb
+    val rel = sourcePath.relativeTo(sourceRoot)
+    val candidate = semanticdbDir / "META-INF" / "semanticdb" / os.RelPath(rel.toString + ".semanticdb")
+    if !os.isFile(candidate) then return None
+    try {
+      val docs = TextDocuments.parseFrom(os.read.bytes(candidate))
+      val uriOpt = docs.documents.headOption.map(_.uri).filter(_.nonEmpty)
+      uriOpt match {
+        case Some(uri) if resolveSourcePath(candidate, uri, sourceRoot, workspaceRoot).contains(sourcePath) =>
+          // validated — reuse the same definition indexing as the broad walk
+          parseDefinitions(candidate, sourcePath).foreach(symbolTable.add)
+          Some(candidate)
+        case _ => None
+      }
+    } catch {
+      case e: Exception =>
+        logger.warn(s"Failed to read $candidate: ${e.getMessage}")
+        None
+    }
   }
 
   /** Resolve a `.semanticdb` file's `uri` to an absolute source path.
@@ -74,17 +129,20 @@ object SemanticdbIndexing extends StrictLogging {
       semPath: os.Path, sourcePath: os.Path,
       symbolTable: ba.sake.basamake.navigation.SymbolTable,
       result: scala.collection.mutable.Map[os.Path, os.Path]
-  ): Unit = {
+  ): Int = {
     if (result.contains(sourcePath)) {
       logger.debug(s"Source $sourcePath already paired; skipping duplicate $semPath")
-      return
+      return 0
     }
     result(sourcePath) = semPath
     try {
       val defs = parseDefinitions(semPath, sourcePath)
       defs.foreach(symbolTable.add)
+      defs.size
     } catch {
-      case e: Exception => logger.warn(s"Failed to parse $semPath: ${e.getMessage}")
+      case e: Exception =>
+        logger.warn(s"Failed to parse $semPath: ${e.getMessage}")
+        0
     }
   }
 

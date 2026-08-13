@@ -12,6 +12,7 @@ import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbo
 import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.basamake.config.BasamakeConfig
+import ba.sake.basamake.util.LoggingUtils
 import ba.sake.tupson.{given, *}
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
@@ -29,12 +30,14 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   private val depsSymbolTable = new IndexedSymbolTable(progressReporter)
   private val symbolTable = new CompositeSymbolTable(workspaceSymbolTable, depsSymbolTable)
   private val basamakeConfig = BasamakeConfig.load(workspacePath)
+  LoggingUtils.enableWorkspaceIndexDebugIfRequested(basamakeConfig.debugSlowFallbackMs)
   private val workspaceIndex = new WorkspaceIndex(
     workspacePath,
     symbolTable,
     basamakeConfig.ignorePatterns.toVector,
     progressReporter,
-    basamakeConfig.debugSymbolTableDump.getOrElse(false)
+    basamakeConfig.debugSymbolTableDump.getOrElse(false),
+    basamakeConfig.debugSlowFallbackMs
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
   private val hoverProvider = HoverProvider(workspaceIndex)

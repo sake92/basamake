@@ -3,6 +3,7 @@ package ba.sake.basamake.navigation.indexing
 import munit.FunSuite
 import ba.sake.basamake.navigation.*
 import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 class WorkspaceIndexTest extends FunSuite {
 
@@ -1096,6 +1097,116 @@ class WorkspaceIndexTest extends FunSuite {
       assert(newIdx >= 0 && newIdx < commentIdx, s"workspace files must come before the marker comment:\n$dump")
       assert(keysIdx > commentIdx, s"outside file must come after the marker comment, as absolute path:\n$dump")
       assert(!dump.contains("../../"), s"no relative ../ paths may appear in the dump:\n$dump")
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Direct open-file semanticdb pairing (warm-start path)
+  // ═══════════════════════════════════════════════════════════════
+
+  /** sbt-like fixture: src/main/scala/{Main,utils}.scala + hand-written semanticdb
+    * at the conventional target layout (`<semDir>/META-INF/semanticdb/<uri>.semanticdb`).
+    * Main.scala references `ext.getMsg()` — the SOURCE parser cannot resolve `ext`
+    * (empty symbol), so `_empty_/utils.getMsg().` can ONLY come from semanticdb. */
+  private def buildDirectPairingFixture(): os.Path = {
+    val root = os.pwd / "tmp" / s"direct-pair-${System.currentTimeMillis()}"
+    val srcDir = root / "src" / "main" / "scala"
+    os.makeDir.all(srcDir)
+    val semDir = root / "target" / "scala-3.8.4" / "meta" / "META-INF" / "semanticdb" / "src" / "main" / "scala"
+    os.makeDir.all(semDir)
+
+    val utilsContent = "object utils:\n  def getMsg() = \"bla\"\n"
+    val mainContent = "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.getMsg())\n"
+    os.write(srcDir / "utils.scala", utilsContent)
+    os.write(srcDir / "Main.scala", mainContent)
+
+    val utilsDoc = TextDocument(
+      schema = Schema.SEMANTICDB4,
+      uri = "src/main/scala/utils.scala",
+      text = utilsContent,
+      language = Language.SCALA,
+      symbols = Nil,
+      occurrences = List(
+        SymbolOccurrence(symbol = "_empty_/utils.", range = Some(SdbRange(0, 7, 0, 12)), role = SymbolOccurrence.Role.DEFINITION),
+        SymbolOccurrence(symbol = "_empty_/utils.getMsg().", range = Some(SdbRange(1, 6, 1, 12)), role = SymbolOccurrence.Role.DEFINITION)
+      )
+    )
+    val mainDoc = TextDocument(
+      schema = Schema.SEMANTICDB4,
+      uri = "src/main/scala/Main.scala",
+      text = mainContent,
+      language = Language.SCALA,
+      symbols = Nil,
+      occurrences = List(
+        SymbolOccurrence(symbol = "_empty_/utils.", range = Some(SdbRange(2, 12, 2, 15)), role = SymbolOccurrence.Role.REFERENCE),
+        SymbolOccurrence(symbol = "_empty_/utils.getMsg().", range = Some(SdbRange(2, 16, 2, 22)), role = SymbolOccurrence.Role.REFERENCE)
+      )
+    )
+    os.write(semDir / "utils.scala.semanticdb", TextDocuments(List(utilsDoc)).toByteArray)
+    os.write(semDir / "Main.scala.semanticdb", TextDocuments(List(mainDoc)).toByteArray)
+    root
+  }
+
+  private def semanticdbDirOf(root: os.Path): os.Path =
+    root / "target" / "scala-3.8.4" / "meta"
+
+  test("direct pairing: opened file navigates via semanticdb while broad initialization is blocked") {
+    val root = buildDirectPairingFixture()
+    try {
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      val rootsPublished = new CountDownLatch(1)
+      val releaseBroadInit = new CountDownLatch(1)
+      idx.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
+
+      val initThread = Thread.ofVirtual().start(() =>
+        idx.initialize(List(SemanticdbDirs(root, semanticdbDirOf(root)))))
+      assert(rootsPublished.await(10, TimeUnit.SECONDS), "startup roots snapshot must be published")
+
+      // Broad Pass A / Pass B are still blocked — the pairing below can only
+      // come from onDidOpen's direct single-source path.
+      idx.onDidOpen(mainFile)
+      val syms = idx.findSymbolsAt(mainFile, 2, 18)
+      assert(syms.contains("_empty_/utils.getMsg()."),
+        s"expected semanticdb-only symbol via direct pairing, got $syms")
+
+      // Let bulk initialization finish; the pairing must survive the race
+      releaseBroadInit.countDown()
+      initThread.join(10_000)
+      assert(!initThread.isAlive, "initialize must complete after the hook is released")
+      val afterInit = idx.findSymbolsAt(mainFile, 2, 18)
+      assert(afterInit.contains("_empty_/utils.getMsg()."),
+        s"pairing must survive broad Pass A, got $afterInit")
+    } finally os.remove.all(root)
+  }
+
+  test("direct pairing: source with no semanticdb candidate falls back to source parsing") {
+    val root = buildDirectPairingFixture()
+    try {
+      // Unpaired source: no .semanticdb file exists for it under the root
+      val unpairedFile = root / "src" / "main" / "scala" / "Unpaired.scala"
+      os.write(unpairedFile,
+        """object Unpaired:
+          |  def m(): Int =
+          |    val local = 1
+          |    local + 1
+          |""".stripMargin)
+
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+
+      // 1. onDidOpen returns normally (no candidate → source parsing path)
+      idx.onDidOpen(unpairedFile)
+      // 2. source parsing still supplies its existing occurrences
+      val (l, c) = TestPositions.at(os.read(unpairedFile), """(?<p>local) \+ 1""")
+      val syms = idx.findSymbolsAt(unpairedFile, l, c)
+      assert(syms.nonEmpty, s"expected source-parsed local ref, got $syms")
+
+      // 3. full bulk initialization later extracts its definitions
+      idx.initialize(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(st.get("_empty_/Unpaired.").isDefined,
+        "expected _empty_/Unpaired. in symbol table after bulk init")
     } finally os.remove.all(root)
   }
 }

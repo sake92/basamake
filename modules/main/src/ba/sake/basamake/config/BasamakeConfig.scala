@@ -14,7 +14,12 @@ final case class BasamakeConfig(
       * for large dependency trees — serializes the whole table). Off by default;
       * .basamake/index_sources.txt is always written. Option (not Boolean)
       * because tupson 0.20.0 ignores local defaults — Option has a global one. */
-    debugSymbolTableDump: Option[Boolean] = None
+    debugSymbolTableDump: Option[Boolean] = None,
+    /** DEBUG diagnostics for startup: fallback (source-only) extractions slower
+      * than this many milliseconds are logged at DEBUG with path, parser kind
+      * and elapsed time. Setting it also raises the WorkspaceIndex log category
+      * to DEBUG (file log only). Off by default — normal logs stay at INFO. */
+    debugSlowFallbackMs: Option[Long] = None
 ) derives JsonRW
 
 object BasamakeConfig {

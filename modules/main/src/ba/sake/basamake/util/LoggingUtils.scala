@@ -38,4 +38,16 @@ object LoggingUtils extends StrictLogging {
 
     rootLogger.addAppender(appender)
     logger.info(s"File logging configured: $logFile")
+
+  /** Opt-in DEBUG diagnostics for workspace startup: when the user sets
+    * `debugSlowFallbackMs` in .basamake/config.json, raise the WorkspaceIndex
+    * logger to DEBUG so slow-fallback extractions become visible in the file
+    * log. No-op when unset — normal logs stay at INFO. */
+  def enableWorkspaceIndexDebugIfRequested(slowFallbackThresholdMs: Option[Long]): Unit =
+    if slowFallbackThresholdMs.isDefined then
+      val ctx = LoggerFactory.getILoggerFactory.asInstanceOf[LoggerContext]
+      val logger = ctx.getLogger(classOf[ba.sake.basamake.navigation.indexing.WorkspaceIndex].getName)
+      logger.setLevel(ch.qos.logback.classic.Level.DEBUG)
+      logger.info("DEBUG enabled for WorkspaceIndex (slow-fallback diagnostics)")
+
 }

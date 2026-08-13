@@ -1,8 +1,9 @@
 package ba.sake.basamake.navigation.indexing
 
-import java.util.concurrent.{ConcurrentHashMap, CountDownLatch}
+import java.util.concurrent.{ConcurrentHashMap, CountDownLatch, Executors, ThreadFactory}
 import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
+import scala.util.boundary, boundary.break
 import com.typesafe.scalalogging.StrictLogging
 import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.navigation.*
@@ -21,7 +22,7 @@ private object SourceData {
   val empty: SourceData = SourceData(Vector.empty, Vector.empty, None)
 }
 
-class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop, debugSymbolTableDump: Boolean = false) extends StrictLogging {
+class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop, debugSymbolTableDump: Boolean = false, slowFallbackThresholdMs: Option[Long] = None) extends StrictLogging {
 
   // One map for ALL workspace sources (keyed by path): the keySet IS the live
   // source list (no separate knownSources), semanticdbPath is the pairing,
@@ -61,6 +62,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     * symbol table — gotoDefinitions retries once in this window (see below). */
   @volatile private var invalidating = false
 
+  /** Set when initialize is interrupted mid-fallback — records the startup
+    * failure instead of silently continuing with partial data. */
+  private val startupFailed = new java.util.concurrent.atomic.AtomicBoolean(false)
+  private[navigation] def didStartupFail: Boolean = startupFailed.get()
+
   /** disk (mtime, size) at the time of the last buffer refresh — lets onDidChange
     * skip the per-keystroke re-parse: occurrences only depend on DISK content
     * (semanticdb parse or source parse of the file on disk), so an unchanged
@@ -73,17 +79,48 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     * nothing changed. */
   private val semanticdbStamps = new ConcurrentHashMap[os.Path, (Long, Long)]()
 
+  /** Immutable snapshot of the startup semanticdb roots, published BEFORE broad
+    * Pass A begins. onDidOpen's direct single-source pairing reads it while
+    * initialize is still walking roots concurrently. Replaced only at the start
+    * of a new initialization run. */
+  @volatile private var activeRoots: List[SemanticdbDirs] = Nil
+
   // ── test seams ────────────────────────────────────────────────
   private val semanticdbIndexCount = new java.util.concurrent.atomic.AtomicLong(0)
   private val bufferRefreshCount = new java.util.concurrent.atomic.AtomicLong(0)
+  private val directPairCount = new java.util.concurrent.atomic.AtomicLong(0)
   private[navigation] def indexedSemanticdbFiles: Long = semanticdbIndexCount.get()
   private[navigation] def bufferRefreshCountValue: Long = bufferRefreshCount.get()
+  private[navigation] def directPairCountValue: Long = directPairCount.get()
   private[navigation] def symbolTableDumpDirty: Boolean = symbolTableDirty.get()
   private[navigation] def flushSymbolTableDump(): Unit = {
     symbolTableDirty.set(false)
     writeSymbolTableDump()
   }
   private[navigation] def setInvalidating(v: Boolean): Unit = invalidating = v
+  /** Test seam: called right after the startup roots snapshot is published and
+    * before broad Pass A begins. Tests block here to hold bulk initialization
+    * while exercising onDidOpen's direct single-source pairing. */
+  private[navigation] var afterRootsPublishedHook: () => Unit = () => ()
+
+  /** Test seam: called at the start of each Pass B fallback extraction job
+    * (before reading/extracting the file). Tests block here to observe the
+    * bound on simultaneously-running fallback jobs without time-based
+    * assertions. */
+  private[navigation] var fallbackJobHook: os.Path => Unit = _ => ()
+
+  /** Number of CPU-bound Pass B worker threads (tests shrink it to assert the
+    * concurrency bound; production uses [[WorkspaceIndex.DefaultFallbackWorkerCount]]). */
+  private[navigation] var fallbackWorkerCount: Int = WorkspaceIndex.DefaultFallbackWorkerCount
+
+  /** Deterministic phase-event sink (ordered): lets tests verify startup phase
+    * ordering — e.g. that direct pairing for an opened file completes before
+    * broad Pass A / fallback Pass B — without asserting real elapsed time. */
+  private val phaseEvents = new java.util.concurrent.CopyOnWriteArrayList[String]()
+  private[navigation] def phaseEventLog: List[String] = phaseEvents.asScala.toList
+  private def recordPhaseEvent(event: String): Unit = phaseEvents.add(event)
+
+  private def elapsedMs(fromNanos: Long): Long = (System.nanoTime() - fromNanos) / 1_000_000L
 
   // gitignore engine — built once at construction, used by the walk AND by the
   // entry-point guards below. Replaced wholesale on .gitignore changes (volatile
@@ -110,18 +147,20 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   // ── initialize ──────────────────────────────────────────────
   def initialize(roots: List[SemanticdbDirs]): Unit = {
     logger.info(s"Initializing workspace index at $workspacePath")
+    val tInitStart = System.nanoTime()
     val relevantExtensions = Set("scala", "java", "sbt")
     def skip(p: os.Path): Boolean =
       if os.isDir(p) then GitIgnoreEngine.alwaysSkipDirNames.contains(p.last) || ignoreEngine.isIgnored(p, isDir = true)
       else if os.isFile(p) then !relevantExtensions.contains(p.ext) || ignoreEngine.isIgnored(p, isDir = false)
       else true
 
+    val tDiscoveryStart = System.nanoTime()
     val sources = os.walk(workspacePath, skip = skip)
     val fileGroups = sources.groupBy(_.ext)
     val scalaFiles = fileGroups.getOrElse("scala", Vector.empty)
     val sbtFiles = fileGroups.getOrElse("sbt", Vector.empty)
     val javaFiles = fileGroups.getOrElse("java", Vector.empty)
-    logger.info(s"Found files: scala=${scalaFiles.size}, sbt=${sbtFiles.size}, java=${javaFiles.size}")
+    logger.info(s"Found files: scala=${scalaFiles.size}, sbt=${sbtFiles.size}, java=${javaFiles.size} (${elapsedMs(tDiscoveryStart)}ms)")
 
     sourcesMap.clear()
     semanticdbStamps.clear()
@@ -129,6 +168,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     openFiles.forEach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
     val allFiles = scalaFiles.toSet ++ sbtFiles.toSet ++ javaFiles.toSet
     allFiles.foreach(p => sourcesMap.put(p, SourceData.empty))
+
+    // Publish the immutable startup-roots snapshot BEFORE broad Pass A — onDidOpen
+    // direct pairing reads it while initialize is still walking roots concurrently.
+    activeRoots = roots
+    recordPhaseEvent("roots-published")
+    afterRootsPublishedHook()
 
     val total = allFiles.size.toLong
     var done = 0L
@@ -141,19 +186,24 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     // No workspace-wide .semanticdb walk — only explicit dirs from data.json / BSP compile.
     if (roots.nonEmpty) {
       logger.info(s"Indexing semanticdb from ${roots.size} target root(s)")
+      val tPassAStart = System.nanoTime()
+      var pairedTotal = 0
+      var defsTotal = 0
       for (root <- roots if os.exists(root.semanticdbDir) && os.exists(root.sourceRootDir)) {
         val semDir = root.semanticdbDir
         val srcRoot = root.sourceRootDir
         if (ignoreEngine.isInsideNestedRepo(srcRoot)) {
           logger.warn(s"Skipping semanticdb root inside nested git repo: $srcRoot")
         } else {
-          val pairs = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
-          val (accepted, rejected) = pairs.partition((src, _) => !ignoreEngine.isInsideNestedRepo(src))
+          val res = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
+          val (accepted, rejected) = res.pairs.partition((src, _) => !ignoreEngine.isInsideNestedRepo(src))
           rejected.keySet.foreach { src =>
             logger.warn(s"Source inside nested git repo, skipping semanticdb pair: $src")
             symbolTable.removeByPath(src)
           }
           accepted.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
+          pairedTotal += accepted.size
+          defsTotal += res.definitionsIndexed
           done += accepted.size.toLong
           report(s"semanticdb ${accepted.size} files")
           logger.info(s"Indexed ${accepted.size} semanticdb-paired source files from ${semDir}")
@@ -161,38 +211,82 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       }
       val paired = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
       logger.info(s"Total semanticdb-paired source files: $paired")
+      logger.info(s"Semanticdb Pass A done: ${elapsedMs(tPassAStart)}ms, roots=${roots.size}, paired=$pairedTotal, definitionsIndexed=$defsTotal")
+      recordPhaseEvent("pass-a-done")
     }
 
-    // Pass B: extract from source AST for files WITHOUT semanticdb, in parallel
-    // (virtual threads). ScalaDefinitionsExtractor / JavaDefinitionsExtractor add
-    // to the ConcurrentHashMap-backed SymbolTable — safe for concurrent writes.
+    // Pass B: extract from source AST for files WITHOUT semanticdb, on a
+    // short-lived, NAMED, BOUNDED platform-thread executor. NEVER one virtual
+    // thread per file: virtual threads do not create CPU capacity and flood the
+    // shared scheduler, starving the BSP task (the previous implementation
+    // delayed the first BSP handshake by ~90s on a ~1950-file workspace).
+    // One extractor instance per job; SymbolTable writes stay concurrent-safe
+    // (ConcurrentHashMap-backed). The initialization coordinator awaits the
+    // latch; the temporary executor is always shut down in `finally`.
     val passBFiles = (scalaFiles ++ sbtFiles).filter(p => sourcesMap.get(p).semanticdbPath.isEmpty) ++
       javaFiles.filter(p => sourcesMap.get(p).semanticdbPath.isEmpty)
     val passBDone = new AtomicLong(0L)
+    val passBOk = new AtomicLong(0L)
+    val passBFail = new AtomicLong(0L)
+    val tPassBStart = System.nanoTime()
+    val workerCount = fallbackWorkerCount
     val latch = new CountDownLatch(passBFiles.length)
-    passBFiles.foreach { path =>
-      Thread.ofVirtual().start(() => {
-        try {
-          logger.debug(s"Extracting definitions from $path")
-          val content = os.read(path)
-          if (path.ext == "java") {
-            val extractor = JavaDefinitionsExtractor(symbolTable)
-            extractor.extractFromContent(path.last, content, path)
-          } else {
-            val extractor = ScalaDefinitionsExtractor(symbolTable)
-            extractor.extractFromContent(path.last, content, path)
+    val executor = Executors.newFixedThreadPool(workerCount, new ThreadFactory {
+      private val threadSeq = new java.util.concurrent.atomic.AtomicLong(0)
+      override def newThread(r: Runnable): Thread = {
+        val t = new Thread(r, s"basamake-fallback-${threadSeq.incrementAndGet()}")
+        t.setDaemon(true)
+        t
+      }
+    })
+    try {
+      passBFiles.foreach { path =>
+        executor.execute(() => {
+          try {
+            fallbackJobHook(path)
+            val tJobStart = System.nanoTime()
+            logger.debug(s"Extracting definitions from $path")
+            val content = os.read(path)
+            if (path.ext == "java") {
+              val extractor = JavaDefinitionsExtractor(symbolTable)
+              extractor.extractFromContent(path.last, content, path)
+            } else {
+              val extractor = ScalaDefinitionsExtractor(symbolTable)
+              extractor.extractFromContent(path.last, content, path)
+            }
+            passBOk.incrementAndGet()
+            // opt-in DEBUG diagnostics: only when the user sets a threshold in
+            // config (never on the default INFO path, never per-file at INFO)
+            slowFallbackThresholdMs.foreach { thr =>
+              val jobMs = elapsedMs(tJobStart)
+              if jobMs > thr then
+                logger.debug(s"Slow fallback extraction: $path (parser=${path.ext}, ${jobMs}ms)")
+            }
+          } catch {
+            case e: Exception =>
+              passBFail.incrementAndGet()
+              logger.warn(s"Failed to extract $path: ${e.getMessage}")
+          } finally {
+            val n = done + passBDone.incrementAndGet()
+            progressListener.onProgress(IndexingPhase.Workspace, n.min(total), total, path.last)
+            latch.countDown()
           }
-        } catch {
-          case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
-        } finally {
-          val n = done + passBDone.incrementAndGet()
-          progressListener.onProgress(IndexingPhase.Workspace, n.min(total), total, path.last)
-          latch.countDown()
-        }
-      })
+        })
+      }
+      try latch.await()
+      catch {
+        case _: InterruptedException =>
+          Thread.currentThread().interrupt()
+          startupFailed.set(true)
+          logger.error("Interrupted while waiting for fallback extraction to finish — startup aborted")
+          return
+      }
+    } finally {
+      executor.shutdown()
     }
-    latch.await()
     done += passBFiles.size.toLong
+    logger.info(s"Fallback Pass B done: ${elapsedMs(tPassBStart)}ms, files=${passBFiles.size}, workers=$workerCount, ok=${passBOk.get()}, failed=${passBFail.get()}")
+    recordPhaseEvent(s"pass-b-done:files=${passBFiles.size}:workers=$workerCount:ok=${passBOk.get()}:failed=${passBFail.get()}")
 
     report(s"Indexed $total files")
     // Async initialize: files may be opened while indexing runs. The map
@@ -200,7 +294,15 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     // (occurrences/locals) and prefer semanticdb occurrences now that pairing
     // is done. Without this, goto-def in such tabs returns empty until the
     // user edits or saves the file.
+    val tCatchUpStart = System.nanoTime()
+    val openBefore = openFiles.size
     openFiles.forEach(p => refreshOpenBuffer(p))
+    logger.info(s"Open-buffer catch-up: ${elapsedMs(tCatchUpStart)}ms, refreshed=$openBefore")
+    recordPhaseEvent("catch-up-done")
+
+    val pairedFinal = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
+    logger.info(s"Workspace indexing finished: ${elapsedMs(tInitStart)}ms total, semanticdb-paired=$pairedFinal, fallback-extracted=${passBFiles.size}")
+    recordPhaseEvent("init-done")
     writeDebugDump()
   }
 
@@ -262,7 +364,38 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     if isIgnoredWorkspacePath(path) then return
     openFiles.add(path)
     sourcesMap.putIfAbsent(path, SourceData.empty)
+    // Direct single-source semanticdb pairing against the startup root snapshot:
+    // one candidate file read+parse (NOT the broad root walk). Without it, an
+    // opened file waits behind ALL fallback jobs for its semanticdb occurrences.
+    if (sourcesMap.get(path).semanticdbPath.isEmpty) pairSourceDirectly(path)
+    // a success parses SemanticDB occurrences, a miss uses existing source parsing
     refreshOpenBuffer(path)
+  }
+
+  /** Try to pair ONE opened source with its cached `.semanticdb` file, using the
+    * conventional candidate path under each known startup root. Synchronous and
+    * small by design (single file read+parse) — deliberately no separate task.
+    * Stores the pairing atomically via `setSemanticdbPath`; definition insertion
+    * is idempotent under the SymbolTable's key-replacement semantics, so racing
+    * with broad Pass A is harmless (whichever path wins stores a valid pairing,
+    * and neither path calls removeByPath during initial pairing). */
+  private def pairSourceDirectly(path: os.Path): Unit = {
+    val t0 = System.nanoTime()
+    boundary {
+      for (root <- activeRoots) {
+        if os.exists(root.sourceRootDir) && os.exists(root.semanticdbDir) && !ignoreEngine.isInsideNestedRepo(root.sourceRootDir) then {
+          SemanticdbIndexing.pairSourceFromRoot(path, root.sourceRootDir, root.semanticdbDir, workspacePath, symbolTable) match {
+            case Some(semPath) =>
+              setSemanticdbPath(path, semPath)
+              directPairCount.incrementAndGet()
+              recordPhaseEvent(s"direct-pair:$path")
+              logger.info(s"Direct semanticdb pairing: $path <- $semPath (${elapsedMs(t0)}ms)")
+              break()
+            case None => ()
+          }
+        }
+      }
+    }
   }
 
   def onDidChange(path: os.Path): Unit = {
@@ -589,4 +722,14 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   private def rangeLength(r: Range): Long =
     (r.endLine.toLong - r.startLine.toLong) * 100000 + (r.endCharacter.toLong - r.startCharacter.toLong)
 
+}
+
+object WorkspaceIndex {
+  /** Conservative cap for CPU-bound fallback extraction — leaves CPU capacity
+    * for LSP, BSP, and JDK work: half the cores, at least 2, at most 8.
+    * Fallback parsing must NEVER run one-virtual-thread-per-file: virtual
+    * threads do not create CPU capacity and flood the shared scheduler,
+    * starving the BSP task (the pre-bounded implementation delayed the first
+    * BSP handshake by ~90s on a ~1950-file workspace). */
+  val DefaultFallbackWorkerCount: Int = math.max(2, math.min(Runtime.getRuntime.availableProcessors() / 2, 8))
 }
