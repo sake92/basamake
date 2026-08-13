@@ -15,7 +15,9 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
 
   private def freshIndexAt(root: os.Path): (WorkspaceIndex, SymbolTable) = {
     val st = new InMemorySymbolTable
-    val idx = new WorkspaceIndex(root, st)
+    // debugSymbolTableDump = true: the flusher/throttling tests below assert on
+    // .basamake/symbol_table.txt content (default startup path skips it)
+    val idx = new WorkspaceIndex(root, st, debugSymbolTableDump = true)
     idx.initialize(List.empty)
     (idx, st)
   }
@@ -415,6 +417,24 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       // index_sources.txt IS refreshed synchronously — tests above assert content
       val sources = os.read(root / ".basamake" / "index_sources.txt")
       assert(sources.contains("src/main/scala/utils.scala"), "index_sources.txt refreshed synchronously")
+    } finally os.remove.all(root)
+  }
+
+  test("default startup path skips symbol_table.txt (opt-in debug dump)") {
+    val root = buildSbtLikeFixture()
+    try {
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st) // debugSymbolTableDump = false (default)
+      idx.initialize(List.empty)
+      assert(!os.exists(root / ".basamake" / "symbol_table.txt"),
+        "symbol_table.txt must not be written on the default startup path")
+      idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
+      assert(!idx.symbolTableDumpDirty, "invalidate must not mark the dump dirty when disabled")
+      assert(!os.exists(root / ".basamake" / "symbol_table.txt"),
+        "invalidate must not start the heavy flusher when the dump is disabled")
+      // the lightweight dump still works
+      assert(os.exists(root / ".basamake" / "index_sources.txt"),
+        "index_sources.txt stays on the default path")
     } finally os.remove.all(root)
   }
 

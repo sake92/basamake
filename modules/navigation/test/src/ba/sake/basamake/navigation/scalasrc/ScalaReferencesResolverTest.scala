@@ -290,6 +290,30 @@ class ScalaReferencesResolverTest extends FunSuite {
     assertHasOccurrence(rf, "pkg/C#m().")
   }
 
+  test("method call resolves when the only overload is beyond index 8 (sparse table)") {
+    val st = new InMemorySymbolTable
+    val r = new Range(0, 0, 0, 0)
+    st.add(SymbolDefinition("pkg/C#", "C", isType = true, r, os.pwd / "dummy.scala"))
+    // 0..8 missing, only overload (+9) present — the old fixed 0..8 scan missed it
+    st.add(SymbolDefinition("pkg/C#m(+9).", "m", isType = false, r, os.pwd / "dummy.scala"))
+    val code = """package pkg; class U { val v = new C().m() }"""
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
+    assertHasOccurrence(rf, "pkg/C#m(+9).")
+  }
+
+  test("method call with overloads 0..12 resolves to the lowest index") {
+    val st = new InMemorySymbolTable
+    val r = new Range(0, 0, 0, 0)
+    st.add(SymbolDefinition("pkg/C#", "C", isType = true, r, os.pwd / "dummy.scala"))
+    (0 to 12).foreach { i =>
+      val dis = if (i == 0) "" else s"+$i"
+      st.add(SymbolDefinition(s"pkg/C#m($dis).", "m", isType = false, r, os.pwd / "dummy.scala"))
+    }
+    val code = """package pkg; class U { val v = new C().m() }"""
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("test.scala", code, os.pwd / "test.scala")
+    assertHasOccurrence(rf, "pkg/C#m().")
+  }
+
   // ── R.GIVEN given imports (named + given-all) don't crash ───────
 
   test("given imports don't crash resolution; other refs still resolve") {

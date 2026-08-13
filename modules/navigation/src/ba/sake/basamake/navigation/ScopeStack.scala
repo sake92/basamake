@@ -25,11 +25,14 @@ final case class OwnerScope(ownerKey: String) extends Scope
   * `explicit` maps the imported name (or rename target) → resolved symbol key.
   * `wildcards` holds wildcard prefix owners, inner-to-outer order.
   * `unimports` holds names excluded from wildcard resolution.
+  * `methodImports` maps an imported name → its OWNER (Java static single-type
+  * imports, where the member could be a method — probed via overload scan).
   */
 final case class ImportScopeData(
     explicit: Map[String, String],
     wildcards: List[String], // prefix owners, inner-to-outer
-    unimports: Set[String]   // names excluded from wildcard resolution
+    unimports: Set[String],  // names excluded from wildcard resolution
+    methodImports: Map[String, String] = Map.empty // name → owner type symbol
 ) extends Scope
 
 /** Mutable scope stack wrapping `ArrayStack[Scope]` with a `lookup` method
@@ -74,21 +77,27 @@ class ScopeStack(val symbolTable: SymbolTable) {
           }
           if (!isType) {
             if (inCallContext) {
-              var idx = 0
-              while (idx <= 8) {
-                val methodSym = SymbolUtils.methodSymbol(ownerKey, name, idx)
-                if (symbolTable.get(methodSym).isDefined) break(Some(methodSym))
-                idx += 1
-              }
+              ScopeStack.findMethodOverload(ownerKey, name, symbolTable).foreach(sym => break(Some(sym)))
             }
             val termSym = SymbolUtils.termSymbol(ownerKey, name)
             if (symbolTable.get(termSym).isDefined) break(Some(termSym))
           }
 
-        case ImportScopeData(explicit, wildcards, unimports) =>
+        case ImportScopeData(explicit, wildcards, unimports, methodImports) =>
+          // Java static single-type import of a METHOD: the member is stored as
+          // name → owner type; probe the owner's overloads first so a call binds
+          // to the method symbol (the term symbol is never in the table).
+          if (!isType && inCallContext) {
+            methodImports.get(name).foreach { owner =>
+              ScopeStack.findMethodOverload(owner, name, symbolTable).foreach(sym => break(Some(sym)))
+            }
+          }
           explicit.get(name).foreach { sym =>
             val matchesShape = if (isType) sym.endsWith("#") else !sym.endsWith("#")
-            if (matchesShape) break(Some(sym))
+            // table-verify: an explicit import whose symbol is absent (e.g. a
+            // Java static import of an unknown member, stored as its term
+            // symbol) must NOT resolve — it would emit a bogus ref.
+            if (matchesShape && symbolTable.get(sym).isDefined) break(Some(sym))
           }
           if (!unimports.contains(name)) {
             for (prefix <- wildcards) {
@@ -104,12 +113,7 @@ class ScopeStack(val symbolTable: SymbolTable) {
               candidate.foreach(c => if (symbolTable.get(c).isDefined) break(Some(c)))
 
               if (!isType && inCallContext) {
-                var idx = 0
-                while (idx <= 8) {
-                  val methodSym = SymbolUtils.methodSymbol(prefix, name, idx)
-                  if (symbolTable.get(methodSym).isDefined) break(Some(methodSym))
-                  idx += 1
-                }
+                ScopeStack.findMethodOverload(prefix, name, symbolTable).foreach(sym => break(Some(sym)))
               }
 
               // `import foo._` also exposes the package OBJECT's members
@@ -124,12 +128,7 @@ class ScopeStack(val symbolTable: SymbolTable) {
                   if (symbolTable.get(te).isDefined) break(Some(te))
                 } else {
                   if (inCallContext) {
-                    var idx = 0
-                    while (idx <= 8) {
-                      val methodSym = SymbolUtils.methodSymbol(pkgObj, name, idx)
-                      if (symbolTable.get(methodSym).isDefined) break(Some(methodSym))
-                      idx += 1
-                    }
+                    ScopeStack.findMethodOverload(pkgObj, name, symbolTable).foreach(sym => break(Some(sym)))
                   }
                   val termSym = SymbolUtils.termSymbol(pkgObj, name)
                   if (symbolTable.get(termSym).isDefined) break(Some(termSym))
@@ -145,7 +144,7 @@ class ScopeStack(val symbolTable: SymbolTable) {
   /** Get all explicit import bindings currently in scope (for re-export resolution). */
   def currentImportExplicits: Map[String, String] = {
     stack.toList.reverse.collect {
-      case ImportScopeData(explicit, _, _) => explicit
+      case ImportScopeData(explicit, _, _, _) => explicit
     }.foldLeft(Map.empty[String, String])(_ ++ _)
   }
 
@@ -157,5 +156,35 @@ class ScopeStack(val symbolTable: SymbolTable) {
       case LocalScope(bindings) => bindings(name) = symbol
       case _ => ()
     }
+  }
+}
+
+object ScopeStack {
+  /** Defensive cap for overload-index scans. SemanticDB method symbols are
+    * `name().`, `name(+1).`, `name(+2).`, … — overload sets are normally
+    * contiguous, but best-effort/partial tables can have gaps. The cap keeps a
+    * runaway scan impossible (each probe is a symbol-table lookup). */
+  val MaxOverloadIndex: Int = 100
+  /** Consecutive misses tolerated before giving up the scan. Large enough to
+    * cross realistic gaps (e.g. a table that only holds overloads 9+) without
+    * letting pathological cases scan forever. */
+  val OverloadMissThreshold: Int = 10
+
+  /** Find the first existing overload of `name` under `owner` in `symbolTable`.
+    *
+    * Bounded dynamic scan: probes `0..MaxOverloadIndex`, returning the first
+    * hit; stops after `OverloadMissThreshold` consecutive misses. This replaces
+    * the old fixed `0..8` cap, which left large/sparse overload sets (index > 8)
+    * falsely unresolved. */
+  def findMethodOverload(owner: String, name: String, symbolTable: SymbolTable): Option[String] = {
+    var idx = 0
+    var misses = 0
+    while (idx <= MaxOverloadIndex && misses < OverloadMissThreshold) {
+      val methodSym = SymbolUtils.methodSymbol(owner, name, idx)
+      if (symbolTable.get(methodSym).isDefined) return Some(methodSym)
+      misses += 1
+      idx += 1
+    }
+    None
   }
 }

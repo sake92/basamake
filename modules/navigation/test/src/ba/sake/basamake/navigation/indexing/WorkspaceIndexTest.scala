@@ -854,6 +854,99 @@ class WorkspaceIndexTest extends FunSuite {
     } finally os.remove.all(root)
   }
 
+  test("sbt fixture: partial semanticdb refs keep definitions authoritative (goto-def resolves)") {
+    val root = TestFixture.copy("sbt", "sbt-semdb-defsauth")
+    try {
+      SemanticdbFixture.compile(root) // real semanticdb generated at test time in this copy
+      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
+      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
+      val semDir = root / "target" / "scala-3.8.4" / "meta"
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      idx.initialize(List.empty)
+      idx.onDidOpen(mainFile)
+
+      // Overwrite BOTH semanticdb files: utils with FULL DEFINITION symbols,
+      // Main with PARTIAL ref symbols (`utils.` — Scala 3 -Ybest-effort).
+      val utilsDoc = TextDocument(
+        schema = Schema.SEMANTICDB4,
+        uri = "src/main/scala/utils.scala",
+        text = os.read(utilsFile),
+        language = Language.SCALA,
+        symbols = Nil,
+        occurrences = List(
+          SymbolOccurrence(symbol = "_empty_/utils.", range = Some(SdbRange(0, 7, 0, 12)), role = SymbolOccurrence.Role.DEFINITION),
+          SymbolOccurrence(symbol = "_empty_/utils.getMsg().", range = Some(SdbRange(1, 6, 1, 12)), role = SymbolOccurrence.Role.DEFINITION)
+        )
+      )
+      val mainDoc = TextDocument(
+        schema = Schema.SEMANTICDB4,
+        uri = "src/main/scala/Main.scala",
+        text = os.read(mainFile),
+        language = Language.SCALA,
+        symbols = Nil,
+        occurrences = List(
+          SymbolOccurrence(symbol = "utils.", range = Some(SdbRange(10, 2, 10, 7)), role = SymbolOccurrence.Role.REFERENCE),
+          SymbolOccurrence(symbol = "utils.getMsg().", range = Some(SdbRange(10, 8, 10, 14)), role = SymbolOccurrence.Role.REFERENCE)
+        )
+      )
+      val semBase = semDir / "META-INF" / "semanticdb" / "src" / "main" / "scala"
+      os.write.over(semBase / "utils.scala.semanticdb", TextDocuments(List(utilsDoc)).toByteArray)
+      os.write.over(semBase / "Main.scala.semanticdb", TextDocuments(List(mainDoc)).toByteArray)
+
+      idx.invalidate(List(SemanticdbDirs(root, semDir)))
+
+      // definitions stay authoritative from semanticdb (full symbols in SymbolTable)
+      val defSym = st.get("_empty_/utils.getMsg().")
+      assert(defSym.isDefined, "semanticdb defs must stay authoritative under partial refs")
+      assertEquals(defSym.get.path, utilsFile)
+      // refs fall back to source parsing → goto-def resolves to the def
+      val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
+      val locs = idx.gotoDefinitions(mainFile, l, c)
+      assert(locs.nonEmpty, s"expected goto-def via source-parse fallback, got empty")
+      assertEquals(locs.head.path, utilsFile)
+    } finally os.remove.all(root)
+  }
+
+  test("multiline semanticdb occurrence: cursor on any inner line matches (end-exclusive)") {
+    val root = os.pwd / "tmp" / s"multiline-range-${System.currentTimeMillis()}"
+    try {
+      val srcFile = root / "Main.scala"
+      os.makeDir.all(root)
+      os.write(srcFile, "object Main:\n  def m() = 1\n    // filler\n  val x = 1\n")
+      val semDir = root / "target" / "meta"
+      os.makeDir.all(semDir / "META-INF" / "semanticdb")
+      val doc = TextDocument(
+        schema = Schema.SEMANTICDB4,
+        uri = "Main.scala",
+        text = os.read(srcFile),
+        language = Language.SCALA,
+        symbols = Nil,
+        occurrences = List(
+          // multiline REFERENCE range (start (1,2) .. end (3,5))
+          SymbolOccurrence(symbol = "_empty_/ml.", range = Some(SdbRange(1, 2, 3, 5)), role = SymbolOccurrence.Role.REFERENCE)
+        )
+      )
+      os.write(semDir / "META-INF" / "semanticdb" / "Main.scala.semanticdb", TextDocuments(List(doc)).toByteArray)
+
+      val st = new InMemorySymbolTable
+      val idx = new WorkspaceIndex(root, st)
+      idx.initialize(List.empty)
+      idx.onDidOpen(srcFile)
+      idx.invalidate(List(SemanticdbDirs(root, semDir)))
+
+      // inside: start line at/after start char, any middle line, end line before end char
+      assert(idx.findSymbolsAt(srcFile, 1, 2).contains("_empty_/ml."), "start line, start char")
+      assert(idx.findSymbolsAt(srcFile, 2, 0).contains("_empty_/ml."), "middle line")
+      assert(idx.findSymbolsAt(srcFile, 3, 4).contains("_empty_/ml."), "end line, before end char")
+      // outside: before start, at start char - 1, at end char (end-exclusive), after end
+      assert(!idx.findSymbolsAt(srcFile, 0, 0).contains("_empty_/ml."), "line before range")
+      assert(!idx.findSymbolsAt(srcFile, 1, 1).contains("_empty_/ml."), "start line, before start char")
+      assert(!idx.findSymbolsAt(srcFile, 3, 5).contains("_empty_/ml."), "end line, at end char (exclusive)")
+      assert(!idx.findSymbolsAt(srcFile, 4, 0).contains("_empty_/ml."), "line after range")
+    } finally os.remove.all(root)
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // gitignore-aware source walk
   // ═══════════════════════════════════════════════════════════════

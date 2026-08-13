@@ -323,12 +323,40 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       resolveExpr(is.getCondition, isType = false, inCallContext = false)
       resolveStmt(is.getThenStmt)
       is.getElseStmt.toScala.foreach(resolveStmt)
-    case _: ForStmt | _: ForEachStmt | _: WhileStmt | _: DoStmt =>
-      () // skip loops in v1 for simplicity
+    case fs: ForStmt =>
+      // `for (init; compare; update) body` — init/update are expressions
+      // (VariableDeclarationExpr handled by resolveExpr, which binds locals)
+      fs.getInitialization.asScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
+      fs.getCompare.toScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
+      fs.getUpdate.asScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
+      resolveStmt(fs.getBody)
+    case fe: ForEachStmt =>
+      // `for (Type v : iterable) body` — the loop variable is a local
+      resolveExpr(fe.getVariable, isType = false, inCallContext = false)
+      resolveExpr(fe.getIterable, isType = false, inCallContext = false)
+      resolveStmt(fe.getBody)
+    case ws: WhileStmt =>
+      resolveExpr(ws.getCondition, isType = false, inCallContext = false)
+      resolveStmt(ws.getBody)
+    case ds: DoStmt =>
+      resolveStmt(ds.getBody)
+      resolveExpr(ds.getCondition, isType = false, inCallContext = false)
     case ss: SwitchStmt =>
       resolveExpr(ss.getSelector, isType = false, inCallContext = false)
       ss.getEntries.asScala.foreach(e => e.getStatements.asScala.foreach(resolveStmt))
-    case _: TryStmt => ()
+    case ts: TryStmt =>
+      // try-with-resources: resource vars are locals (VariableDeclarationExpr)
+      ts.getResources.asScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
+      ts.getTryBlock.getStatements.asScala.foreach(resolveStmt)
+      ts.getCatchClauses.asScala.foreach { cc =>
+        val param = cc.getParameter
+        val localSym = nextLocalSymbol()
+        addLocalRange(param.getName.getRange, localSym, param.getNameAsString, isType = false)
+        scopeStack.addLocalBinding(param.getNameAsString, localSym)
+        resolveTypeRef(param.getType)
+        cc.getBody.getStatements.asScala.foreach(resolveStmt)
+      }
+      ts.getFinallyBlock.toScala.foreach(b => b.getStatements.asScala.foreach(resolveStmt))
     case rs: ReturnStmt =>
       rs.getExpression.toScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
     case ths: ThrowStmt =>
@@ -386,7 +414,26 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         case es: ExpressionStmt => resolveExpr(es.getExpression, isType = false, inCallContext = false)
         case bs: BlockStmt => bs.getStatements.asScala.foreach(resolveStmt)
         case _ => ()
-    case _: MethodReferenceExpr => () // skip v1
+    case te: TypeExpr =>
+      // `Util::bar` scope — javaparser wraps the type in a TypeExpr
+      resolveTypeRef(te.getType)
+    case mre: MethodReferenceExpr =>
+      // `Foo::bar` / `obj::bar` / `Foo::new` — resolve the scope, then the
+      // member. The emitted occurrence covers the whole reference (javaparser
+      // exposes no identifier-only range here).
+      resolveExpr(mre.getScope, isType = false, inCallContext = false)
+      val name = mre.getIdentifier
+      if (name != "new" && name.nonEmpty) {
+        resolveTermToOwner(mre.getScope) match {
+          case Some(owner) =>
+            resolveMemberOf(owner, name, isType = false, inCallContext = true) match {
+              case Some(sym) => emitRefRange(mre.getRange, sym)
+              case None => emitRefUnresolvedRange(mre.getRange)
+            }
+          case None =>
+            emitRefUnresolvedRange(mre.getRange)
+        }
+      }
     case _ => ()
   }
 
@@ -507,6 +554,9 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   // ── resolve term to owner ────────────────────────────────────
 
   private def resolveTermToOwner(e: Expression): Option[String] = e match {
+    case te: TypeExpr =>
+      // `Foo::bar` — the scope is a type, not a term
+      resolveTypeRefToOwner(te.getType)
     case ne: NameExpr =>
       lookup(ne.getNameAsString, isType = false, inCallContext = false)
         .orElse(JavaLangSymbols.rawLookup(ne.getNameAsString))
@@ -530,12 +580,8 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       if (symbolTable.get(sym).isDefined) Some(sym) else None
     } else {
       if (inCallContext) {
-        var idx = 0
-        while (idx <= 8) {
-          val methodSym = SymbolUtils.methodSymbol(owner, name, idx)
-          if (symbolTable.get(methodSym).isDefined) return Some(methodSym)
-          idx += 1
-        }
+        val methodSym = ScopeStack.findMethodOverload(owner, name, symbolTable)
+        if (methodSym.isDefined) return methodSym
       }
       val termSym = SymbolUtils.termSymbol(owner, name)
       if (symbolTable.get(termSym).isDefined) Some(termSym) else None

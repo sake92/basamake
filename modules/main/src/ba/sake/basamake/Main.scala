@@ -19,7 +19,9 @@ object Main extends StrictLogging {
           ) = {
 
     if rest.value.nonEmpty then
-      println(s"Unknown arguments: ${rest.value.mkString(" ")}")
+      // stderr, NOT stdout: the LSP transport rides on stdout and nothing
+      // except JSON-RPC may ever be written there.
+      System.err.println(s"Unknown arguments: ${rest.value.mkString(" ")}")
 
     val openedDir = os.Path(workspace)
     val projectRoot = ProjectRoot.resolve(openedDir)

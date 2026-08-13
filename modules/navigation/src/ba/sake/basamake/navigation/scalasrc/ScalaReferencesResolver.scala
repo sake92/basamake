@@ -956,12 +956,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       if (symbolTable.get(sym).isDefined) Some(sym) else None
     } else {
       if (inCallContext) {
-        var idx = 0
-        while (idx <= 8) {
-          val methodSym = SymbolUtils.methodSymbol(owner, name, idx)
-          if (symbolTable.get(methodSym).isDefined) return Some(methodSym)
-          idx += 1
-        }
+        val methodSym = ScopeStack.findMethodOverload(owner, name, symbolTable)
+        if (methodSym.isDefined) return methodSym
       }
       val termSym = SymbolUtils.termSymbol(owner, name)
       if (symbolTable.get(termSym).isDefined) Some(termSym) else None

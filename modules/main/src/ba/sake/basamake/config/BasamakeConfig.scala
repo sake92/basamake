@@ -9,7 +9,12 @@ final case class BasamakeConfig(
       * negate .gitignore entries. Mirrors deder's watchIgnore. Note: patterns in
       * a nested .gitignore (deeper than the project root) are applied after these,
       * so they take precedence over config patterns. */
-    ignorePatterns: List[String] = Nil
+    ignorePatterns: List[String] = Nil,
+    /** Opt-in: write the full symbol table to .basamake/symbol_table.txt (heavy
+      * for large dependency trees — serializes the whole table). Off by default;
+      * .basamake/index_sources.txt is always written. Option (not Boolean)
+      * because tupson 0.20.0 ignores local defaults — Option has a global one. */
+    debugSymbolTableDump: Option[Boolean] = None
 ) derives JsonRW
 
 object BasamakeConfig {

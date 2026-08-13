@@ -121,4 +121,70 @@ class ScopeStackTest extends FunSuite {
     assertEquals(s.lookup("UnknownThing", isType = true, inCallContext = false), None)
     assertEquals(s.lookup("unknownMethod", isType = false, inCallContext = true), None)
   }
+
+  // ── overload probing beyond the old fixed 0..8 cap ────────────
+
+  test("owner-scope method resolution works when the only overload is beyond index 8") {
+    val st = new InMemorySymbolTable
+    // sparse table: only overload 9 exists (0..8 missing — e.g. partial /
+    // best-effort indexing). The old fixed 0..8 scan missed this entirely.
+    st.add(SymbolDefinition("pkg/Util#m(+9).", "m", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    val s = new ScopeStack(st)
+    s.push(OwnerScope("pkg/Util#"))
+
+    assertEquals(s.lookup("m", isType = false, inCallContext = true), Some("pkg/Util#m(+9)."))
+  }
+
+  test("contiguous overloads 0..12 resolve to the first (lowest) index") {
+    val st = new InMemorySymbolTable
+    (0 to 12).foreach { i =>
+      val dis = if (i == 0) "" else s"+$i"
+      st.add(SymbolDefinition(s"pkg/Util#m($dis).", "m", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    }
+    val s = new ScopeStack(st)
+    s.push(OwnerScope("pkg/Util#"))
+
+    assertEquals(s.lookup("m", isType = false, inCallContext = true), Some("pkg/Util#m()."))
+  }
+
+  test("missing method terminates the scan (bounded, no runaway)") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("pkg/Util#other().", "other", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    val s = new ScopeStack(st)
+    s.push(OwnerScope("pkg/Util#"))
+
+    assertEquals(s.lookup("nonexistent", isType = false, inCallContext = true), None)
+  }
+
+  test("method import scope: call binds to the method overload, not a term symbol") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("pkg/Util#foo(+9).", "foo", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    val s = new ScopeStack(st)
+    // Java `import static pkg.Util.foo;` — name → owner type symbol
+    s.push(ImportScopeData(
+      explicit = Map("foo" -> "pkg/Util#foo."),
+      wildcards = Nil,
+      unimports = Set.empty,
+      methodImports = Map("foo" -> "pkg/Util#")
+    ))
+
+    // a call binds to the method overload even though the term symbol is absent
+    assertEquals(s.lookup("foo", isType = false, inCallContext = true), Some("pkg/Util#foo(+9)."))
+    // non-call usage does NOT bind to the absent term symbol (table-verified)
+    assertEquals(s.lookup("foo", isType = false, inCallContext = false), None)
+  }
+
+  test("method import scope: non-call usage binds the term symbol when present") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("pkg/Util#MAX.", "MAX", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+    val s = new ScopeStack(st)
+    s.push(ImportScopeData(
+      explicit = Map("MAX" -> "pkg/Util#MAX."),
+      wildcards = Nil,
+      unimports = Set.empty,
+      methodImports = Map("MAX" -> "pkg/Util#")
+    ))
+
+    assertEquals(s.lookup("MAX", isType = false, inCallContext = false), Some("pkg/Util#MAX."))
+  }
 }

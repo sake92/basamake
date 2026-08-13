@@ -318,6 +318,7 @@ class BspConnection private (
     }
     override def onShowMessage(p: org.eclipse.lsp4j.MessageParams): Unit = sink.onShowMessage(p)
     override def onTaskStart(p: TaskStartParams): Unit = sink.onTaskStart(p)
+    override def onTaskProgress(p: TaskProgressParams): Unit = sink.onTaskProgress(p)
     override def onTaskFinish(p: TaskFinishParams): Unit = sink.onTaskFinish(p)
     override def onConnectionStarted(s: BspConnectionSpec): Unit = sink.onConnectionStarted(s)
     override def onConnectionSucceeded(s: BspConnectionSpec, targetCount: Int): Unit = sink.onConnectionSucceeded(s, targetCount)

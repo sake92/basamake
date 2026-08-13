@@ -16,6 +16,15 @@ class BasamakeConfigTest extends FunSuite {
     val cfg = BasamakeConfig.load(proj)
     assertEquals(cfg.ignorePatterns, List("node_modules/", "!node_modules/keep.scala"))
     assertEquals(cfg.bspOverrides, Nil)
+    assertEquals(cfg.debugSymbolTableDump, None, "dump is opt-in and defaults off")
+  }
+
+  test("load: parses debugSymbolTableDump opt-in flag") {
+    val proj = root / "dump"
+    os.makeDir.all(proj / ".basamake")
+    os.write(proj / ".basamake" / "config.json", """{"debugSymbolTableDump": true}""")
+    val cfg = BasamakeConfig.load(proj)
+    assertEquals(cfg.debugSymbolTableDump, Some(true))
   }
 
   test("load: missing config file → defaults") {
@@ -24,5 +33,6 @@ class BasamakeConfigTest extends FunSuite {
     val cfg = BasamakeConfig.load(proj)
     assertEquals(cfg.ignorePatterns, Nil)
     assertEquals(cfg.bspOverrides, Nil)
+    assertEquals(cfg.debugSymbolTableDump, None)
   }
 }

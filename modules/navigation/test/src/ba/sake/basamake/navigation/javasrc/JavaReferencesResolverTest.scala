@@ -109,6 +109,28 @@ class JavaReferencesResolverTest extends FunSuite {
     assertHasOccurrence(rf, "pkg/Util#doStuff().")
   }
 
+  test("R.6b static call resolves when the only overload is beyond index 8 (sparse table)") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    // 0..8 missing, only overload (+9) present — the old fixed 0..8 scan missed it
+    st.add(defn("pkg/Util#doStuff(+9).", "doStuff", isType = false))
+    val code = """package pkg; class Test { void m() { Util.doStuff(); } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#doStuff(+9).")
+  }
+
+  test("R.6c static call with overloads 0..12 resolves to the lowest index") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    (0 to 12).foreach { i =>
+      val dis = if (i == 0) "" else s"+$i"
+      st.add(defn(s"pkg/Util#doStuff($dis).", "doStuff", isType = false))
+    }
+    val code = """package pkg; class Test { void m() { Util.doStuff(); } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#doStuff().")
+  }
+
   // ── R.7 field access obj.f ───────────────────────────────────
 
   test("R.7 field access obj.f") {
@@ -202,5 +224,135 @@ class JavaReferencesResolverTest extends FunSuite {
     val code = """package pkg; class Test { Outer.Inner v; }"""
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/Outer#Inner#")
+  }
+
+  // ── R.STATIC static imports ─────────────────────────────────
+
+  test("R.S1 static single import of a field resolves") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#MAX.", "MAX", isType = false))
+    val code = """package x; import static pkg.Util.MAX; class Test { int v = MAX; }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#MAX.")
+  }
+
+  test("R.S2 static single import of a method resolves to the method symbol") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#helper().", "helper", isType = false))
+    val code = """package x; import static pkg.Util.helper; class Test { void m() { helper(); } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#helper().")
+  }
+
+  test("R.S3 static on-demand import resolves fields and methods") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#helper().", "helper", isType = false))
+    st.add(defn("pkg/Util#MAX.", "MAX", isType = false))
+    val code = """package x; import static pkg.Util.*; class Test { int v = MAX; void m() { helper(); } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#MAX.")
+    assertHasOccurrence(rf, "pkg/Util#helper().")
+  }
+
+  test("R.S4 static single import stays unresolved when the member is unknown") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    val code = """package x; import static pkg.Util.unknown; class Test { void m() { unknown(); } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "")
+  }
+
+  // ── R.LOOPS loop statements ─────────────────────────────────
+
+  test("R.16 for loop: initializer local + body refs resolve") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#work().", "work", isType = false))
+    val code = """package pkg; class Test { void m() { for (int i = 0; i < 3; i++) { Util.work(); } } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#work().")
+    // `i` (compare + update) resolves to the loop local
+    assertHasOccurrence(rf, "local0")
+    assertLocals(rf, Set(("local0", false)))
+  }
+
+  test("R.17 for-each loop: variable + body refs resolve") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#work().", "work", isType = false))
+    st.add(defn("java/lang/String#", "String", isType = true))
+    val code = """package pkg; class Test { void m(java.util.List<String> xs) { for (String s : xs) { Util.work(); } } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#work().")
+    assertLocals(rf, Set(("local0", false)))
+  }
+
+  test("R.18 while and do-while loop bodies resolve") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#work().", "work", isType = false))
+    val code = """package pkg; class Test { void m() { while (true) { Util.work(); } do { Util.work(); } while (false); } }"""
+    val rf = resolveWith(st, code)
+    // both bodies resolve (2 occurrences of work)
+    assertEquals(rf.occurrences.count(_.symbol == "pkg/Util#work()."), 2,
+      s"expected work() in both loop bodies, got ${rf.occurrences.map(_.symbol)}")
+  }
+
+  // ── R.TRY try statements ────────────────────────────────────
+
+  test("R.19 try/catch/finally bodies resolve; catch param is a local") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#work().", "work", isType = false))
+    val code =
+      """package pkg; import java.io.IOException;
+        |class Test { void m() {
+        |  try { Util.work(); }
+        |  catch (IOException e) { e.printStackTrace(); }
+        |  finally { Util.work(); }
+        |} }""".stripMargin
+    val rf = resolveWith(st, code)
+    assertEquals(rf.occurrences.count(_.symbol == "pkg/Util#work()."), 2,
+      s"expected work() in try + finally, got ${rf.occurrences.map(_.symbol)}")
+    // catch param `e` is a bound local
+    assertHasOccurrence(rf, "local0")
+    assertLocals(rf, Set(("local0", false)))
+  }
+
+  test("R.20 try-with-resources: resource var and catch param are locals") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Res#", "Res", isType = true))
+    val code =
+      """package pkg; class Test { void m(Res r) {
+        |  try (Res rr = r) { use(rr); }
+        |  catch (Exception e) { e.hashCode(); }
+        |} }""".stripMargin
+    val rf = resolveWith(st, code)
+    // rr (resource) + e (catch param) are both document locals
+    assertLocals(rf, Set(("local0", false), ("local1", false)))
+    assertHasOccurrence(rf, "local0")
+    assertHasOccurrence(rf, "local1")
+  }
+
+  // ── R.MREF method references ────────────────────────────────
+
+  test("R.21 method reference Foo::bar resolves to the method symbol") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#transform().", "transform", isType = false))
+    val code = """package pkg; class Test { void m() { java.util.function.Function<String,String> f = Util::transform; } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#transform().")
+  }
+
+  test("R.22 constructor method reference Foo::new stays unresolved (no member name)") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    val code = """package pkg; class Test { void m() { java.util.function.Supplier<Util> s = Util::new; } }"""
+    val rf = resolveWith(st, code)
+    assertHasOccurrence(rf, "pkg/Util#")
   }
 }

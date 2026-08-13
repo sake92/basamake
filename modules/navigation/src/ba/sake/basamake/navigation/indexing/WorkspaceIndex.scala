@@ -20,7 +20,7 @@ private object SourceData {
   val empty: SourceData = SourceData(Vector.empty, Vector.empty, None)
 }
 
-class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop) extends StrictLogging {
+class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop, debugSymbolTableDump: Boolean = false) extends StrictLogging {
 
   // One map for ALL workspace sources (keyed by path): the keySet IS the live
   // source list (no separate knownSources), semanticdbPath is the pairing,
@@ -198,13 +198,16 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     writeDebugDump()
   }
 
-  /** Debug dump: .basamake/index_sources.txt + symbol_table.txt — which source files
-    * are paired with which .semanticdb files, and the full symbol table. Written at
-    * initialize AND refreshed after every index state change, so the dump always
-    * reflects the latest source list + semanticdb pairing. */
+  /** Debug dump: .basamake/index_sources.txt + (opt-in) symbol_table.txt —
+    * which source files are paired with which .semanticdb files, and the full
+    * symbol table. index_sources.txt is written at initialize AND refreshed
+    * after every index state change (cheap). symbol_table.txt is the heavy one
+    * (serializes the whole symbol table, e.g. 12.9MB for msc-backend) — it is
+    * OPT-IN (`debugSymbolTableDump`), so the default startup path never pays
+    * for it. */
   private def writeDebugDump(): Unit = {
     writeIndexSourcesDump()
-    writeSymbolTableDump()
+    if (debugSymbolTableDump) writeSymbolTableDump()
   }
 
   /** Cheap refresh after index state changes (invalidate / file create+delete):
@@ -213,8 +216,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
     * (~13MB) must not run on the BSP event thread after every compile. */
   private def refreshDebugDump(): Unit = {
     writeIndexSourcesDump()
-    symbolTableDirty.set(true)
-    ensureDumpFlusher()
+    if (debugSymbolTableDump) {
+      symbolTableDirty.set(true)
+      ensureDumpFlusher()
+    }
   }
 
   private def writeIndexSourcesDump(): Unit = {
@@ -562,9 +567,14 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
 
   // ── range helpers ────────────────────────────────────────────
 
-  private def isInsideRange(line: Int, char: Int, occurenceRange: Range): Boolean =
-    line == occurenceRange.startLine && line == occurenceRange.endLine &&
-      occurenceRange.startCharacter <= char && char < occurenceRange.endCharacter 
+  /** True when (line, char) is inside `r`, with END-EXCLUSIVE semantics:
+    * `r.start <= cursor < r.end`. Multiline-safe: a cursor on any middle line
+    * of a multiline range is inside, and the end position itself is outside. */
+  private def isInsideRange(line: Int, char: Int, r: Range): Boolean = {
+    val afterStart = line > r.startLine || (line == r.startLine && char >= r.startCharacter)
+    val beforeEnd = line < r.endLine || (line == r.endLine && char < r.endCharacter)
+    afterStart && beforeEnd
+  }
 
   private def rangeLength(r: Range): Long =
     (r.endLine.toLong - r.startLine.toLong) * 100000 + (r.endCharacter.toLong - r.startCharacter.toLong)

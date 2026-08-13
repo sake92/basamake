@@ -1,6 +1,6 @@
 package ba.sake.basamake.bsp
 
-import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams, TaskFinishParams, TaskStartParams}
+import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams, TaskFinishParams, TaskProgressParams, TaskStartParams}
 import ba.sake.basamake.navigation.indexing.SemanticdbDirs
 
 /** Sink for BSP-originated notifications and internal basamake lifecycle events.
@@ -12,6 +12,7 @@ trait BspEventSink {
 
   // BSP task notifications — forwarded from BasamakeBuildClient
   def onTaskStart(params: TaskStartParams): Unit = ()
+  def onTaskProgress(params: TaskProgressParams): Unit = ()
   def onTaskFinish(params: TaskFinishParams): Unit = ()
 
   // Connection lifecycle — internal basamake events fired by BspConnection.ensureConnected()

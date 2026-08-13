@@ -28,11 +28,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   private val workspaceSymbolTable = new InMemorySymbolTable
   private val depsSymbolTable = new IndexedSymbolTable(progressReporter)
   private val symbolTable = new CompositeSymbolTable(workspaceSymbolTable, depsSymbolTable)
+  private val basamakeConfig = BasamakeConfig.load(workspacePath)
   private val workspaceIndex = new WorkspaceIndex(
     workspacePath,
     symbolTable,
-    BasamakeConfig.load(workspacePath).ignorePatterns.toVector,
-    progressReporter
+    basamakeConfig.ignorePatterns.toVector,
+    progressReporter,
+    basamakeConfig.debugSymbolTableDump.getOrElse(false)
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
   private val hoverProvider = HoverProvider(workspaceIndex)
@@ -102,7 +104,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       }
     })
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
-    bspManager.initialize(workspacePath, client, warmDeps)
+    bspManager.initialize(workspacePath, client, warmDeps, workDoneProgress)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 
