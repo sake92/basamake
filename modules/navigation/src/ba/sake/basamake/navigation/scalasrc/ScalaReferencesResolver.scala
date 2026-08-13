@@ -332,12 +332,20 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       currentOwner = classSym
       currentOwnerIsType = true
 
+      // Emit type param locals and resolve context/view bounds (cbounds).
+      // Each resolveTparam pushes a LocalScope; pop them after the body.
+      c.tparams.foreach(tp => resolveTparam(tp))
+      val tparamScopeCount = c.tparams.count(_.name.value.nonEmpty)
+
       scopeStack.push(OwnerScope(classSym))
       scopeStack.push(LocalScope(collection.mutable.Map(c.name.value -> classSym)))
       resolveTypeTpeOpt(c.templ.inits)
       resolveStats(c.templ.stats)
       scopeStack.pop()
       scopeStack.pop()
+
+      // Pop type param scopes pushed by resolveTparam
+      (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
 
       currentOwner = oldOwner
       currentOwnerIsType = oldIsType
@@ -357,12 +365,19 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     currentOwnerIsType = true
     // NOTE: local traits inside methods are not yet emitted as local<N> — v1 limitation
 
+    // Emit type param locals and resolve context/view bounds (cbounds).
+    t.tparams.foreach(tp => resolveTparam(tp))
+    val tparamScopeCount = t.tparams.count(_.name.value.nonEmpty)
+
     scopeStack.push(OwnerScope(traitSym))
     scopeStack.push(LocalScope(collection.mutable.Map(t.name.value -> traitSym)))
     resolveTypeTpeOpt(t.templ.inits)
     resolveStats(t.templ.stats)
     scopeStack.pop()
     scopeStack.pop()
+
+    // Pop type param scopes pushed by resolveTparam
+    (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
 
     currentOwner = oldOwner
     currentOwnerIsType = oldIsType
@@ -455,6 +470,11 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       addLocal(d.name.pos, localSym, d.name.value, isType = false)
     }
 
+    // Emit type param locals and resolve their context/view bounds.
+    // Each resolveTparam pushes a LocalScope; pop them after the body.
+    d.tparams.foreach(tp => resolveTparam(tp))
+    val tparamScopeCount = d.tparams.count(_.name.value.nonEmpty)
+
     // Resolve param type annotations
     d.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
     d.decltpe.foreach(resolveType)
@@ -466,13 +486,21 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     resolveTerm(d.body, inCallContext = false)
     methodDepth -= 1
     scopeStack.pop()
+
+    // Pop type param scopes pushed by resolveTparam
+    (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
   }
 
   private def resolveDeclDef(dd: Decl.Def): Unit = {
     val effOwner = effectiveOwner
     val methodSym = SymbolUtils.methodSymbol(effOwner, dd.name.value, 0)
+    // Emit type param locals and resolve context/view bounds.
+    dd.tparams.foreach(tp => resolveTparam(tp))
+    val tparamScopeCount = dd.tparams.count(_.name.value.nonEmpty)
     dd.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
     resolveType(dd.decltpe)
+    // Pop type param scopes pushed by resolveTparam
+    (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
   }
 
   // ── val ──────────────────────────────────────────────────────
@@ -750,6 +778,24 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── type resolution ──────────────────────────────────────────
 
+  /** Resolve a `Type.Param` (type parameter definition): emit a local for the
+    * name, push a LocalScope binding `name -> local<N>`, and resolve context
+    * bounds so gotodef on a bound type (e.g. `cats.Monad`) works.
+    * The caller is responsible for popping the scope afterwards
+    * (one pop per non-wildcard type param). Returns true iff a scope was pushed. */
+  private def resolveTparam(tp: Type.Param): Boolean = {
+    val pn = tp.name.value
+    val scopePushed = if (pn.nonEmpty) {
+      val localSym = nextLocalSymbol()
+      addLocal(tp.name.pos, localSym, pn, isType = false)
+      scopeStack.push(LocalScope(collection.mutable.Map(pn -> localSym)))
+      true
+    } else false
+    // Resolve context bounds (e.g. `[F: cats.Monad]` → emits ref to cats/Monad#)
+    tp.cbounds.foreach(resolveType)
+    scopePushed
+  }
+
   private def resolveType(tpe: Type): Unit = {
     tpe match {
       case t @ Type.Name(n) =>
@@ -778,17 +824,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case Type.Apply(t, args) =>
         resolveType(t)
         args.foreach(resolveType)
-
-      case Type.Param(mods, name, tparams, vbounds, cbounds, bounds) =>
-        // Type param definition — emit as local<N>
-        val pn = name.value
-        if (pn.nonEmpty) {
-          val localSym = nextLocalSymbol()
-          addLocal(name.pos, localSym, pn, isType = false)
-
-          // Bind in local scope
-          scopeStack.push(LocalScope(collection.mutable.Map(pn -> localSym)))
-        }
 
       case Type.ByName(t) =>
         resolveType(t)

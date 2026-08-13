@@ -1,6 +1,7 @@
 package ba.sake.basamake.navigation.indexing
 
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{ConcurrentHashMap, CountDownLatch}
+import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import scala.meta.internal.semanticdb.Range
@@ -162,31 +163,36 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
       logger.info(s"Total semanticdb-paired source files: $paired")
     }
 
-    // Pass B: extract from source AST for files WITHOUT semanticdb
-    for (path <- scalaFiles ++ sbtFiles if sourcesMap.get(path).semanticdbPath.isEmpty) {
-      logger.debug(s"Extracting definitions from $path")
-      try {
-        val content = os.read(path)
-        val extractor = ScalaDefinitionsExtractor(symbolTable)
-        extractor.extractFromContent(path.last, content, path)
-      } catch {
-        case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
-      }
-      done += 1
-      report(path.last)
+    // Pass B: extract from source AST for files WITHOUT semanticdb, in parallel
+    // (virtual threads). ScalaDefinitionsExtractor / JavaDefinitionsExtractor add
+    // to the ConcurrentHashMap-backed SymbolTable — safe for concurrent writes.
+    val passBFiles = (scalaFiles ++ sbtFiles).filter(p => sourcesMap.get(p).semanticdbPath.isEmpty) ++
+      javaFiles.filter(p => sourcesMap.get(p).semanticdbPath.isEmpty)
+    val passBDone = new AtomicLong(0L)
+    val latch = new CountDownLatch(passBFiles.length)
+    passBFiles.foreach { path =>
+      Thread.ofVirtual().start(() => {
+        try {
+          logger.debug(s"Extracting definitions from $path")
+          val content = os.read(path)
+          if (path.ext == "java") {
+            val extractor = JavaDefinitionsExtractor(symbolTable)
+            extractor.extractFromContent(path.last, content, path)
+          } else {
+            val extractor = ScalaDefinitionsExtractor(symbolTable)
+            extractor.extractFromContent(path.last, content, path)
+          }
+        } catch {
+          case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
+        } finally {
+          val n = done + passBDone.incrementAndGet()
+          progressListener.onProgress(IndexingPhase.Workspace, n.min(total), total, path.last)
+          latch.countDown()
+        }
+      })
     }
-    for (path <- javaFiles if sourcesMap.get(path).semanticdbPath.isEmpty) {
-      logger.debug(s"Extracting definitions from $path")
-      try {
-        val content = os.read(path)
-        val extractor = JavaDefinitionsExtractor(symbolTable)
-        extractor.extractFromContent(path.last, content, path)
-      } catch {
-        case e: Exception => logger.warn(s"Failed to extract $path: ${e.getMessage}")
-      }
-      done += 1
-      report(path.last)
-    }
+    latch.await()
+    done += passBFiles.size.toLong
 
     report(s"Indexed $total files")
     // Async initialize: files may be opened while indexing runs. The map
@@ -454,8 +460,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
         if (local.nonEmpty) local
         else referencesUnderCursor.flatMap(o => getSymbol(o.symbol, depCandidates))
       // Filter out the location the cursor is already on (self-filter for refs).
+      // Also filter synthetic zero-range symbols (e.g. evidence params desugared
+      // from context bounds have no source position and would navigate to (0,0)).
       Some(candidates.filterNot { sd =>
-        sd.path == path && isInsideRange(line, char, sd.range)
+        val zeroRange = sd.range.startLine == 0 && sd.range.startCharacter == 0 &&
+          sd.range.endLine == 0 && sd.range.endCharacter == 0
+        zeroRange || (sd.path == path && isInsideRange(line, char, sd.range))
       })
     }
   }

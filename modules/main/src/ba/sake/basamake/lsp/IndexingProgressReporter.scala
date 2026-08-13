@@ -45,7 +45,7 @@ class IndexingProgressReporter extends IndexingProgressListener with StrictLoggi
   // MethodNotFound. That rejection is TRANSIENT: retry the begin after a
   // cooldown instead of disabling the reporter (which would kill progress on
   // cold caches — exactly when it matters most).
-  private var beginRetryNanos = 5L * 1000000000L // 5s
+  private var beginRetryNanos = 10L * 1000000000L // 10s
 
   private def stateOf(phase: IndexingPhase): PhaseState = phase match {
     case IndexingPhase.Workspace    => workspace
@@ -90,7 +90,7 @@ class IndexingProgressReporter extends IndexingProgressListener with StrictLoggi
         .get(5, TimeUnit.SECONDS)
     } catch {
       case e: Exception =>
-        logger.warn(s"Client rejected progress token ${st.token} — retrying later: ${e.getMessage}")
+        logger.warn(s"Client rejected progress token ${st.token} — retrying later: ${e.toString}")
         return
     }
     val b = new WorkDoneProgressBegin()
