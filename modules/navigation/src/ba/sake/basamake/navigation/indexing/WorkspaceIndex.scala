@@ -22,7 +22,7 @@ private object SourceData {
   val empty: SourceData = SourceData(Vector.empty, Vector.empty, None)
 }
 
-class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop, debugSymbolTableDump: Boolean = false, slowFallbackThresholdMs: Option[Long] = None) extends StrictLogging {
+class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable: Option[IndexedSymbolTable] = None, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop, debugSymbolTableDump: Boolean = false, slowFallbackThresholdMs: Option[Long] = None) extends StrictLogging {
 
   // One map for ALL workspace sources (keyed by path): the keySet IS the live
   // source list (no separate knownSources), semanticdbPath is the pairing,
@@ -126,6 +126,24 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
   // entry-point guards below. Replaced wholesale on .gitignore changes (volatile
   // so concurrent guard calls never see a half-mutated engine).
   @volatile private var ignoreEngine = new GitIgnoreEngine(workspacePath, ignorePatterns)
+
+  /** Table the resolvers see: workspace symbols + JDK-scoped dep existence.
+    * Java resolution depends on JDK checks — Java has no semanticdb, so ctor
+    * refs and member overloads on java.* types resolve against the JDK index.
+    * Non-JDK dependency symbols (e.g. `scala.*` imports in source-parsed files
+    * without semanticdb) are deliberately NOT visible here — there is no global
+    * dep route anymore; candidate-scoped lookups happen via `getSymbol`. */
+  private val resolverTable: SymbolTable = depsTable match {
+    case Some(deps) => new SymbolTable {
+      override def get(symbol: String) = symbolTable.get(symbol).orElse(deps.get(symbol))
+      override def byPath(path: os.Path) = symbolTable.byPath(path)
+      override def add(sd: SymbolDefinition) = symbolTable.add(sd)
+      override def removeByPath(path: os.Path) = symbolTable.removeByPath(path)
+      override def keys = symbolTable.keys
+      override def all = symbolTable.all
+    }
+    case None => symbolTable
+  }
 
   /** Re-read `.gitignore` rules — called by BspManager on .gitignore change events. */
   def reloadIgnores(): Unit = ignoreEngine = new GitIgnoreEngine(workspacePath, ignorePatterns)
@@ -644,21 +662,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
 
   // ── internal helpers ─────────────────────────────────────────
 
-  /** Symbol lookup with optional dep-jar candidates (the file's BSP target deps).
-    * With candidates, dep lookups are scoped to those jars (precise + cheap);
-    * without, the plain lookup is used (global dep route / workspace table).
-    * Public — used by HoverProvider (hover needs def resolution, including on
-    * def sites, where gotoDefinitions deliberately returns empty). */
+  /** Symbol lookup: workspace first, then the dep/JDK index scoped to the file's
+    * BSP target candidates. With empty candidates the dep lookup is JDK-scoped
+    * (see IndexedSymbolTable.get). */
   def getSymbol(symbol: String, depCandidates: List[os.Path]): Option[SymbolDefinition] =
-    if depCandidates.isEmpty then symbolTable.get(symbol)
-    else symbolTable match {
-      case c: CompositeSymbolTable => c.getWithCandidates(symbol, depCandidates)
-      case t                       => t.get(symbol)
-    }
-
-  /** Paths of currently open editor files (used by BspManager to index the right
-    * targets' deps right after a handshake). */
-  def openPaths: Set[os.Path] = openFiles.asScala.toSet
+    symbolTable.get(symbol).orElse(depsTable.flatMap(_.get(symbol, depCandidates)))
 
   private def refreshOpenBuffer(path: os.Path): Unit = {
     if (!openFiles.contains(path)) return
@@ -701,10 +709,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, ignorePat
 
   private def sourceResolve(path: os.Path, text: String): ResolvedFile =
     if (path.ext == "java") {
-      val resolver = new JavaReferencesResolver(symbolTable)
+      val resolver = new JavaReferencesResolver(resolverTable)
       resolver.resolveFromContent(path.last, text, path)
     } else {
-      val resolver = new ScalaReferencesResolver(symbolTable)
+      val resolver = new ScalaReferencesResolver(resolverTable)
       resolver.resolveFromContent(path.last, text, path)
     }
 

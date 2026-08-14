@@ -110,18 +110,36 @@ object SymbolUtils {
   def isTypeSymbol(symbol: String): Boolean =
     symbol.endsWith("#")
 
+  /** Index of the LAST '/' that is NOT inside a backtick-quoted name section.
+    * Backticked names may contain '/' (e.g. the `/` operator method symbol
+    * `scala/Byte#`/`().`), so a plain lastIndexOf('/') finds the wrong slash.
+    * Returns -1 when there is no top-level slash. */
+  private def lastTopLevelSlash(symbol: String): Int = {
+    var inBackticks = false
+    var lastSlash = -1
+    var i = 0
+    while i < symbol.length do {
+      val c = symbol.charAt(i)
+      if c == '`' then inBackticks = !inBackticks
+      else if c == '/' && !inBackticks then lastSlash = i
+      i += 1
+    }
+    lastSlash
+  }
+
   /** Dotted package of a global symbol, or None for the default (_empty_) package
     * and local symbols.
     * Example: `packageOf("org/apache/commons/net/FTPClient#")` → `Some("org.apache.commons.net")`
+    * Example: `packageOf("scala/Byte#`/`().")` → `Some("scala")`  (backticked `/` name)
     * Example: `packageOf("Foo#")` → `None`
     * Example: `packageOf("_empty_/Foo#")` → `None`
     */
   def packageOf(symbol: String): Option[String] = {
-    val withoutPkg = symbol.startsWith("_empty_/") || !symbol.contains('/')
-    if withoutPkg then None
+    if symbol.startsWith("_empty_/") then None
     else {
-      val pkg = symbol.substring(0, symbol.lastIndexOf('/')).replace('/', '.')
-      Some(pkg)
+      val lastSlash = lastTopLevelSlash(symbol)
+      if lastSlash < 0 then None
+      else Some(symbol.substring(0, lastSlash).replace('/', '.'))
     }
   }
 
@@ -134,13 +152,15 @@ object SymbolUtils {
     *   `com/example/Outer#`                  → `Outer`
     *   `com/example/Outer#run().(x)`         → `x`
     *   `` com/example/Outer#`<init>`(). ``   → `` `<init>` ``
+    *   `` com/example/Outer#`/`(). ``        → `` `/` ``
     *   `_empty_/bla$package.`                → `bla$package`
     *   `com/example/Foo#bar[T]().`           → `bar`
     *   `java/lang/String#substring(II).`     → `substring`
     *   `utils.` (short/best-effort symbol)   → `utils`
     */
   def shortNameOf(symbol: String): String = {
-    val afterOwner = symbol.drop(symbol.lastIndexOf('/') + 1)
+    val lastSlash = lastTopLevelSlash(symbol)
+    val afterOwner = if lastSlash < 0 then symbol else symbol.drop(lastSlash + 1)
     // parameter symbol: `<method>.(name)`
     val paramRe = """^.*\.\(([^()]*)\)$""".r
     afterOwner match {

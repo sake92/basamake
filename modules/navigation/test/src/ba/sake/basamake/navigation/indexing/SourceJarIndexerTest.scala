@@ -86,7 +86,7 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
     assert(os.read(srcRoot / "Foo.java").contains("class Foo"), "extraction must be idempotent")
   }
 
-  test("writes valid metadata.json with packages") {
+  test("writes valid metadata.json — packages empty without a classes sibling") {
     val tempDir = os.temp.dir()
     val jarPath = buildSmallJar(tempDir)
 
@@ -100,8 +100,38 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
     assertEquals(meta.get.sourcePath, jarPath.toString)
     assertEquals(meta.get.sourceSize, os.size(jarPath))
     assertEquals(meta.get.sourceMtime, os.mtime(jarPath))
-    assert(meta.get.packages.contains("com.example"), s"packages should contain com.example, got ${meta.get.packages}")
+    assert(meta.get.indexed, "a full index must be marked indexed")
+    assertEquals(meta.get.packages, List.empty[String],
+      "no classes sibling → packages come from nowhere and must stay empty (unfilterable)")
     assert(CacheMetadata.isValid(meta.get, jarPath), "metadata should be valid for unchanged jar")
+  }
+
+  test("full index of a sources+classes jar pair records classes-jar packages") {
+    val tempDir = os.temp.dir()
+    val sourcesJar = tempDir / "foo_3-1.0.0-sources.jar"
+    val classesJar = tempDir / "foo_3-1.0.0.jar"
+
+    val srcZip = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
+    try {
+      srcZip.putNextEntry(new ZipEntry("com/example/Foo.java"))
+      srcZip.write("package com.example;\npublic class Foo {}\n".getBytes("UTF-8"))
+      srcZip.closeEntry()
+    } finally srcZip.close()
+
+    val clsZip = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
+    try {
+      clsZip.putNextEntry(new ZipEntry("com/example/Foo.class")); clsZip.write(Array[Byte](1, 2)); clsZip.closeEntry()
+    } finally clsZip.close()
+
+    assertEquals(SourceJarIndexer.classesJarOf(sourcesJar), Some(classesJar))
+
+    val fingerprint = "test_pair_packages_bd5a1f"
+    cleanCache(fingerprint)
+    SourceJarIndexer.index(sourcesJar, fingerprint)
+
+    val meta = CacheMetadata.load(SourceJarIndexer.cacheRoot / fingerprint).get
+    assert(meta.indexed, "a full index must be marked indexed")
+    assertEquals(meta.packages, List("com.example"), "packages must come from the REAL classes jar listing")
   }
 
   test("stale metadata triggers reindex") {
@@ -122,6 +152,27 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
     assert(after.sourceSize != before.sourceSize, "reindex must have happened")
     assert(LmdbSerializer.get(SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb", "com/example/Foo#").isDefined,
       "reindexed index should still be queryable")
+  }
+
+  test("indexed=false metadata is not a cache hit — reindexes") {
+    val tempDir = os.temp.dir()
+    val jarPath = buildSmallJar(tempDir)
+
+    val fingerprint = "test_indexed_flag_bd5a1f"
+    cleanCache(fingerprint)
+    SourceJarIndexer.index(jarPath, fingerprint)
+
+    val cacheDir = SourceJarIndexer.cacheRoot / fingerprint
+    val meta = CacheMetadata.load(cacheDir).get
+    assert(meta.indexed, "a fresh index must be marked indexed")
+
+    // rewrite the metadata as package-only (indexed = false): index() must NOT
+    // take the cache-hit path even though everything else (size/mtime/LMDB) is valid
+    CacheMetadata.save(cacheDir, meta.copy(indexed = false))
+    SourceJarIndexer.index(jarPath, fingerprint)
+
+    assertEquals(CacheMetadata.load(cacheDir).map(_.indexed), Some(true),
+      "indexed=false metadata must force a reindex")
   }
 
   test("corrupt jar cleans partial cache and throws") {
@@ -206,5 +257,35 @@ object Baz {
     assertEquals(events.last, (2L, 2L, jarPath.last), "total must count source entries only")
     assertEquals(events.map(_._1).toList, List(1L, 2L), "done must increment per source entry")
     assert(events.forall(_._2 == 2L), "every event carries the pre-counted total")
+  }
+
+  test("classesJarOf: sources jar sibling in a coursier-style dir") {
+    val dir = os.temp.dir()
+    os.write(dir / "foo_3-1.0.0-sources.jar", "x")
+    os.write(dir / "foo_3-1.0.0.jar", "x")
+    assertEquals(SourceJarIndexer.classesJarOf(dir / "foo_3-1.0.0-sources.jar"), Some(dir / "foo_3-1.0.0.jar"))
+    assertEquals(SourceJarIndexer.classesJarOf(dir / "foo_3-1.0.0.jar"), None, "only -sources.jar names map")
+  }
+
+  test("packagesOfClassesJar: zip directories are the packages") {
+    val dir = os.temp.dir()
+    val jar = dir / "foo_3-1.0.0.jar"
+    val zip = new ZipOutputStream(new FileOutputStream(jar.toIO))
+    try {
+      zip.putNextEntry(new ZipEntry("com/example/Foo.class")); zip.write(Array[Byte](1, 2)); zip.closeEntry()
+      zip.putNextEntry(new ZipEntry("org/bar/Baz.class")); zip.write(Array[Byte](1)); zip.closeEntry()
+      zip.putNextEntry(new ZipEntry("module-info.class")); zip.write(Array[Byte](1)); zip.closeEntry()
+      zip.putNextEntry(new ZipEntry("META-INF/MANIFEST.MF")); zip.write(Array[Byte](1)); zip.closeEntry()
+    } finally zip.close()
+    assertEquals(SourceJarIndexer.packagesOfClassesJar(jar), Set("com.example", "org.bar"))
+  }
+
+  test("packagesOfClassesJar: jar without classes yields empty set") {
+    val dir = os.temp.dir()
+    val jar = dir / "empty.jar"
+    val zip = new ZipOutputStream(new FileOutputStream(jar.toIO))
+    try { zip.putNextEntry(new ZipEntry("META-INF/MANIFEST.MF")); zip.write(Array[Byte](1)); zip.closeEntry() }
+    finally zip.close()
+    assertEquals(SourceJarIndexer.packagesOfClassesJar(jar), Set.empty[String])
   }
 }

@@ -75,7 +75,7 @@ class LmdbSerializerTest extends FunSuite {
     assert(LmdbSerializer.get(indexDir, "foo.Bar.`<init>`().").isDefined)
   }
 
-  test("streamingSave writes definitions straight into LMDB + collects count/packages") {
+  test("streamingSave writes definitions straight into LMDB + collects count") {
     val indexDir = os.temp.dir() / "stream.lmdb"
     val cacheDir = indexDir / os.up
     val srcDir = cacheDir / "src"
@@ -89,7 +89,6 @@ class LmdbSerializerTest extends FunSuite {
     }
 
     assertEquals(sink.count, 3, "local symbols must be skipped by the sink")
-    assertEquals(sink.packages, Set("foo", "java.lang"))
     assertEquals(LmdbSerializer.get(indexDir, "foo/Bar#").map(_.path), Some(srcDir / "Bar.java"))
     assert(LmdbSerializer.get(indexDir, "foo/Bar.baz().").isDefined)
     assert(LmdbSerializer.get(indexDir, "java/lang/Object#").isDefined)
@@ -103,7 +102,6 @@ class LmdbSerializerTest extends FunSuite {
     val sink = LmdbSerializer.streamingSave(indexDir, cacheDir)(_ => ())
 
     assertEquals(sink.count, 0)
-    assertEquals(sink.packages, Set.empty[String])
     assertEquals(LmdbSerializer.get(indexDir, "anything"), None)
   }
 }

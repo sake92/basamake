@@ -14,13 +14,10 @@ case class SymbolDefinition(
   path: os.Path    // mandatory — absolute path to the source file declaring this symbol
 )
 
-/** Symbol lookup interface shared by the workspace table, the dependency/JDK index
-  * and their composition.
-  *
-  * `keys`/`all` are WORKSPACE-scoped by convention: implementations that aggregate
-  * multiple tables (CompositeSymbolTable, IndexedSymbolTable) must not leak
-  * dependency symbols into them — consumers (e.g. ScalaReferencesResolver.wrapperScan)
-  * scan `keys` on every unresolved name, so dep keys would blow up per-keystroke cost. */
+/** Workspace symbol table: mutable index of workspace sources (definitions,
+  * path-keyed invalidation, enumeration for wrapperScan/debug dumps).
+  * Dependency/JDK symbols are NOT part of this interface — they live in
+  * IndexedSymbolTable, a separate read-only lookup service. */
 trait SymbolTable {
   def get(symbol: String): Option[SymbolDefinition]
   def byPath(path: os.Path): Set[SymbolDefinition]
@@ -65,34 +62,4 @@ class InMemorySymbolTable extends SymbolTable with StrictLogging {
     if (symbols == null) Set.empty
     else symbols.asScala.flatMap(sym => Option(definitions.get(sym))).toSet
   }
-}
-
-/** Two-level composition: workspace table first, dependency index as fallback.
-  * Writes, `keys` and `all` only touch the workspace table. */
-class CompositeSymbolTable(
-    workspaceSymbolTable: SymbolTable,
-    depsSymbolTable: SymbolTable
-) extends SymbolTable {
-
-  override def get(symbol: String): Option[SymbolDefinition] =
-    workspaceSymbolTable.get(symbol).orElse(depsSymbolTable.get(symbol))
-
-  /** Dep lookup scoped to candidate jars (the current file's BSP target dependency
-    * sources). Falls back to the plain lookup when the dep table has no
-    * candidate-scoped API (e.g. a plain in-memory table in tests). */
-  def getWithCandidates(symbol: String, candidates: List[os.Path]): Option[SymbolDefinition] =
-    workspaceSymbolTable.get(symbol).orElse {
-      depsSymbolTable match {
-        case i: ba.sake.basamake.navigation.indexing.IndexedSymbolTable => i.get(symbol, candidates)
-        case d => d.get(symbol)
-      }
-    }
-
-  override def byPath(path: os.Path): Set[SymbolDefinition] =
-    workspaceSymbolTable.byPath(path) ++ depsSymbolTable.byPath(path)
-
-  override def add(symDef: SymbolDefinition): Unit = workspaceSymbolTable.add(symDef)
-  override def removeByPath(path: os.Path): Unit = workspaceSymbolTable.removeByPath(path)
-  override def keys: Set[String] = workspaceSymbolTable.keys
-  override def all: Set[SymbolDefinition] = workspaceSymbolTable.all
 }

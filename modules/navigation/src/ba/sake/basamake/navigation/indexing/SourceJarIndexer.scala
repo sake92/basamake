@@ -68,7 +68,7 @@ object SourceJarIndexer extends StrictLogging {
     os.makeDir.all(cacheDir)
 
     CacheMetadata.load(cacheDir) match {
-      case Some(meta) if CacheMetadata.isValid(meta, source) && os.isDir(indexPath) =>
+      case Some(meta) if meta.indexed && CacheMetadata.isValid(meta, source) && os.isDir(indexPath) =>
         logger.debug(s"Loading cached index for $source ($fingerprint)")
         return
       case _ => ()
@@ -120,7 +120,8 @@ object SourceJarIndexer extends StrictLogging {
       sourcePath = source.toString,
       sourceSize = os.size(source),
       sourceMtime = os.mtime(source),
-      packages = sink.packages.toList.sorted,
+      packages = classesJarOf(source).map(packagesOfClassesJar).getOrElse(Set.empty).toList.sorted,
+      indexed = true,
       formatVersion = CacheMetadata.FormatVersion
     ))
     if (sink.count == 0) {
@@ -154,4 +155,32 @@ object SourceJarIndexer extends StrictLogging {
 
   private def isSourceEntry(name: String): Boolean =
     name.endsWith(".scala") || name.endsWith(".sbt") || name.endsWith(".java")
+
+  /** The classes jar sibling of a sources jar in a coursier-style cache dir:
+    * `foo_3-1.0.0-sources.jar` → `foo_3-1.0.0.jar`. None when the sources jar
+    * does not follow the convention or the sibling does not exist. */
+  def classesJarOf(sourcesJar: os.Path): Option[os.Path] = {
+    val name = sourcesJar.last
+    if name.endsWith("-sources.jar") then {
+      val sibling = sourcesJar / os.up / (name.stripSuffix("-sources.jar") + ".jar")
+      if os.exists(sibling) then Some(sibling) else None
+    } else None
+  }
+
+  /** Packages from a CLASSES jar: the zip's class-file directories ARE the
+    * packages (the JVM requires dir == package). Directory listing only — no
+    * decompression, no parsing. Root classes (`module-info.class`) and
+    * `META-INF/` entries (incl. multi-release versions) carry no package. */
+  def packagesOfClassesJar(classesJar: os.Path): Set[String] = {
+    val zip = new ZipFile(classesJar.toIO)
+    try {
+      zip.entries().asScala
+        .map(_.getName)
+        .filter(_.endsWith(".class"))
+        .flatMap { e =>
+          val segs = e.split('/').toList.dropRight(1)
+          if segs.nonEmpty && segs.head != "META-INF" then Some(segs.mkString(".")) else None
+        }.toSet
+    } finally zip.close()
+  }
 }

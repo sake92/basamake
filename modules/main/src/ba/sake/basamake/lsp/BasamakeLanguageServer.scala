@@ -1,14 +1,14 @@
 package ba.sake.basamake.lsp
 
 import java.net.URI
-import java.util.concurrent.CompletableFuture
+import java.util.concurrent.{CompletableFuture, Executors}
 import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
-import ba.sake.basamake.navigation.{SymbolDefinition, SymbolTable, InMemorySymbolTable, CompositeSymbolTable, HoverProvider}
+import ba.sake.basamake.navigation.{SymbolDefinition, InMemorySymbolTable, HoverProvider}
 import ba.sake.basamake.navigation.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 import ba.sake.basamake.bsp.{BspManager, BspTargetData}
 import ba.sake.basamake.config.BasamakeConfig
@@ -22,18 +22,22 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   private val progressReporter = new IndexingProgressReporter
   private val workspaceIndexingDone = new java.util.concurrent.atomic.AtomicBoolean(false)
 
+  /** Offloads the three navigation request handlers (definition/references/hover)
+    * onto virtual threads, keeping them off the lsp4j message thread. */
+  private val navigationExecutor = Executors.newVirtualThreadPerTaskExecutor()
+
   /** True once the background workspace indexing (launched by initialize) has
     * finished — used by tests to await index readiness. */
   private[lsp] def isWorkspaceIndexingDone: Boolean = workspaceIndexingDone.get()
 
   private val workspaceSymbolTable = new InMemorySymbolTable
   private val depsSymbolTable = new IndexedSymbolTable(progressReporter)
-  private val symbolTable = new CompositeSymbolTable(workspaceSymbolTable, depsSymbolTable)
   private val basamakeConfig = BasamakeConfig.load(workspacePath)
   LoggingUtils.enableWorkspaceIndexDebugIfRequested(basamakeConfig.debugSlowFallbackMs)
   private val workspaceIndex = new WorkspaceIndex(
     workspacePath,
-    symbolTable,
+    workspaceSymbolTable,
+    Some(depsSymbolTable),
     basamakeConfig.ignorePatterns.toVector,
     progressReporter,
     basamakeConfig.debugSymbolTableDump.getOrElse(false),
@@ -91,13 +95,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         workspaceIndexingDone.set(true)
       }
     })
-    // Dependency sources are NOT indexed eagerly: BspManager registers the warm-start
-    // targets (cached jars only) and indexes a target's jars lazily when one of its
-    // files is opened / poked. The JDK index runs on its OWN background thread — its
-    // first progress event (enqueue begin) must not fire on the initialize thread:
-    // the client's window/workDoneProgress/create handler only exists after the
-    // handshake, and a rejected createProgress would stall initialize for seconds.
-    // A cold JDK indexes once in the background, prioritized ahead of all dep jars.
+    // Dependency sources are NOT indexed eagerly: lookups index exactly the jars
+    // they need, inline. The JDK index runs on its OWN background thread — its
+    // first progress event must not fire on the initialize thread (the client's
+    // window/workDoneProgress/create handler only exists after the handshake).
     Thread.ofVirtual().start(() => {
       try {
         depsSymbolTable.ensureJdkIndexed()
@@ -124,7 +125,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   }
 
   /** Idempotent cleanup — called by shutdown/exit and the JVM shutdown hook. */
-  def cleanup(): Unit = bspManager.shutdown()
+  def cleanup(): Unit = {
+    navigationExecutor.shutdown()
+    bspManager.shutdown()
+  }
 
 
   override def getWorkspaceService(): WorkspaceService = this
@@ -186,7 +190,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val path = os.Path(URI.create(uri))
     workspaceIndex.onDidOpen(path)
     Thread.ofVirtual().start(() => {
-      bspManager.ensureDepsIndexedFor(uri)
       bspManager.poke(uri, compile = true)
     })
   }
@@ -204,7 +207,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     logger.info(s"didSave: $uri — scheduling compile")
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
-      bspManager.ensureDepsIndexedFor(uri)
       bspManager.poke(uri, compile = true)
       workspaceIndex.onDidSave(path)
     })
@@ -224,11 +226,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         java.util.List[? <: Location],
         java.util.List[? <: LocationLink]
       ]] =
-    CompletableFuture.supplyAsync { () =>
+    CompletableFuture.supplyAsync(() => {
       val uri = params.getTextDocument.getUri
       logger.debug(s"definition: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
       Thread.ofVirtual().start(() => {
-        bspManager.ensureDepsIndexedFor(uri)
         bspManager.poke(uri, compile = false)
       })
       val path = os.Path(URI.create(uri))
@@ -238,14 +239,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val locs = workspaceIndex.gotoDefinitions(path, line, char, depCandidates).map(toLspLocation).asJava
       logger.debug(s"definition at $line:$char → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
       org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locs)
-    }
+    }, navigationExecutor)
 
   override def references(params: ReferenceParams): CompletableFuture[java.util.List[? <: Location]] =
-    CompletableFuture.supplyAsync { () =>
+    CompletableFuture.supplyAsync(() => {
       val uri = params.getTextDocument.getUri
       logger.debug(s"references: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}, includeDecl=${params.getContext.isIncludeDeclaration}")
       Thread.ofVirtual().start(() => {
-        bspManager.ensureDepsIndexedFor(uri)
         bspManager.poke(uri, compile = false)
       })
       val path = os.Path(URI.create(uri))
@@ -256,14 +256,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val locs = workspaceIndex.references(path, line, char, includeDecl, depCandidates).map(toLspLocation).asJava
       logger.debug(s"references at $line:$char (includeDecl=$includeDecl) → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
       locs
-    }
+    }, navigationExecutor)
 
   override def hover(params: HoverParams): CompletableFuture[Hover] =
-    CompletableFuture.supplyAsync { () =>
+    CompletableFuture.supplyAsync(() => {
       val uri = params.getTextDocument.getUri
       logger.debug(s"hover: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
       Thread.ofVirtual().start(() => {
-        bspManager.ensureDepsIndexedFor(uri)
         bspManager.poke(uri, compile = false)
       })
       val path = os.Path(URI.create(uri))
@@ -281,7 +280,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
           logger.debug(s"hover at $line:$char → no info")
           null
       }
-    }
+    }, navigationExecutor)
 
   // documentSymbol returns empty for v1 — descriptor → SymbolKind map is deferred follow-up
   override def documentSymbol(params: DocumentSymbolParams)

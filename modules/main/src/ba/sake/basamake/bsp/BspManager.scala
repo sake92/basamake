@@ -70,7 +70,7 @@ class BspManager private (
     // uncached jars stay unindexed until a file of that target is opened.
     if (depsSymbolTable != null) {
       warmDeps.foreach { case (srcRoot, deps) =>
-        try depsSymbolTable.registerTarget(srcRoot.toString, deps)
+        try depsSymbolTable.registerTarget(deps)
         catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
       }
     }
@@ -181,18 +181,15 @@ class BspManager private (
     try workspaceIndex.invalidate(roots)
     catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
 
-  // ---- BspDependencySourcesSink: register targets lazily; index only for open files ----
+  // ---- BspDependencySourcesSink: register target deps, paths only ----
   override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = {
     if (depsSymbolTable == null) return
-    // Register per target — cached jars become routable, uncached ones stay
-    // unindexed until a file of that target is opened (or a lookup misses).
+    // Register per target — paths only. Nothing is indexed here; lookups index
+    // exactly the jars they need, inline (see IndexedSymbolTable).
     depsByTarget.foreach { case (tid, paths) =>
-      try depsSymbolTable.registerTarget(tid.getUri, paths)
+      try depsSymbolTable.registerTarget(paths)
       catch { case e: Exception => logger.warn(s"registerTarget failed for $tid: ${e.getMessage}", e) }
     }
-    // Catch-up: files already open (their didOpen ran before the handshake) get
-    // their target's deps indexed right away.
-    indexDepsForOpenFiles()
   }
 
   /** Dependency source jars relevant to `uri`: live per-target handshake data when
@@ -211,36 +208,11 @@ class BspManager private (
   }
 
   /** Candidates for a dep/JDK source file (`~/.cache/basamake/deps/<fp>/src/...`):
-    * the jar the file was extracted from, plus the dep context that reached it —
-    * keeps lookups from inside dep files on the right jar (e.g. scala-library
-    * 3.8.4, not the 2.12 that happens to sort first in the global route). */
+    * the jar the file was extracted from (owning jar). */
   private def depFileCandidates(uri: String): List[os.Path] = {
     if (depsSymbolTable == null) return Nil
     val path = try os.Path(java.net.URI.create(uri)) catch { case _: Exception => return Nil }
     depsSymbolTable.candidatesForPath(path)
-  }
-
-  /** Ensure the current file's target deps are indexed (cached → registered, uncached
-    * → background, single-flight). Cheap when already done — call from didOpen/didSave
-    * and the definition/references request threads. */
-  def ensureDepsIndexedFor(uri: String): Unit = {
-    if (depsSymbolTable == null) return
-    val deps = dependencySourcesFor(uri)
-    if (deps.nonEmpty) {
-      try depsSymbolTable.ensureIndexed(deps)
-      catch { case e: Exception => logger.warn(s"ensureIndexed failed: ${e.getMessage}", e) }
-    }
-  }
-
-  /** Index deps of targets holding currently-open files — called after a handshake
-    * delivers dependency sources, so files opened before the handshake still get
-    * their jars indexed without waiting for the next didOpen. */
-  private def indexDepsForOpenFiles(): Unit = {
-    if (workspaceIndex == null) return
-    workspaceIndex.openPaths.foreach { p =>
-      val uriOpt = try Some(p.toNIO.toUri.toString) catch { case _: Exception => None }
-      uriOpt.foreach(ensureDepsIndexedFor)
-    }
   }
 
   private def uriPathUnderRoot(uri: String, root: os.Path): Boolean = {

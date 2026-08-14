@@ -1,7 +1,7 @@
 package ba.sake.basamake.lsp
 
-import java.io.{PipedInputStream, PipedOutputStream}
 import java.net.URI
+import java.nio.channels.Channels
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 import munit.FunSuite
 import org.eclipse.lsp4j.*
@@ -58,11 +58,19 @@ class LspTransportTest extends FunSuite {
       val sibFile = root / "Siblings.scala"
       val mainText = os.read(mainFile)
 
-      // pipes: clientWrite -> serverRead, serverWrite -> clientRead
-      val serverRead = new PipedInputStream(64 * 1024)
-      val clientWrite = new PipedOutputStream(serverRead)
-      val clientRead = new PipedInputStream(64 * 1024)
-      val serverWrite = new PipedOutputStream(clientRead)
+      // Real OS pipes (NIO channels), not PipedInputStream/PipedOutputStream:
+      // the in-memory pipes track the FIRST writer thread and throw "Write end
+      // dead" when it terminates — and LSP responses are written from virtual
+      // threads (completing and dying right after the write), which breaks the
+      // old transport. OS pipes have no thread tracking — same semantics as
+      // Main's real stdin/stdout wiring.
+      // pipes: clientToServer carries requests, serverToClient carries responses
+      val clientToServer = java.nio.channels.Pipe.open()
+      val serverToClient = java.nio.channels.Pipe.open()
+      val serverRead = Channels.newInputStream(clientToServer.source())
+      val clientWrite = Channels.newOutputStream(clientToServer.sink())
+      val clientRead = Channels.newInputStream(serverToClient.source())
+      val serverWrite = Channels.newOutputStream(serverToClient.sink())
 
       val server = new BasamakeLanguageServer(root)
       val serverLauncher = LSPLauncher.createServerLauncher(server, serverRead, serverWrite)
@@ -113,6 +121,8 @@ class LspTransportTest extends FunSuite {
       } finally {
         clientWrite.close() // stdin EOF -> server launcher future completes
         serverWrite.close()
+        serverRead.close()
+        clientRead.close()
         server.cleanup() // idempotent — no-op after shutdown, safe on failure
       }
       serverListening.get(10, TimeUnit.SECONDS)

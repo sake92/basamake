@@ -218,4 +218,25 @@ class SymbolUtilsTest extends FunSuite {
     assertEquals(SymbolUtils.shortNameOf("Unit#"), "Unit")
     assertEquals(SymbolUtils.shortNameOf("utils.getMsg()."), "getMsg")
   }
+
+  test("packageOf: backticked names containing '/' (operator symbols)") {
+    assertEquals(SymbolUtils.packageOf("scala/Byte#`/`()."), Some("scala"))
+    assertEquals(SymbolUtils.packageOf("scala/Int#`/`()."), Some("scala"))
+    assertEquals(SymbolUtils.packageOf("scala/`scala`."), Some("scala"))
+    assertEquals(SymbolUtils.packageOf("scala/Byte#`>=`()."), Some("scala"))
+  }
+
+  test("packageOf: unchanged for normal symbols") {
+    assertEquals(SymbolUtils.packageOf("java/lang/String#"), Some("java.lang"))
+    assertEquals(SymbolUtils.packageOf("com/example/Foo#bar()."), Some("com.example"))
+    assertEquals(SymbolUtils.packageOf("org/apache/commons/net/FTPClient#"), Some("org.apache.commons.net"))
+    assertEquals(SymbolUtils.packageOf("Foo#"), None)
+    assertEquals(SymbolUtils.packageOf("_empty_/Foo#"), None)
+  }
+
+  test("shortNameOf: backticked operator names") {
+    assertEquals(SymbolUtils.shortNameOf("scala/Byte#`/`()."), "`/`")
+    assertEquals(SymbolUtils.shortNameOf("scala/`scala`."), "`scala`")
+    assertEquals(SymbolUtils.shortNameOf("com/example/Outer#`/`()."), "`/`")
+  }
 }

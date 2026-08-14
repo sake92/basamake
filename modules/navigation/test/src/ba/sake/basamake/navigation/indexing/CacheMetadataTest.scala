@@ -8,7 +8,7 @@ class CacheMetadataTest extends FunSuite {
 
   test("save/load roundtrip") {
     val dir = tempDir()
-    val meta = CacheMetadata("/some/path.jar", 12345L, 67890L, List("com.example", "org.apache"), CacheMetadata.FormatVersion)
+    val meta = CacheMetadata("/some/path.jar", 12345L, 67890L, List("com.example", "org.apache"), indexed = true, CacheMetadata.FormatVersion)
     CacheMetadata.save(dir, meta)
     assertEquals(CacheMetadata.load(dir), Some(meta))
   }
@@ -27,7 +27,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello world")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, CacheMetadata.FormatVersion)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, indexed = true, CacheMetadata.FormatVersion)
     assert(CacheMetadata.isValid(meta, src))
   }
 
@@ -35,7 +35,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, CacheMetadata.FormatVersion)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, indexed = true, CacheMetadata.FormatVersion)
     os.write.over(src, "hello world longer")
     assert(!CacheMetadata.isValid(meta, src))
   }
@@ -44,7 +44,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, CacheMetadata.FormatVersion)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, indexed = true, CacheMetadata.FormatVersion)
     Thread.sleep(10)
     os.write.over(src, "hello")
     assert(!CacheMetadata.isValid(meta, src))
@@ -52,7 +52,7 @@ class CacheMetadataTest extends FunSuite {
 
   test("isValid: missing source → false") {
     val dir = tempDir()
-    val meta = CacheMetadata((dir / "gone.jar").toString, 1L, 2L, Nil, CacheMetadata.FormatVersion)
+    val meta = CacheMetadata((dir / "gone.jar").toString, 1L, 2L, Nil, indexed = true, CacheMetadata.FormatVersion)
     assert(!CacheMetadata.isValid(meta, dir / "gone.jar"))
   }
 
@@ -60,21 +60,7 @@ class CacheMetadataTest extends FunSuite {
     val dir = tempDir()
     val src = dir / "lib-sources.jar"
     os.write.over(src, "hello world")
-    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, formatVersion = 0)
+    val meta = CacheMetadata(src.toString, os.size(src), os.mtime(src), Nil, indexed = true, formatVersion = 0)
     assert(!CacheMetadata.isValid(meta, src))
-  }
-
-  test("packagesOf: dotted packages sorted+distinct, default pkg skipped") {
-    val table = new ba.sake.basamake.navigation.InMemorySymbolTable()
-    def defOf(symbol: String) = ba.sake.basamake.navigation.SymbolDefinition(
-      symbol, "x", isType = true,
-      scala.meta.internal.semanticdb.Range(0, 0, 0, 0), os.pwd / "x.scala")
-    table.add(defOf("org/apache/commons/net/FTPClient#"))
-    table.add(defOf("org/apache/commons/net/FTPClient#connect()."))
-    table.add(defOf("org/apache/commons/net/DNS#"))
-    table.add(defOf("com/example/Util#"))
-    table.add(defOf("NoPackage#"))
-
-    assertEquals(CacheMetadata.packagesOf(table), List("com.example", "org.apache.commons.net"))
   }
 }

@@ -242,18 +242,14 @@ class BspConnection private (
     }
   }
 
-  /** Dependency source jars for the BSP targets owning `uri` (source-root match,
+  /** Dependency source jars for the BSP target owning `uri` (source-root match,
     * no RPC — safe to call synchronously from LSP request handlers). Empty when
-    * the connection isn't alive yet (handshake data unavailable — caller falls
-    * back to data.json warm data). */
+    * the connection isn't alive yet (caller falls back to data.json warm data)
+    * or when no target owns the uri — a file outside every source root has NO
+    * authoritative dependency set, and we never guess. */
   def dependencySourcesFor(uri: String): List[os.Path] = {
     if (!alive) return Nil
-    val tids = {
-      val rootMatches = BspConnection.targetIdsForUri(uri, sourceDirsByTarget)
-      if (rootMatches.nonEmpty) rootMatches
-      else if (sourceDirsByTarget.keys.nonEmpty) sourceDirsByTarget.keys.toList // all targets (last resort)
-      else Nil
-    }
+    val tids = BspConnection.targetIdsForUri(uri, sourceDirsByTarget)
     tids.flatMap(tid => dependencySourcesByTarget.getOrElse(tid, Nil)).distinct
   }
 

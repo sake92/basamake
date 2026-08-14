@@ -5,6 +5,7 @@ import ba.sake.basamake.navigation.{SymbolTable, SymbolDefinition, SymbolUtils}
 import scala.meta.internal.semanticdb.Range
 import java.io.{ByteArrayOutputStream, ByteArrayInputStream, DataOutputStream, DataInputStream}
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 
 /** LMDB persistence for dependency indexes. Writes are STREAMED: definitions go
   * straight into LMDB as they are extracted (`streamingSave` + [[SymbolSink]]) —
@@ -17,7 +18,7 @@ import java.nio.ByteBuffer
   * for ONE symbol and closes. Nothing is ever loaded into memory; the RAM saving
   * is the whole point of LMDB here.
   *
-  * Value format (v1, see `CacheMetadata.FormatVersion`):
+  * Value format (versioned by `CacheMetadata.FormatVersion`):
   *   - the symbol is NOT stored in the value — it IS the LMDB key
   *   - the path is always stored src-relative (`java.base/java/lang/Object.java`)
   *     and resolved against `<cacheDir>/src/` at load; no backward compat — a
@@ -57,7 +58,7 @@ object LmdbSerializer {
   /** Write-only `SymbolTable` that puts each definition into LMDB immediately —
     * extractors stream through it while parsing, no in-memory table is built.
     * Mirrors `InMemorySymbolTable.add` semantics: local symbols are skipped.
-    * Exposes `count` + `packages` (for CacheMetadata) after the fill completes. */
+    * Exposes `count` after the fill completes. */
   final class SymbolSink private[LmdbSerializer] (
       txn: Txn[ByteBuffer],
       db: Dbi[ByteBuffer],
@@ -65,7 +66,6 @@ object LmdbSerializer {
   ) extends SymbolTable {
     private val keyBuf = new ReusableDirectBuffer
     private val valBuf = new ReusableDirectBuffer
-    private val packagesSet = scala.collection.mutable.Set.empty[String]
     private var counter = 0
 
     override def add(symDef: SymbolDefinition): Unit = {
@@ -74,7 +74,6 @@ object LmdbSerializer {
       val valueBytes = serialize(symDef, cacheDir)
       db.put(txn, keyBuf.fill(keyBytes), valBuf.fill(valueBytes))
       counter += 1
-      SymbolUtils.packageOf(symDef.symbol).foreach(packagesSet.add)
     }
 
     override def get(symbol: String): Option[SymbolDefinition] = None
@@ -84,12 +83,11 @@ object LmdbSerializer {
     override def all: Set[SymbolDefinition] = Set.empty
 
     def count: Int = counter
-    def packages: Set[String] = packagesSet.toSet
   }
 
   /** Stream `fill`'s definitions straight into LMDB under `indexPath` (atomic
-    * tmp + rename). Returns the sink so the caller can read `count`/`packages`
-    * for metadata. Never builds the full symbol set in memory. */
+    * tmp + rename). Returns the sink so the caller can read `count` for metadata.
+    * Never builds the full symbol set in memory. */
   def streamingSave(indexPath: os.Path, cacheDir: os.Path)(fill: SymbolSink => Unit): SymbolSink = {
     val tmpPath = indexPath / os.up / (indexPath.last + ".tmp")
     os.remove.all(tmpPath)
@@ -144,40 +142,47 @@ object LmdbSerializer {
     ()
   }
 
-  /** Point lookup of one symbol — opens the env per call (mmap, ~µs), never loads
-    * the index into memory. Throws when the env is corrupt/missing (caller decides
-    * how to recover — IndexedSymbolTable wipes and reindexes). Failures include
-    * the env path so a missing/corrupt index is diagnosable from the error. */
-  def get(path: os.Path, symbol: String): Option[SymbolDefinition] = {
-    val env =
-      try {
-        Env.create()
-          .setMapSize(MapSize)
-          .setMaxDbs(1)
-          .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
-      } catch {
-        case e: Exception =>
-          throw new LmdbException(s"Failed to open LMDB env at $path (lookup of '$symbol')", e)
-      }
+  // Serializes env open+query per index path: two threads opening read-only Env
+  // objects on the SAME path in one JVM trip lmdbjava's reader-slot management
+  // (MDB_BAD_RSLOT "Invalid reuse of reader locktable slot"). Queries are µs —
+  // contention is negligible.
+  private val envLocks = new ConcurrentHashMap[os.Path, Object]()
 
-    try {
-      val db = env.openDbi("symbols")
-      val txn = env.txnRead()
-      try {
-        val keyBytes = symbol.getBytes("UTF-8")
-        val keyBuf = keyBufferFor(keyBytes)
-        val valBuf = db.get(txn, keyBuf)
-        if (valBuf == null) None
-        else {
-          val arr = new Array[Byte](valBuf.remaining())
-          valBuf.get(arr)
-          Some(deserialize(arr, symbol, path))
+  /** Point lookup of one symbol — opens the env per call (mmap, ~µs), never loads
+    * the index into memory. Throws when the env is corrupt/missing (the caller
+    * logs and returns None — there is no corruption recovery; atomic tmp+rename
+    * publishing and CacheMetadata version/staleness checks keep indexes trustworthy). */
+  def get(path: os.Path, symbol: String): Option[SymbolDefinition] =
+    envLocks.computeIfAbsent(path, _ => new Object).synchronized {
+      val env =
+        try {
+          Env.create()
+            .setMapSize(MapSize)
+            .setMaxDbs(1)
+            .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
+        } catch {
+          case e: Exception =>
+            throw new LmdbException(s"Failed to open LMDB env at $path (lookup of '$symbol')", e)
         }
-      } finally txn.close()
-    } finally {
-      env.close()
+
+      try {
+        val db = env.openDbi("symbols")
+        val txn = env.txnRead()
+        try {
+          val keyBytes = symbol.getBytes("UTF-8")
+          val keyBuf = keyBufferFor(keyBytes)
+          val valBuf = db.get(txn, keyBuf)
+          if (valBuf == null) None
+          else {
+            val arr = new Array[Byte](valBuf.remaining())
+            valBuf.get(arr)
+            Some(deserialize(arr, symbol, path))
+          }
+        } finally txn.close()
+      } finally {
+        env.close()
+      }
     }
-  }
 
   /** Per-thread reusable key buffer (grows on demand). Safe: the value buffer
     * returned by `db.get` aliases THIS buffer's memory, but callers copy the

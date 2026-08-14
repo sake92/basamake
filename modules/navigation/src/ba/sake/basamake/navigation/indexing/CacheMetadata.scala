@@ -7,14 +7,18 @@ import ba.sake.tupson.{given, *}
   * `sourceSize`/`sourceMtime` validate the cache against the source file on disk
   * (cheap staleness check — no content hashing). `packages` lists every dotted
   * package found in the index, used to route symbol lookups to the right indexes
-  * without opening them (see IndexedSymbolTable). `formatVersion` guards the LMDB
-  * on-disk format — mismatched/absent versions reindex instead of misreading.
+  * without opening them (see IndexedSymbolTable). `indexed` marks a fully built
+  * LMDB index — false means package-only metadata (derived from the classes jar)
+  * with no index yet, so it must never be treated as a cache hit. `formatVersion`
+  * guards the LMDB on-disk format — mismatched/absent versions reindex instead of
+  * misreading.
   */
 final case class CacheMetadata(
     sourcePath: String,
     sourceSize: Long,
     sourceMtime: Long,
     packages: List[String],
+    indexed: Boolean, // false = package-only metadata (from the classes jar), no LMDB yet
     formatVersion: Int
 ) derives JsonRW
 
@@ -24,7 +28,7 @@ object CacheMetadata {
 
   /** Bump when LmdbSerializer's on-disk value format changes (see LmdbSerializer).
     * No backward compat — a mismatch invalidates the cache and triggers a reindex. */
-  val FormatVersion = 1
+  val FormatVersion = 1 // bump when the LMDB value format changes; old caches reindex once
 
   /** Read metadata from the cache dir. None when missing or corrupt. */
   def load(cacheDir: os.Path): Option[CacheMetadata] = {
@@ -50,10 +54,4 @@ object CacheMetadata {
   def isValid(meta: CacheMetadata, source: os.Path): Boolean =
     meta.formatVersion == FormatVersion &&
       os.exists(source) && os.size(source) == meta.sourceSize && os.mtime(source) == meta.sourceMtime
-
-  /** Dotted packages of all global symbols in a table, sorted + distinct.
-    * Symbols in the default package are skipped (they aren't routable). */
-  def packagesOf(table: ba.sake.basamake.navigation.SymbolTable): List[String] = {
-    table.all.iterator.flatMap(d => ba.sake.basamake.navigation.SymbolUtils.packageOf(d.symbol)).toList.distinct.sorted
-  }
 }
