@@ -95,9 +95,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         workspaceIndexingDone.set(true)
       }
     })
-    // Dependency sources are NOT indexed eagerly: lookups index exactly the jars
-    // they need, inline. The JDK index runs on its OWN background thread — its
-    // first progress event must not fire on the initialize thread (the client's
+    // Dependency sources are NOT indexed eagerly: lookups fast-miss on cold jars
+    // and index exactly the jars they need in the background (single-flight,
+    // bounded). The JDK index runs on its OWN background thread — its first
+    // progress event must not fire on the initialize thread (the client's
     // window/workDoneProgress/create handler only exists after the handshake).
     Thread.ofVirtual().start(() => {
       try {

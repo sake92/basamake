@@ -74,7 +74,7 @@ object SourceJarIndexer extends StrictLogging {
       case _ => ()
     }
 
-    logger.info(s"Indexing ${source.last} ($fingerprint) into $cacheDir")
+    logger.info(s"Indexing ${displayName(source)} ($fingerprint) into $cacheDir")
     os.remove.all(cacheDir)
     val srcRoot = cacheDir / "src"
 
@@ -104,7 +104,7 @@ object SourceJarIndexer extends StrictLogging {
                 case NonFatal(e) =>
                   logger.warn(s"Skipping unindexable entry ${entry.getName} in $source: ${e.getMessage}")
               }
-              progress(doneEntries, totalEntries, source.last)
+              progress(doneEntries, totalEntries, displayName(source))
             }
           }
         }
@@ -127,11 +127,20 @@ object SourceJarIndexer extends StrictLogging {
     if (sink.count == 0) {
       // e.g. some scala3-library artifacts publish EMPTY -sources jars (stub
       // with only META-INF/MANIFEST.MF) — the index is built but resolves nothing
-      logger.warn(s"Indexed 0 symbols from ${source.last} — the sources jar may be an empty stub")
+      logger.warn(s"Indexed 0 symbols from ${displayName(source)} — the sources jar may be an empty stub")
     } else {
-      logger.info(s"Indexed ${sink.count} symbols from ${source.last}")
+      logger.info(s"Indexed ${sink.count} symbols from ${displayName(source)}")
     }
   }
+
+  /** User-facing source name: maven coordinates (`groupId:artifactId:version`)
+    * when the jar sits in a coursier-style maven cache, else the file name
+    * (e.g. the JDK `src.zip`). */
+  def displayName(source: os.Path): String =
+    Fingerprint.mavenCoordinates(source) match {
+      case Some((group, artifact, version)) => s"$group:$artifact:$version"
+      case None                             => source.last
+    }
 
   /** Unpack ONE source entry into `<cacheDir>/src/<entryPath>`. Idempotent — no-op
     * when the file already exists. Atomic per-file write (tmp sibling + rename). */

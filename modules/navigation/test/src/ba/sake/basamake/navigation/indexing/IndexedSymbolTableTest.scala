@@ -38,16 +38,126 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     sourcesJar
   }
 
-  test("candidate lookup resolves symbols from an uncached jar (inline indexing)") {
+  /** A bigger jar pair (`entries` classes) — used to hold a background-index
+    * permit long enough for deterministic timing tests. */
+  private def writeBigJar(dir: os.Path, name: String, pkg: String, entries: Int): os.Path = {
+    val sourcesJar = dir / name
+    val pkgPath = pkg.replace('.', '/')
+    val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
+    try {
+      (0 until entries).foreach { i =>
+        sources.putNextEntry(new ZipEntry(s"$pkgPath/Foo$i.java"))
+        sources.write(s"package $pkg;\npublic class Foo$i { public void bar() {} }\n".getBytes("UTF-8"))
+        sources.closeEntry()
+      }
+    } finally sources.close()
+    val classesJar = dir / (name.stripSuffix("-sources.jar") + ".jar")
+    val classes = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
+    try {
+      (0 until entries).foreach { i =>
+        classes.putNextEntry(new ZipEntry(s"$pkgPath/Foo$i.class")); classes.write(Array[Byte](1, 2)); classes.closeEntry()
+      }
+    } finally classes.close()
+    sourcesJar
+  }
+
+  test("candidate lookup fast-misses an uncached jar and resolves after the background index") {
     val tempDir = os.temp.dir()
     val jar = writeJarPair(tempDir, "test-sources.jar", "com.example")
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
     val deps = new IndexedSymbolTable
-    // cold cache — the lookup itself must index the jar INLINE and resolve synchronously
-    assert(deps.get("com/example/Foo#", List(jar)).isDefined, "uncached jar must resolve right after the first lookup")
-    assert(os.isDir(cacheDir(fingerprint) / "index.lmdb"), "the inline index must exist on disk after the lookup")
+    // cold cache — the lookup must NOT index inline (that was the "goto-def
+    // into deps blocks" bug): it misses fast and indexes in the background
+    assert(deps.get("com/example/Foo#", List(jar)).isEmpty, "cold lookup must be a fast miss, not a block")
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined),
+      "must resolve once the background index is ready")
+    assert(os.isDir(cacheDir(fingerprint) / "index.lmdb"), "the background index must exist on disk")
+  }
+
+  test("fast miss is deterministic while the global index permit is held") {
+    val tempDir = os.temp.dir()
+    val busyJar = writeBigJar(tempDir, "busy-sources.jar", "com.busy", entries = 400)
+    val targetJar = writeJarPair(tempDir, "target-sources.jar", "com.target")
+    val busyFp = Fingerprint.fromJarPath(busyJar)
+    val targetFp = Fingerprint.fromJarPath(targetJar)
+    cleanCache(busyFp)
+    cleanCache(targetFp)
+
+    val deps = new IndexedSymbolTable
+    deps.maxConcurrentIndexes = 1 // only one background index may run at a time
+    deps.registerTarget(List(busyJar, targetJar))
+
+    // trigger the slow busy index first — it now holds the only permit
+    assert(deps.get("com/busy/Foo0#", List(busyJar)).isEmpty, "busy jar lookup must fast-miss")
+    // the target jar's background index parks on the permit; the lookup must
+    // return None rather than block on indexing
+    assert(deps.get("com/target/Foo#", List(targetJar)).isEmpty, "lookup must never block on indexing")
+    assert(eventually(deps.get("com/target/Foo#", List(targetJar)).isDefined),
+      "target must resolve once the permit frees")
+    assert(eventually(deps.get("com/busy/Foo0#", List(busyJar)).isDefined), "busy jar must resolve too")
+  }
+
+  test("concurrent lookups for the same jar trigger exactly one background index") {
+    val tempDir = os.temp.dir()
+    val jar = writeJarPair(tempDir, "test-sources.jar", "com.example")
+    val fingerprint = Fingerprint.fromJarPath(jar)
+    cleanCache(fingerprint)
+
+    val deps = new IndexedSymbolTable
+    deps.registerTarget(List(jar))
+    val threads = (0 until 8).map { _ =>
+      Thread.ofVirtual().start(() => deps.get("com/example/Foo#", List(jar)))
+    }
+    threads.foreach(_.join(10_000))
+    assertEquals(deps.backgroundIndexStarts.get(), 1,
+      s"expected exactly 1 background index for 8 concurrent lookups, got ${deps.backgroundIndexStarts.get()}")
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined), "must resolve after the single index")
+  }
+
+  test("global cap: at most maxConcurrentIndexes indexes run at once") {
+    val tempDir = os.temp.dir()
+    val jars = (0 until 3).map(i => writeBigJar(tempDir, s"cap-$i-sources.jar", s"com.cap$i", entries = 100)).toList
+    val fps = jars.map(Fingerprint.fromJarPath)
+    fps.foreach(cleanCache)
+
+    val deps = new IndexedSymbolTable
+    deps.maxConcurrentIndexes = 1
+    deps.registerTarget(jars)
+    jars.zipWithIndex.foreach { case (jar, i) => deps.get(s"com/cap$i/Foo0#", List(jar)) }
+
+    // wait until all 3 finish, tracking the peak concurrent index count
+    var peak = 0
+    val deadline = System.currentTimeMillis() + 30000
+    while (fps.exists(f => !os.isDir(cacheDir(f) / "index.lmdb")) && System.currentTimeMillis() < deadline) {
+      peak = math.max(peak, deps.activeIndexCount.get())
+      Thread.sleep(20)
+    }
+    assert(fps.forall(f => os.isDir(cacheDir(f) / "index.lmdb")), "all 3 jars must be indexed")
+    assertEquals(peak, 1, s"cap=1 must serialize indexes; peak concurrency was $peak")
+  }
+
+  test("a failed background index is retried by a later lookup") {
+    val tempDir = os.temp.dir()
+    val jar = tempDir / "broken-sources.jar"
+    val fingerprint = Fingerprint.fromJarPath(jar)
+    cleanCache(fingerprint)
+    os.write.over(jar, "this is not a zip file") // SourceJarIndexer.index() will fail
+
+    val deps = new IndexedSymbolTable
+    deps.registerTarget(List(jar))
+    assertEquals(deps.get("com/example/Foo#", List(jar)), None, "corrupt source jar must miss")
+    // wait for the failed background index to finish (it unmarks the fingerprint)
+    val deadline = System.currentTimeMillis() + 5000
+    while (deps.backgroundIndexStarts.get() < 1 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+    assert(deps.backgroundIndexStarts.get() >= 1, "the failed index must have been attempted")
+
+    // repair the jar and look up again — the retry must succeed
+    writeJarPair(tempDir, "broken-sources.jar", "com.example")
+    assert(deps.get("com/example/Foo#", List(jar)).isEmpty, "still cold — fast miss again")
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined), "a later lookup must retry and resolve")
+    assert(deps.backgroundIndexStarts.get() >= 2, "the repaired jar must trigger a fresh index attempt")
   }
 
   test("does not consult indexes for unmatched packages") {
@@ -63,7 +173,8 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     assertEquals(deps.get("org/other/Bar#", List(jar)), None)
     assert(!os.isDir(cacheDir(fingerprint) / "index.lmdb"), "unmatched package must not index the jar")
     assertEquals(deps.get("com/example/Foo#zzz.", List(jar)), None)
-    assert(os.isDir(cacheDir(fingerprint) / "index.lmdb"), "jar was indexed even though the lookup missed")
+    assert(eventually(os.isDir(cacheDir(fingerprint) / "index.lmdb")),
+      "jar must be indexed in background even though the lookup missed")
   }
 
   test("default-package symbols are not resolvable") {
@@ -80,7 +191,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
     val deps = new IndexedSymbolTable
     deps.registerTarget(List(jar)) // registers the source for lazy extraction
-    assert(deps.get("com/example/Foo#", List(jar)).isDefined)
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined), "must resolve after the background index")
 
     // the hit must have extracted the file the def lives in (entries are stored
     // under the package path: <cacheRoot>/<fingerprint>/src/com/example/Foo.java)
@@ -105,7 +216,8 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
     assert(!os.isDir(cacheDir(fingerprint) / "index.lmdb"), "registerTarget must NOT create an index")
 
-    assert(deps.get("com/example/Foo#", List(jar)).isDefined, "a lookup must index inline and resolve")
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined),
+      "a lookup must resolve after the background index")
     assert(CacheMetadata.load(cacheDir(fingerprint)).map(_.indexed).contains(true),
       "the full index must upgrade the metadata to indexed=true")
   }
@@ -148,7 +260,8 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     while (System.currentTimeMillis() < deadline) Thread.sleep(50)
     assert(!os.exists(cacheDir(fingerprint) / "metadata.json"), "no classes sibling → no package-only metadata")
 
-    assert(deps.get("com/example/Foo#", List(jar)).isDefined, "unfilterable jar must be indexed on first lookup")
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined),
+      "unfilterable jar must be indexed in background on first lookup")
     assert(CacheMetadata.load(cacheDir(fingerprint)).map(_.indexed).contains(true),
       "the full index must write accurate metadata afterwards")
   }
@@ -164,6 +277,8 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintB)
 
     val deps = new IndexedSymbolTable
+    assert(eventually(deps.get("com/example/Foo#fromA().", List(jarA)).isDefined), "jarA must resolve")
+    assert(eventually(deps.get("com/example/Foo#fromB().", List(jarB)).isDefined), "jarB must resolve")
     val inA = deps.get("com/example/Foo#fromA().", List(jarA)).map(_.path).get
     val inB = deps.get("com/example/Foo#fromB().", List(jarB)).map(_.path).get
     assert(inA.startsWith(cacheDir(fingerprintA)), s"expected def from jarA, got $inA")
@@ -178,7 +293,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprint)
 
     val deps = new IndexedSymbolTable
-    assert(deps.get("com/example/Foo#", List(jar)).isDefined) // index it
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined), "must index before corrupting")
     val indexPath = cacheDir(fingerprint) / "index.lmdb"
     os.remove.all(indexPath)
     os.write.over(indexPath, "garbage not an lmdb") // corrupt it
@@ -208,7 +323,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
     val deps = new IndexedSymbolTable
     deps.registerTarget(List(jar))
-    assert(deps.get("com/example/Foo#", List(jar)).isDefined)
+    assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined))
 
     // the resolved def path IS a dep source file — its owning jar must come back
     val depFile = deps.get("com/example/Foo#", List(jar)).map(_.path).get
@@ -237,6 +352,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
     val warmer = new IndexedSymbolTable
     warmer.registerTarget(List(jar))
+    assert(eventually(warmer.get("com/example/Foo#", List(jar)).isDefined), "warm index must exist")
     val depFile = warmer.get("com/example/Foo#", List(jar)).map(_.path).get
     assert(os.exists(depFile), "extracted source should exist on disk")
 

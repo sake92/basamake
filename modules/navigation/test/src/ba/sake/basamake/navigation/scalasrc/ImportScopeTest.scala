@@ -165,4 +165,49 @@ class ImportScopeTest extends FunSuite {
       case _ => fail("parse failed")
     }
   }
+
+  test("unresolved importee with a package prefix emits type+term candidates (dep fallback)") {
+    // `import sttp.client3.{HttpError, SttpBackend}` — nothing in the WORKSPACE
+    // table; the importee must still emit BOTH plausible symbols so the dep
+    // index can answer the goto-def (source-parse mode)
+    val code = "import sttp.client3.{HttpError, SttpBackend}"
+    val input = Input.String(code)
+    val tree = { given Dialect = Scala3Future; input.parse[Stat] }
+    tree match {
+      case Parsed.Success(imp: Import) =>
+        val st = new InMemorySymbolTable
+        val ss = new ScopeStack(st)
+        val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
+        val scopes = ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
+        assert(scopes.head.explicit.isEmpty, "no workspace symbol → no explicit binding")
+        assert(emitted.contains(("HttpError", "sttp/client3/HttpError#")),
+          s"type candidate missing: $emitted")
+        assert(emitted.contains(("HttpError", "sttp/client3/HttpError.")),
+          s"term candidate missing: $emitted")
+        assert(emitted.contains(("SttpBackend", "sttp/client3/SttpBackend#")),
+          s"type candidate missing: $emitted")
+        assert(emitted.contains(("SttpBackend", "sttp/client3/SttpBackend.")),
+          s"term candidate missing: $emitted")
+      case _ => fail("parse failed")
+    }
+  }
+
+  test("unresolved importee with a TERM (non-package) prefix stays unresolved") {
+    // `import a.b.C` where `a/b.` is a workspace object — the prefix is a term
+    // owner, NOT a package path, so no dep candidates are invented
+    val code = "import a.b.C"
+    val input = Input.String(code)
+    val tree = { given Dialect = Scala3Future; input.parse[Stat] }
+    tree match {
+      case Parsed.Success(imp: Import) =>
+        val st = new InMemorySymbolTable
+        st.add(SymbolDefinition("a/b.", "b", isType = false, new Range(0,0,0,0), os.pwd / "dummy.scala"))
+        val ss = new ScopeStack(st)
+        val emitted = scala.collection.mutable.ListBuffer.empty[(String, String)]
+        ImportScope.parse(imp, ss, (t, sym) => emitted += ((t.syntax, sym)))
+        assert(emitted.contains(("C", "")), s"expected empty-symbol miss, got $emitted")
+        assert(!emitted.exists(e => e._1 == "C" && e._2.nonEmpty), s"no candidates may be invented: $emitted")
+      case _ => fail("parse failed")
+    }
+  }
 }

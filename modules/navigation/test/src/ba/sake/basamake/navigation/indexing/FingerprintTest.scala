@@ -116,4 +116,37 @@ class FingerprintTest extends FunSuite {
     val fp2 = Fingerprint.fromJarPath(jar)
     assertEquals(fp1, fp2, "fingerprint must come from the memo, not a fresh POM parse")
   }
+
+  test("mavenCoordinates: groupId from sibling POM, artifact+version from filename") {
+    val base = os.temp.dir() / "com/softwaremill/sttp/client3/core_3/3.11.0"
+    os.makeDir.all(base)
+    val jar = base / "core_3-3.11.0-sources.jar"
+    os.write.over(jar, "dummy")
+    os.write.over(base / "core_3-3.11.0.pom",
+      "<project><groupId>com.softwaremill.sttp.client3</groupId><artifactId>core_3</artifactId><version>3.11.0</version></project>")
+
+    assertEquals(Fingerprint.mavenCoordinates(jar), Some(("com.softwaremill.sttp.client3", "core_3", "3.11.0")))
+  }
+
+  test("mavenCoordinates: version with dash is kept whole") {
+    val base = os.temp.dir() / "org/example/foo/1.0.0-M1"
+    os.makeDir.all(base)
+    val jar = base / "foo-1.0.0-M1-sources.jar"
+    os.write.over(jar, "dummy")
+    os.write.over(base / "foo-1.0.0-M1.pom",
+      "<project><groupId>org.example</groupId><artifactId>foo</artifactId><version>1.0.0-M1</version></project>")
+
+    assertEquals(Fingerprint.mavenCoordinates(jar), Some(("org.example", "foo", "1.0.0-M1")))
+  }
+
+  test("mavenCoordinates: None without a sibling POM, for plain jars, and for src.zip") {
+    val noPom = os.Path("/tmp/whatever/antlr4-runtime/4.7.2/antlr4-runtime-4.7.2-sources.jar")
+    assertEquals(Fingerprint.mavenCoordinates(noPom), None)
+
+    val plainJar = os.Path("/tmp/libs/lib.jar")
+    assertEquals(Fingerprint.mavenCoordinates(plainJar), None)
+
+    val srcZip = os.Path("/opt/jdk/lib/src.zip")
+    assertEquals(Fingerprint.mavenCoordinates(srcZip), None)
+  }
 }

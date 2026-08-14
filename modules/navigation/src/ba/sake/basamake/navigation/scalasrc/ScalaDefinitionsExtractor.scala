@@ -130,12 +130,24 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
               case _ => false
             },
             ovl, c.name.pos)
+        // `implicit class Foo(...)` desugars to class Foo + an implicit conversion
+        // method `Foo(...)` — semanticdb records the IMPORTEE of an implicit class
+        // as that METHOD symbol (`pkg/Outer#Foo().`, `pkg/Foo().`), so the index
+        // must hold it too (Scala 2 and Scala 3 compilers both emit this shape).
+        if (c.mods.exists(_.isInstanceOf[Mod.Implicit])) {
+          val convIdx = bumpOvl(ovl, owner, c.name.value)
+          addSymbol(SymbolUtils.methodSymbol(owner, c.name.value, convIdx), c.name.value, isType = false, c.name.pos)
+        }
         extractStats(c.templ.stats, sym, ovl, None)
 
       // ── trait ─────────────────────────────────────────────────
       case t: Defn.Trait =>
         val sym = SymbolUtils.typeSymbol(owner, t.name.value)
         addSymbol(sym, t.name.value, isType = true, t.name.pos)
+        // Scala 3 creates a synthetic companion for traits — semanticdb records
+        // the IMPORTEE of a trait as the TERM symbol (`pkg/Trait.`), so the
+        // index must hold it alongside the type (usage sites use `Trait#`).
+        addSymbol(SymbolUtils.termSymbol(owner, t.name.value), t.name.value, isType = false, t.name.pos)
         val ctorIdx = bumpOvl(ovl, sym, "<init>")
         addSymbol(SymbolUtils.constructorSymbol(sym, ctorIdx), "<init>", isType = false, t.name.pos)
         emitTypeParams(sym, t.tparams, t.name.pos)

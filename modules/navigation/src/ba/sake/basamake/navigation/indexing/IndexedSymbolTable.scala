@@ -13,8 +13,9 @@ import ba.sake.basamake.navigation.{SymbolDefinition, SymbolUtils}
   *      metadata (from the classes jar) is sprinkled eagerly by `registerTarget`;
   *      a full index replaces it with parse-accurate packages.
   *   3. Only jars whose packages include the symbol's package are touched — a
-  *      matching jar without an index is fully indexed INLINE (one-time cost,
-  *      persisted) and its source files stay unpacked until a lookup hits them.
+  *      matching jar without an index is indexed IN THE BACKGROUND (single-flight
+  *      per jar, globally bounded, progress events) while the lookup misses fast;
+  *      its source files stay unpacked until a lookup hits them.
   *   4. `LmdbSerializer.get` does one exact LMDB point query per matching jar.
   *   5. The first hit wins; if no candidate jar hits, the lookup ends with
   *      `None` — there is NO fallback search.
@@ -46,6 +47,21 @@ class IndexedSymbolTable(
   private val noSourceFingerprints = ConcurrentHashMap.newKeySet[String]()
   // fingerprints whose LMDB query failed — warn once per session, not per lookup
   private val queryFailureWarned = ConcurrentHashMap.newKeySet[String]()
+  // fingerprints with a background index in flight (single-flight per jar:
+  // a duplicate trigger is a no-op, and a FAILED index unmarks so a later
+  // lookup retries)
+  private val indexingInProgress = ConcurrentHashMap.newKeySet[String]()
+  /** Max concurrent background jar/JDK indexes. Default: leave one CPU for the
+    * build server and interactive work, capped at 4 — beyond that jar parsing
+    * is memory-bandwidth bound, not CPU bound, and would starve a parallel
+    * scalac compile of the machine. Tests lower it to prove the cap. */
+  @volatile var maxConcurrentIndexes: Int =
+    math.max(1, math.min(Runtime.getRuntime.availableProcessors() - 1, 4))
+  private lazy val indexPermits = new java.util.concurrent.Semaphore(maxConcurrentIndexes)
+  /** Background indexes currently running (test instrumentation). */
+  private[indexing] val activeIndexCount = new java.util.concurrent.atomic.AtomicInteger(0)
+  /** Background index spawns (test instrumentation). */
+  private[indexing] val backgroundIndexStarts = new java.util.concurrent.atomic.AtomicInteger(0)
 
   /** JDK sources zip + its fingerprint — implicit candidate for every lookup. */
   private val jdkSource: Option[(os.Path, String)] = {
@@ -81,18 +97,7 @@ class IndexedSymbolTable(
       sourcesByFingerprint.put(fingerprint, srcZip)
       if !isFullyIndexed(fingerprint) then {
         logger.info(s"Indexing JDK sources $srcZip in background")
-        Thread.ofVirtual().start(() => {
-          try {
-            SourceJarIndexer.index(srcZip, fingerprint, (done, total, name) =>
-              progressListener.onProgress(IndexingPhase.Jdk, done, total, name))
-            indexedFingerprints.add(fingerprint)
-            accuratePackages(fingerprint).foreach(packagesByFingerprint.put(fingerprint, _))
-          } catch {
-            case NonFatal(e) =>
-              logger.warn(s"Failed to index JDK sources: ${e.getMessage}")
-              progressListener.onProgress(IndexingPhase.Jdk, 1, 1, "JDK sources failed")
-          }
-        })
+        startBackgroundIndex(fingerprint, srcZip, IndexingPhase.Jdk)
       }
     }
   }
@@ -224,28 +229,58 @@ class IndexedSymbolTable(
     }
   }
 
-  /** Full index of one jar, inline (blocking) — the one-time cost of a first
-    * lookup into an uncached jar. No-op when already indexed. Concurrent
-    * callers of the same jar serialize on SourceJarIndexer's per-fingerprint
-    * ReentrantLock. The JDK is the exception: only the startup background
+  /** Fast path: returns true only when the jar's index is usable NOW (in-memory
+    * or on disk from an earlier session/server). A cold jar is NEVER indexed
+    * inline — the lookup misses fast and the index is built on a background
+    * virtual thread. The JDK is the exception: only the startup background
     * thread (ensureJdkIndexed) indexes it — a cold JDK lookup is a fast
-    * transient miss instead of a minutes-long inline block. */
+    * transient miss instead of a minutes-long block. */
   private def ensureIndexed(fingerprint: String, src: os.Path): Boolean =
     if indexedFingerprints.contains(fingerprint) then true
     else if jdkSource.exists(_._2 == fingerprint) && !isFullyIndexed(fingerprint) then false
-    else {
-      try {
-        SourceJarIndexer.index(src, fingerprint, (done, total, name) =>
-          progressListener.onProgress(IndexingPhase.Dependencies, done, total, name))
-        indexedFingerprints.add(fingerprint)
-        accuratePackages(fingerprint).foreach(packagesByFingerprint.put(fingerprint, _))
-        true
-      } catch {
-        case NonFatal(e) =>
-          logger.warn(s"Failed to index $src: ${e.getMessage}")
-          progressListener.onProgress(IndexingPhase.Dependencies, 1, 1, s"Indexing failed: ${src.last}")
-          false
-      }
+    else if isFullyIndexed(fingerprint) then { // indexed by an earlier session/server
+      indexedFingerprints.add(fingerprint)
+      true
+    } else {
+      startBackgroundIndex(fingerprint, src, IndexingPhase.Dependencies)
+      false
+    }
+
+  /** Single-flight background index of one jar, triggered by the first lookup
+    * that needs it (the JDK uses the same path from ensureJdkIndexed).
+    * Later lookups miss fast until the index is ready. Concurrency: at most
+    * `maxConcurrentIndexes` sources index at once (global semaphore — virtual
+    * threads park on it, no carrier pinning); the same fingerprint never
+    * indexes twice (indexingInProgress set). A failed index unmarks the
+    * fingerprint so a later lookup retries. Cross-server races on the shared
+    * cache dir are still serialized by SourceJarIndexer's per-fingerprint
+    * ReentrantLock. */
+  private def startBackgroundIndex(fingerprint: String, src: os.Path, phase: IndexingPhase): Unit =
+    if indexingInProgress.add(fingerprint) then {
+      backgroundIndexStarts.incrementAndGet()
+      Thread.ofVirtual().start(() => {
+        try {
+          // uninterruptible park: these threads are never interrupted (same
+          // reasoning as SourceJarIndexer's ReentrantLock — park, don't pin)
+          indexPermits.acquireUninterruptibly()
+          try {
+            activeIndexCount.incrementAndGet()
+            SourceJarIndexer.index(src, fingerprint, (done, total, name) =>
+              progressListener.onProgress(phase, done, total, name))
+            indexedFingerprints.add(fingerprint)
+            accuratePackages(fingerprint).foreach(packagesByFingerprint.put(fingerprint, _))
+          } finally {
+            activeIndexCount.decrementAndGet()
+            indexPermits.release()
+          }
+        } catch {
+          case NonFatal(e) =>
+            logger.warn(s"Failed to index $src: ${e.getMessage}")
+            progressListener.onProgress(phase, 1, 1, s"Indexing failed: ${src.last}")
+        } finally {
+          indexingInProgress.remove(fingerprint)
+        }
+      })
     }
 
   /** Lazy per-file unpacking: indexes are built eagerly (LMDB only), but individual

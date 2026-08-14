@@ -54,8 +54,8 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintB)
 
     val deps = new IndexedSymbolTable
-    // precondition: jarB DOES hold the symbol
-    assert(deps.get("com/foo/Foo#targetOnly().", List(jarB)).isDefined, "jarB must hold the symbol")
+    // precondition: jarB DOES hold the symbol (warmed via background indexing)
+    assert(eventually(deps.get("com/foo/Foo#targetOnly().", List(jarB)).isDefined), "jarB must hold the symbol")
 
     // target dep jarA does not contain it → None (jarB is out of scope)
     assertEquals(deps.get("com/foo/Foo#targetOnly().", List(jarA)), None)
@@ -79,7 +79,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
       os.exists(cacheDir(fingerprintA) / "metadata.json") && os.exists(cacheDir(fingerprintB) / "metadata.json")),
       "both metadata.json files must be sprinkled")
 
-    assert(deps.get("com/foo/Foo#", List(jarA, jarB)).map(_.path).exists(_.startsWith(cacheDir(fingerprintA))),
+    assert(eventually(deps.get("com/foo/Foo#", List(jarA, jarB)).isDefined),
       "must resolve from the package-matching jar A")
     assert(!os.isDir(cacheDir(fingerprintB) / "index.lmdb"), "jar B was indexed despite its metadata lacking the package")
 
@@ -97,7 +97,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintA)
 
     val deps = new IndexedSymbolTable
-    assert(deps.get("com/foo/Foo#", List(jarA)).isDefined, "jarA must index and resolve")
+    assert(eventually(deps.get("com/foo/Foo#", List(jarA)).isDefined), "jarA must index and resolve")
 
     assertEquals(deps.get("com/foo/DoesNotExist#", List(jarA)), None, "a miss must return None, no fallback")
   }
@@ -112,8 +112,10 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintB)
 
     val deps = new IndexedSymbolTable
+    assert(eventually(deps.get("com/foo/Foo#fromB().", List(jarA, jarB)).isDefined), "fromB must resolve")
     val inB = deps.get("com/foo/Foo#fromB().", List(jarA, jarB)).map(_.path).get
     assert(inB.startsWith(cacheDir(fingerprintB)), s"expected def from jarB, got $inB")
+    assert(eventually(deps.get("com/foo/Foo#fromA().", List(jarA, jarB)).isDefined), "fromA must resolve")
     val inA = deps.get("com/foo/Foo#fromA().", List(jarA, jarB)).map(_.path).get
     assert(inA.startsWith(cacheDir(fingerprintA)), s"expected def from jarA, got $inA")
   }
@@ -128,8 +130,8 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintB)
 
     val deps = new IndexedSymbolTable
-    // precondition: jarB DOES hold the symbol
-    assert(deps.get("com/foo/Foo#onlyHere().", List(jarB)).isDefined, "jarB must hold the symbol")
+    // precondition: jarB DOES hold the symbol (warmed via background indexing)
+    assert(eventually(deps.get("com/foo/Foo#onlyHere().", List(jarB)).isDefined), "jarB must hold the symbol")
 
     // jarB is out of scope even though it holds the symbol and shares the package
     assertEquals(deps.get("com/foo/Foo#onlyHere().", List(jarA)), None)
@@ -153,13 +155,18 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     assert(jars.forall(j => !os.isDir(cacheDir(Fingerprint.fromJarPath(j)) / "index.lmdb")),
       "registerTarget must NOT index any jar")
 
+    assert(eventually(deps.get("com/foo/Foo#", jars).isDefined),
+      "must resolve from matchingHit after background indexing")
     val hit = deps.get("com/foo/Foo#", jars).map(_.path).get
     assert(hit.startsWith(cacheDir(Fingerprint.fromJarPath(matchingHit))), s"expected def from matchingHit, got $hit")
 
-    val indexedFingerprints = jars.map(Fingerprint.fromJarPath).filter(fingerprint => os.isDir(cacheDir(fingerprint) / "index.lmdb")).toSet
-    assertEquals(indexedFingerprints,
-      Set(Fingerprint.fromJarPath(matchingMiss), Fingerprint.fromJarPath(matchingHit)),
-      "exactly the 2 package-matching jars must be indexed")
+    // both package-matching jars get indexed in the background; the irrelevant
+    // 8 are NEVER indexed (package filter) — poll until the second matching
+    // jar's background index has finished, then the set is stable
+    assert(eventually {
+      val indexed = jars.map(Fingerprint.fromJarPath).filter(fingerprint => os.isDir(cacheDir(fingerprint) / "index.lmdb")).toSet
+      indexed == Set(Fingerprint.fromJarPath(matchingMiss), Fingerprint.fromJarPath(matchingHit))
+    }, "exactly the 2 package-matching jars must be indexed")
   }
 
   test("100 candidate jars: only the 2 package-matching jars are ever indexed or queried") {
@@ -177,13 +184,13 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     assert(eventually(jars.forall(j => os.exists(cacheDir(Fingerprint.fromJarPath(j)) / "metadata.json"))),
       "registerTarget must sprinkle metadata for all 100 jars")
 
-    // pre-index the 2 matching jars
-    assert(deps.get("com/foo/Foo#", List(jars(0), jars(1))).isDefined, "the 2 matching jars must resolve")
+    // pre-index the 2 matching jars (background)
+    assert(eventually(deps.get("com/foo/Foo#", List(jars(0), jars(1))).isDefined), "the 2 matching jars must resolve")
 
     // the 98 irrelevant jars come FIRST in candidate order — the package filter
     // must skip them without ever touching their indexes
     val lookupOrder = jars.drop(2) ++ jars.take(2)
-    assert(deps.get("com/foo/Foo#", lookupOrder).isDefined, "lookup must skip irrelevant jars via package filter")
+    assert(eventually(deps.get("com/foo/Foo#", lookupOrder).isDefined), "lookup must skip irrelevant jars via package filter")
     assert(fingerprints.drop(2).forall(fingerprint => !os.isDir(cacheDir(fingerprint) / "index.lmdb")),
       "irrelevant jars were indexed — package filter broken")
   }

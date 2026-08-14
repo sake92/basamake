@@ -60,6 +60,18 @@ object Fingerprint {
   def fromJdk(javaHome: os.Path, javaVersion: String): String =
     s"jdk-${javaVersion}_${hash8(javaHome.toString)}"
 
+  /** Maven coordinates of a sources jar (coursier layout), for user-facing
+    * messages: `(groupId, artifactId, version)` — groupId from the sibling POM,
+    * artifactId + version from the file name (`<artifact>-<version>-sources.jar`).
+    * None when the layout is not a maven sources jar (no POM, no version pattern). */
+  def mavenCoordinates(jarPath: os.Path): Option[(String, String, String)] = {
+    if !jarPath.last.endsWith("-sources.jar") then return None
+    jarPath.last.stripSuffix("-sources.jar") match {
+      case MavenName(artifact, version) => mavenGroupId(jarPath).map(group => (group, artifact, version))
+      case _                            => None
+    }
+  }
+
   /** groupId of the sources jar, from the sibling POM in the maven/coursier cache
     * (`<same-dir>/<artifact>-<version>.pom`). None when the pom is missing,
     * unparseable, or inherits its groupId from `<parent>` (no own `<groupId>`).

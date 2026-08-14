@@ -11,6 +11,12 @@ import java.io.FileOutputStream
   * → LMDB point query → lazy file extraction. */
 class DepsGotoDefTest extends FunSuite, TestCacheRoot {
 
+  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    cond
+  }
+
   private def writeJarPair(dir: os.Path, name: String, pkg: String, sourceEntry: String, sourceContent: String): os.Path = {
     val sourcesJar = dir / name
     val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
@@ -68,8 +74,8 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
 
       val depsTable = new IndexedSymbolTable
       depsTable.registerTarget(List(jarPath)) // registers the source for lazy extraction
-      assert(depsTable.get("com/example/Foo#", List(jarPath)).isDefined,
-        "warm-up: the inline index must resolve synchronously")
+      assert(eventually(depsTable.get("com/example/Foo#", List(jarPath)).isDefined),
+        "warm-up: the background index must resolve")
 
       val idx = new WorkspaceIndex(workspace, new InMemorySymbolTable, Some(depsTable))
       idx.initialize(List(SemanticdbDirs(workspace, workspace / ".semanticdb")))
@@ -120,7 +126,7 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
 
       val depsTable = new IndexedSymbolTable
       depsTable.registerTarget(List(jarPath))
-      assert(depsTable.get("com/example/deep/Foo#", List(jarPath)).isDefined,
+      assert(eventually(depsTable.get("com/example/deep/Foo#", List(jarPath)).isDefined),
         "warm-up: nested package statements must produce the full symbol")
 
       val idx = new WorkspaceIndex(workspace, new InMemorySymbolTable, Some(depsTable))
@@ -160,8 +166,8 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
     try {
       val depsTable = new IndexedSymbolTable
       depsTable.registerTarget(List(jarA, jarB))
-      assert(depsTable.get("com/example/Foo#", List(jarA)).isDefined, "warm jarA")
-      assert(depsTable.get("com/example/Foo#", List(jarB)).isDefined, "warm jarB")
+      assert(eventually(depsTable.get("com/example/Foo#", List(jarA)).isDefined), "warm jarA")
+      assert(eventually(depsTable.get("com/example/Foo#", List(jarB)).isDefined), "warm jarB")
 
       // the dep file: jar B's extracted Foo.java, opened like the editor opens it.
       // Content references Foo from a SECOND class.

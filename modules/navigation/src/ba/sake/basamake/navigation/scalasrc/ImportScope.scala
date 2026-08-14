@@ -33,7 +33,7 @@ object ImportScope {
                 emitRef(n, sym)
                 explicit += (name -> sym)
               case None =>
-                emitRef(n, "")
+                emitUnresolvedImportee(n, name, prefix, emitRef)
             }
 
           case Importee.Rename(from, to) =>
@@ -43,7 +43,7 @@ object ImportScope {
                 emitRef(to, sym)
                 explicit += (toName -> sym)
               case None =>
-                emitRef(to, "")
+                emitUnresolvedImportee(to, from.value, prefix, emitRef)
             }
             // Also emit ref for original name
             resolveImportName(from.value, prefix, scopeStack.symbolTable) match {
@@ -51,7 +51,7 @@ object ImportScope {
                 emitRef(from, sym)
                 explicit += (from.value -> sym)
               case None =>
-                emitRef(from, "")
+                emitUnresolvedImportee(from, from.value, prefix, emitRef)
             }
 
           case Importee.Unimport(n) =>
@@ -71,7 +71,7 @@ object ImportScope {
                   emitRef(tpe, sym)
                   explicit += (name -> sym)
                 case None =>
-                  emitRef(tpe, "")
+                  emitUnresolvedImportee(tpe, name, prefix, emitRef)
               }
             }
 
@@ -139,4 +139,19 @@ object ImportScope {
     else if (table.get(termSym).isDefined) Some(termSym)
     else None
   }
+
+  /** Source-parse fallback for an importee that misses the WORKSPACE symbol
+    * table (resolvers have no dependency access — by design). When the import
+    * prefix is a package path, emit BOTH plausible symbols for the importee
+    * range so the dep index can answer the lookup: a compiler would emit one
+    * of them (type for classes, term for objects/traits/companions), and
+    * `getSymbol` resolves whichever the dep jar defines. Importees inherited
+    * through package objects/traits (e.g. `sttp.client3.basicRequest` living
+    * on trait `SttpApi`) stay a compiler-level gap in source-parse mode.
+    * Non-package owners keep the empty-symbol miss. */
+  private def emitUnresolvedImportee(tree: Tree, name: String, prefix: String, emitRef: (Tree, String) => Unit): Unit =
+    if (prefix.endsWith("/")) {
+      emitRef(tree, SymbolUtils.typeSymbol(prefix, name))
+      emitRef(tree, SymbolUtils.termSymbol(prefix, name))
+    } else emitRef(tree, "")
 }

@@ -81,6 +81,7 @@ class C { def m(x: Int): Int = x }
 object O { val v: Int = 1 }"""
     assertSymbols("c05_trait_obj_class.scala", code, Set(
       sym("com/example/T#", isType = true),
+      sym("com/example/T."), // Scala 3 synthetic companion — importees of traits use the TERM symbol
       sym("com/example/T#`<init>`()."),
       sym("com/example/T#t()."),
       sym("com/example/C#", isType = true),
@@ -216,6 +217,7 @@ given stringShow: Show[String] with {
 given intShow: Show[Int] = new Show[Int] { def show(t: Int): String = t.toString }"""
     assertSymbols("c13_givens.scala", code, Set(
       sym("com/example/Show#", isType = true),
+      sym("com/example/Show."), // Scala 3 synthetic companion — trait importees use the TERM symbol
       sym("com/example/Show#[T]"),
       sym("com/example/Show#`<init>`()."),
       sym("com/example/Show#show()."),
@@ -381,6 +383,7 @@ def topLevelMethod(): Int = 42"""
       sym("com/example/Color.Blue."),
       // Show
       sym("com/example/Show#", isType = true),
+      sym("com/example/Show."), // Scala 3 synthetic companion — trait importees use the TERM symbol
       sym("com/example/Show#[T]"),
       sym("com/example/Show#`<init>`()."),
       sym("com/example/Show#show()."),
@@ -456,6 +459,40 @@ def topLevelMethod(): Int = 42"""
       sym("_empty_/top_level$package."),
       sym("_empty_/top_level$package.greeting."),
       sym("_empty_/top_level$package.main()."),
+    ))
+  }
+
+  // ── implicit classes (sttp UriContext regression) ──────────────
+  test("C.22 implicit class emits the conversion METHOD symbol (sttp UriContext shape)") {
+    val code = """package sttp.model
+trait UriInterpolator {
+  implicit class UriContext(val sc: StringContext) {
+    def uri(args: Any*): Uri = ???
+  }
+}
+implicit class TopLevelHelper(val s: String) {
+  def shout(): String = s.toUpperCase
+}"""
+    assertSymbols("c22_implicit_class.scala", code, Set(
+      // trait + its synthetic companion term (importees of traits use the TERM)
+      sym("sttp/model/UriInterpolator#", isType = true),
+      sym("sttp/model/UriInterpolator."),
+      sym("sttp/model/UriInterpolator#`<init>`()."),
+      // implicit class nested in the trait: class type + conversion method
+      sym("sttp/model/UriInterpolator#UriContext#", isType = true),
+      sym("sttp/model/UriInterpolator#UriContext()."), // importees of implicit classes use the METHOD symbol
+      sym("sttp/model/UriInterpolator#UriContext#`<init>`()."),
+      sym("sttp/model/UriInterpolator#UriContext#`<init>`().(sc)"),
+      sym("sttp/model/UriInterpolator#UriContext#sc."),
+      sym("sttp/model/UriInterpolator#UriContext#uri()."),
+      sym("sttp/model/UriInterpolator#UriContext#uri().(args)"),
+      // top-level implicit class: class type (NOT wrapped) + conversion method
+      sym("sttp/model/TopLevelHelper#", isType = true),
+      sym("sttp/model/TopLevelHelper()."),
+      sym("sttp/model/TopLevelHelper#`<init>`()."),
+      sym("sttp/model/TopLevelHelper#`<init>`().(s)"),
+      sym("sttp/model/TopLevelHelper#s."),
+      sym("sttp/model/TopLevelHelper#shout()."),
     ))
   }
 }
