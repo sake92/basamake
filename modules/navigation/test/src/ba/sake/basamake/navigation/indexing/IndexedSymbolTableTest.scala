@@ -148,10 +148,14 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val deps = new IndexedSymbolTable
     deps.registerTarget(List(jar))
     assertEquals(deps.get("com/example/Foo#", List(jar)), None, "corrupt source jar must miss")
-    // wait for the failed background index to finish (it unmarks the fingerprint)
+    // wait for the failed background index to COMPLETE (it unmarks the
+    // fingerprint) — waiting only for the start counter races the virtual
+    // thread's first execution under load, and a late-starting "failed" index
+    // would then index the REPAIRED jar and resolve without a fresh attempt
     val deadline = System.currentTimeMillis() + 5000
-    while (deps.backgroundIndexStarts.get() < 1 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+    while ((deps.backgroundIndexStarts.get() < 1 || deps.activeIndexCount.get() > 0) && System.currentTimeMillis() < deadline) Thread.sleep(20)
     assert(deps.backgroundIndexStarts.get() >= 1, "the failed index must have been attempted")
+    assert(deps.activeIndexCount.get() == 0, "the failed index must have finished")
 
     // repair the jar and look up again — the retry must succeed
     writeJarPair(tempDir, "broken-sources.jar", "com.example")

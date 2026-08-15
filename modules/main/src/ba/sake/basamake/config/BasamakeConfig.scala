@@ -31,6 +31,9 @@ object BasamakeConfig {
         val raw = os.read(configPath)
         raw.parseJson[BasamakeConfig]
       catch case e: Exception =>
+        // a silently-ignored config is a debugging trap (e.g. tupson 0.20
+        // requires ALL fields — missing `enabled` used to fail silently)
+        com.typesafe.scalalogging.Logger("BasamakeConfig").warn(s"Failed to parse $configPath, using defaults: ${e}")
         BasamakeConfig()
     else BasamakeConfig()
   }

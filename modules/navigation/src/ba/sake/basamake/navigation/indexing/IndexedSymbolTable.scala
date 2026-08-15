@@ -138,7 +138,8 @@ class IndexedSymbolTable(
     val pkg = pkgOpt.get
     val all = candidates.map(c => c -> Fingerprint.fromJarPath(c)) ++ jdkSource.toList
     val it = all.iterator
-    while it.hasNext do {
+    var found: Option[SymbolDefinition] = None
+    while it.hasNext && found.isEmpty do {
       val (src, fingerprint) = it.next()
       if os.exists(src) then {
         val pkgsOpt = packagesOf(fingerprint, src) // None = no metadata → unfilterable
@@ -148,7 +149,7 @@ class IndexedSymbolTable(
               LmdbSerializer.get(indexPath(fingerprint), symbol) match {
                 case Some(d) =>
                   ensureEntryExtracted(fingerprint, d.path)
-                  return Some(d)
+                  found = Some(d)
                 case None => ()
               }
             } catch {
@@ -160,7 +161,7 @@ class IndexedSymbolTable(
         }
       }
     }
-    None
+    found
   }
 
   // ── internals ─────────────────────────────────────────────────
@@ -185,15 +186,33 @@ class IndexedSymbolTable(
       pkgs
     }
 
-  /** Parse-accurate packages recorded by a full index, if the index exists. */
+  /** Parse-accurate packages recorded by a full index, if the index exists.
+    * Indexed jars WITHOUT packages (empty-stub sources jars — scala3-library
+    * stubs, the pre-fix JDK caches) get their packages derived from the source
+    * archive ONCE, synchronously: a stub stays `Some(empty)` (every lookup is
+    * then package-filtered OUT — no pointless LMDB probes), a real archive
+    * (e.g. the JDK src.zip) becomes filterable and `isFullyIndexed` turns true,
+    * which also stops the per-session "Indexing JDK sources" attempt. */
   private def accuratePackages(fingerprint: String): Option[Set[String]] =
     CacheMetadata.load(cacheDir(fingerprint)).flatMap { meta =>
       val valid = Option(sourcesByFingerprint.get(fingerprint)) match {
         case Some(src) => CacheMetadata.isValid(meta, src)
         case None      => true // source unknown this session — trust the cache
       }
-      if valid && meta.indexed && meta.packages.nonEmpty && os.isDir(cacheDir(fingerprint) / "index.lmdb") then Some(meta.packages.toSet)
-      else None
+      if valid && meta.indexed && os.isDir(cacheDir(fingerprint) / "index.lmdb") then {
+        if (meta.packages.nonEmpty) Some(meta.packages.toSet)
+        else {
+          val src = Option(sourcesByFingerprint.get(fingerprint)).map(_.toString).getOrElse(meta.sourcePath)
+          val pkgs =
+            try SourceJarIndexer.packagesOfSource(os.Path(src))
+            catch { case NonFatal(e) => logger.warn(s"Failed to derive packages for $src: ${e.getMessage}"); Set.empty }
+          if (pkgs.nonEmpty) {
+            try CacheMetadata.save(cacheDir(fingerprint), meta.copy(packages = pkgs.toList.sorted))
+            catch { case NonFatal(e) => logger.warn(s"Failed to persist packages for $fingerprint: ${e.getMessage}") }
+          }
+          Some(pkgs)
+        }
+      } else None
     }
 
   private def isFullyIndexed(fingerprint: String): Boolean = accuratePackages(fingerprint).isDefined

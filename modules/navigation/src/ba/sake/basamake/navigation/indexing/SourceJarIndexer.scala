@@ -69,6 +69,9 @@ object SourceJarIndexer extends StrictLogging {
 
     CacheMetadata.load(cacheDir) match {
       case Some(meta) if meta.indexed && CacheMetadata.isValid(meta, source) && os.isDir(indexPath) =>
+        // (Empty-packages caches — e.g. the old JDK metadata, stub sources jars —
+        // are backfilled by IndexedSymbolTable.accuratePackages, which runs
+        // before this path is ever reached.)
         logger.debug(s"Loading cached index for $source ($fingerprint)")
         return
       case _ => ()
@@ -120,7 +123,7 @@ object SourceJarIndexer extends StrictLogging {
       sourcePath = source.toString,
       sourceSize = os.size(source),
       sourceMtime = os.mtime(source),
-      packages = classesJarOf(source).map(packagesOfClassesJar).getOrElse(Set.empty).toList.sorted,
+      packages = packagesOfSource(source).toList.sorted,
       indexed = true,
       formatVersion = CacheMetadata.FormatVersion
     ))
@@ -192,4 +195,29 @@ object SourceJarIndexer extends StrictLogging {
         }.toSet
     } finally zip.close()
   }
+
+  /** Packages from a SOURCE archive without a classes-jar sibling (e.g. the JDK
+    * `src.zip`): the directories holding source files ARE the packages.
+    * JDK-style archives are module-layout (`<module>/<pkg>/.../<file>.java`) —
+    * the leading module segment is stripped (detected by `module-info.java`
+    * files at depth 1). No decompression, no parsing. */
+  def packagesOfSourceZip(source: os.Path): Set[String] = {
+    val zip = new ZipFile(source.toIO)
+    try {
+      val entries = zip.entries().asScala
+      val isJdkLayout = entries.exists(e => e.getName.matches("^[^/]+/module-info.java$"))
+      zip.entries().asScala
+        .filter(e => !e.isDirectory && isSourceEntry(e.getName))
+        .flatMap { e =>
+          var segs = e.getName.split('/').toList.dropRight(1)
+          if (isJdkLayout && segs.nonEmpty) segs = segs.tail // strip the module dir
+          if segs.nonEmpty && segs.head != "META-INF" then Some(segs.mkString(".")) else None
+        }.toSet
+    } finally zip.close()
+  }
+
+  /** Packages of a source jar: prefer the classes-jar sibling (authoritative),
+    * else derive from the source archive itself (JDK src.zip, lone sources). */
+  def packagesOfSource(source: os.Path): Set[String] =
+    classesJarOf(source).map(packagesOfClassesJar).getOrElse(packagesOfSourceZip(source))
 }

@@ -189,8 +189,12 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val uri = params.getTextDocument.getUri
     logger.info(s"didOpen: $uri — scheduling compile")
     val path = os.Path(URI.create(uri))
-    workspaceIndex.onDidOpen(path)
+    // index on a background thread — source parsing (dep/JDK files without
+    // semanticdb) used to run on the lsp4j message thread and stall ALL LSP
+    // traffic for seconds; the per-path lock in WorkspaceIndex makes requests
+    // on this file wait for its parse instead of racing it
     Thread.ofVirtual().start(() => {
+      workspaceIndex.onDidOpen(path)
       bspManager.poke(uri, compile = true)
     })
   }
@@ -199,8 +203,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val uri = params.getTextDocument.getUri
     logger.debug(s"didChange: $uri")
     val path = os.Path(URI.create(uri))
-    // TODO in new thread?
-    workspaceIndex.onDidChange(path)
+    Thread.ofVirtual().start(() => {
+      workspaceIndex.onDidChange(path)
+    })
   }
 
   override def didSave(params: DidSaveTextDocumentParams): Unit = {
@@ -229,6 +234,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       ]] =
     CompletableFuture.supplyAsync(() => {
       val uri = params.getTextDocument.getUri
+      val t0 = System.nanoTime()
       logger.debug(s"definition: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
       Thread.ofVirtual().start(() => {
         bspManager.poke(uri, compile = false)

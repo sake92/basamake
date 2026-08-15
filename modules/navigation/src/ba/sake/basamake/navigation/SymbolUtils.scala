@@ -143,6 +143,18 @@ object SymbolUtils {
     }
   }
 
+  /** Owner prefix of a global symbol — everything up to and including the last
+    * top-level slash. Backtick-quoted names (which may contain `/`) are respected.
+    * Example: `ownerPrefix("org/apache/FTPClient#")` → `Some("org/apache/")`
+    * Example: `ownerPrefix("scala/Byte#`/`().")` → `Some("scala/")`
+    * Example: `ownerPrefix("Foo#")` → `None` (default package, no slash)
+    */
+  def ownerPrefix(symbol: String): Option[String] = {
+    val lastSlash = lastTopLevelSlash(symbol)
+    if lastSlash < 0 then None
+    else Some(symbol.substring(0, lastSlash + 1))
+  }
+
   /** Derives the display short name from a SemanticDB symbol: strips the owner
     * prefix and all descriptor suffixes, keeping just the member name.
     * Examples:

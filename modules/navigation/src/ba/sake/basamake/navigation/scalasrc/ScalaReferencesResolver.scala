@@ -215,8 +215,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   /** Cross-file top-level wrapper divergence: another file's top-level def lives
     * under `pkg/Other$package.<name>...`, not under this file's wrapper.
-    * When the scope walk misses, scan the symbol table for any
-    * `<pkgOwner>/<file>$package.<name>...` key matching the call site's package.
+    * When the scope walk misses, look up the symbols of THIS package with that
+    * short name (O(1) index — never a full-table scan) and regex-filter them.
     * Only runs on miss — cheap.
     */
   private def wrapperScan(pkgOwner: String, name: String, isType: Boolean): Option[String] = {
@@ -228,7 +228,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val methodPat = s"^${pkg}.*\\$$package\\.$escName\\(.*\\)\\.$$".r.pattern
     val termPat   = s"^${pkg}.*\\$$package\\.$escName\\.$$".r.pattern
     val typePat   = s"^${pkg}.*\\$$package\\.$escName#$$".r.pattern
-    symbolTable.keys.find { k =>
+    symbolTable.symbolsIn(pkgOwner, name).find { k =>
       if isType then typePat.matcher(k).matches()
       else methodPat.matcher(k).matches() || termPat.matcher(k).matches()
     }

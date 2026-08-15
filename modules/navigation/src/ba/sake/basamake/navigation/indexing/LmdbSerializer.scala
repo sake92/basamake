@@ -6,6 +6,7 @@ import scala.meta.internal.semanticdb.Range
 import java.io.{ByteArrayOutputStream, ByteArrayInputStream, DataOutputStream, DataInputStream}
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import com.typesafe.scalalogging.StrictLogging
 
 /** LMDB persistence for dependency indexes. Writes are STREAMED: definitions go
   * straight into LMDB as they are extracted (`streamingSave` + [[SymbolSink]]) —
@@ -25,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap
   *     mismatched formatVersion makes the cache invalid and triggers a reindex
   *   - shortName is not stored either — it's derived from the symbol on read
   */
-object LmdbSerializer {
+object LmdbSerializer extends StrictLogging {
 
   // 1GB — the JDK src.zip index (~570k symbols) exceeds 100MB. LMDB mapsize is
   // address space only; data.mdb still grows on disk as needed. Must stay >= the
@@ -81,6 +82,7 @@ object LmdbSerializer {
     override def removeByPath(path: os.Path): Unit = ()
     override def keys: Set[String] = Set.empty
     override def all: Set[SymbolDefinition] = Set.empty
+    override def symbolsIn(pkgOwner: String, name: String): Set[String] = Set.empty
 
     def count: Int = counter
   }
@@ -142,18 +144,38 @@ object LmdbSerializer {
     ()
   }
 
-  // Serializes env open+query per index path: two threads opening read-only Env
-  // objects on the SAME path in one JVM trip lmdbjava's reader-slot management
-  // (MDB_BAD_RSLOT "Invalid reuse of reader locktable slot"). Queries are µs —
-  // contention is negligible.
-  private val envLocks = new ConcurrentHashMap[os.Path, Object]()
+  // Shared read-only envs: ONE open env per index path, reused across point
+  // queries. Opening+closing an env per lookup was a goto-def hotspot — the
+  // resolver does one lookup per symbol during source parsing, and each
+  // open/close of the 1GB-mapsize JDK env measured 6–415ms. A single env per
+  // path also avoids lmdbjava's MDB_BAD_RSLOT problem (multiple Env objects on
+  // the same path trip reader-slot management). Read txns are cheap and
+  // concurrent; env OPEN/CLOSE transitions are serialized per path.
+  // The env is re-opened when data.mdb changes (reindex publishes via tmp +
+  // rename, which changes mtime) or when the index dir disappears mid-reindex.
+  private final case class SharedEnv(
+      env: Env[ByteBuffer],
+      db: Dbi[ByteBuffer],
+      stamp: (Long, Long)
+  )
+  private val sharedEnvs = new ConcurrentHashMap[os.Path, SharedEnv]()
+  private val envOpenLocks = new ConcurrentHashMap[os.Path, Object]()
 
-  /** Point lookup of one symbol — opens the env per call (mmap, ~µs), never loads
-    * the index into memory. Throws when the env is corrupt/missing (the caller
-    * logs and returns None — there is no corruption recovery; atomic tmp+rename
-    * publishing and CacheMetadata version/staleness checks keep indexes trustworthy). */
-  def get(path: os.Path, symbol: String): Option[SymbolDefinition] =
-    envLocks.computeIfAbsent(path, _ => new Object).synchronized {
+  private def sharedEnvFor(path: os.Path): SharedEnv = {
+    val dataFile = path / "data.mdb"
+    val stamp =
+      try (os.mtime(dataFile), os.size(dataFile))
+      catch { case _: Exception => (-1L, -1L) }
+    val cur = sharedEnvs.get(path)
+    if (cur != null && cur.stamp == stamp) return cur
+    envOpenLocks.computeIfAbsent(path, _ => new Object).synchronized {
+      val again = sharedEnvs.get(path)
+      if (again != null && again.stamp == stamp) return again
+      if (again != null) {
+        try again.env.close()
+        catch { case _: Exception => () }
+        sharedEnvs.remove(path, again)
+      }
       val env =
         try {
           Env.create()
@@ -162,27 +184,34 @@ object LmdbSerializer {
             .open(path.toIO, EnvFlags.MDB_RDONLY_ENV)
         } catch {
           case e: Exception =>
-            throw new LmdbException(s"Failed to open LMDB env at $path (lookup of '$symbol')", e)
+            throw new LmdbException(s"Failed to open LMDB env at $path", e)
         }
-
-      try {
-        val db = env.openDbi("symbols")
-        val txn = env.txnRead()
-        try {
-          val keyBytes = symbol.getBytes("UTF-8")
-          val keyBuf = keyBufferFor(keyBytes)
-          val valBuf = db.get(txn, keyBuf)
-          if (valBuf == null) None
-          else {
-            val arr = new Array[Byte](valBuf.remaining())
-            valBuf.get(arr)
-            Some(deserialize(arr, symbol, path))
-          }
-        } finally txn.close()
-      } finally {
-        env.close()
-      }
+      val se = SharedEnv(env, env.openDbi("symbols"), stamp)
+      sharedEnvs.put(path, se)
+      se
     }
+  }
+
+  /** Point lookup of one symbol — reuses the shared read-only env (see
+    * [[sharedEnvFor]]), never loads the index into memory. Throws when the env
+    * is corrupt/missing (the caller logs and returns None — there is no
+    * corruption recovery; atomic tmp+rename publishing and CacheMetadata
+    * version/staleness checks keep indexes trustworthy). */
+  def get(path: os.Path, symbol: String): Option[SymbolDefinition] = {
+    val se = sharedEnvFor(path)
+    val txn = se.env.txnRead()
+    try {
+      val keyBytes = symbol.getBytes("UTF-8")
+      val keyBuf = keyBufferFor(keyBytes)
+      val valBuf = se.db.get(txn, keyBuf)
+      if (valBuf == null) None
+      else {
+        val arr = new Array[Byte](valBuf.remaining())
+        valBuf.get(arr)
+        Some(deserialize(arr, symbol, path))
+      }
+    } finally txn.close()
+  }
 
   /** Per-thread reusable key buffer (grows on demand). Safe: the value buffer
     * returned by `db.get` aliases THIS buffer's memory, but callers copy the

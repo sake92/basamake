@@ -79,6 +79,19 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     * nothing changed. */
   private val semanticdbStamps = new ConcurrentHashMap[os.Path, (Long, Long)]()
 
+  /** Bounded cache of SOURCE-PARSE results for files without semanticdb (dep
+    * jars, JDK sources, unpaired workspace files). A parse costs up to seconds
+    * (resolver lookups); onDidClose drops the open-file occurrences, so a tab
+    * reopen would re-parse — this cache makes reopen instant. Keyed by disk
+    * stamp; cleared wholesale on overflow (same pattern as Fingerprint's memo). */
+  private val MaxSourceParseCacheEntries = 128
+  private final case class SourceParseCacheEntry(
+      stamp: (Long, Long),
+      occurrences: Vector[ReferenceOccurrence],
+      locals: Vector[SymbolDefinition]
+  )
+  private val sourceParseCache = new ConcurrentHashMap[os.Path, SourceParseCacheEntry]()
+
   /** Immutable snapshot of the startup semanticdb roots, published BEFORE broad
     * Pass A begins. onDidOpen's direct single-source pairing reads it while
     * initialize is still walking roots concurrently. Replaced only at the start
@@ -141,6 +154,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       override def removeByPath(path: os.Path) = symbolTable.removeByPath(path)
       override def keys = symbolTable.keys
       override def all = symbolTable.all
+      override def symbolsIn(pkgOwner: String, name: String) = symbolTable.symbolsIn(pkgOwner, name)
     }
     case None => symbolTable
   }
@@ -160,6 +174,42 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       cur = cur / os.up
     }
     ignoreEngine.isIgnored(p, isDir = os.isDir(p))
+  }
+
+  // per-path lock: serializes source parsing (refreshOpenBuffer) with the
+  // occurrence-consuming queries (definition/references/findSymbolsAt). didOpen/
+  // didChange parse on a background thread now; a request on a freshly opened
+  // file waits for its parse (≤ ~1s) instead of racing it into a transient miss.
+  private val pathLocks = new ConcurrentHashMap[os.Path, Object]()
+  private def withPathLock[T](path: os.Path)(body: => T): T =
+    pathLocks.computeIfAbsent(path, _ => new Object).synchronized(body)
+
+  /** Wait (bounded) until the open-file buffer state for `path` has been computed
+    * at least once — `diskStamps` is written at the END of refreshOpenBuffer.
+    * didOpen/didChange run on a background thread; a request can arrive before
+    * that thread even started, so the per-path lock alone is not enough (it only
+    * helps once the parse holds it). MUST be called BEFORE taking the lock —
+    * otherwise the parse can never complete (lock held by the waiter). */
+  private def awaitBufferReady(path: os.Path): Unit = {
+    var waited = 0
+    while (!diskStamps.containsKey(path) && waited < 200) {
+      Thread.sleep(10)
+      waited += 1
+    }
+  }
+
+  /** Like [[awaitBufferReady]] but for ALL currently open files — references
+    * scans every open file, so each must have its buffer state computed at
+    * least once (their didOpen parses run on background threads too). Bounded:
+    * a pathological file just times out and the scan proceeds with what it has. */
+  private def awaitAllBuffersReady(): Unit = {
+    var waited = 0
+    while (waited < 200) {
+      val pending = openFiles.asScala.exists(p => !diskStamps.containsKey(p))
+      if (!pending) return
+      Thread.sleep(10)
+      waited += 1
+    }
   }
 
   // ── initialize ──────────────────────────────────────────────
@@ -426,28 +476,29 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     if (diskStamps.get(path) != diskStampOf(path)) refreshOpenBuffer(path)
   }
 
-  def onDidSave(path: os.Path): Unit = {
-    if isIgnoredWorkspacePath(path) then return
-    openFiles.add(path)
-    sourcesMap.putIfAbsent(path, SourceData.empty)
-    // re-extract SymbolTable for this path
-    symbolTable.removeByPath(path)
-    val data = sourcesMap.get(path)
-    if (data != null && data.semanticdbPath.isDefined) {
-      try {
-        val defs = SemanticdbIndexing.parseDefinitions(data.semanticdbPath.get, path)
-        defs.foreach(symbolTable.add)
-      } catch { case _: Exception => () }
-    } else if (path.ext == "scala" || path.ext == "sbt") {
-      val content = try os.read(path) catch { case _ => "" }
-      val extractor = ScalaDefinitionsExtractor(symbolTable)
-      extractor.extractFromContent(path.last, content, path)
-    } else if (path.ext == "java") {
-      val content = try os.read(path) catch { case _ => "" }
-      val extractor = JavaDefinitionsExtractor(symbolTable)
-      extractor.extractFromContent(path.last, content, path)
+  def onDidSave(path: os.Path): Unit = withPathLock(path) {
+    if !isIgnoredWorkspacePath(path) then {
+      openFiles.add(path)
+      sourcesMap.putIfAbsent(path, SourceData.empty)
+      // re-extract SymbolTable for this path
+      symbolTable.removeByPath(path)
+      val data = sourcesMap.get(path)
+      if (data != null && data.semanticdbPath.isDefined) {
+        try {
+          val defs = SemanticdbIndexing.parseDefinitions(data.semanticdbPath.get, path)
+          defs.foreach(symbolTable.add)
+        } catch { case _: Exception => () }
+      } else if (path.ext == "scala" || path.ext == "sbt") {
+        val content = try os.read(path) catch { case _ => "" }
+        val extractor = ScalaDefinitionsExtractor(symbolTable)
+        extractor.extractFromContent(path.last, content, path)
+      } else if (path.ext == "java") {
+        val content = try os.read(path) catch { case _ => "" }
+        val extractor = JavaDefinitionsExtractor(symbolTable)
+        extractor.extractFromContent(path.last, content, path)
+      }
+      refreshOpenBuffer(path)
     }
-    refreshOpenBuffer(path)
   }
 
   def onDidClose(path: os.Path): Unit = {
@@ -465,6 +516,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       openFiles.remove(path)
       sourcesMap.remove(path)
       diskStamps.remove(path)
+      sourceParseCache.remove(path)
       symbolTable.removeByPath(path)
     }
     refreshDebugDump()
@@ -553,28 +605,31 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
   // ── queries ─────────────────────────────────────────────────
   def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[String] = {
-    val result = Vector.newBuilder[String]
+    awaitBufferReady(path)
+    withPathLock(path) {
+      val result = Vector.newBuilder[String]
 
-    val data = sourcesMap.get(path)
-    // Probe ref occurrences (refs only — defs live in SymbolTable / open-file locals)
-    val occs = if (data == null) Vector.empty else data.occurrences
-    val enclosingRefs = occs.filter(o => isInsideRange(line, char, o.range))
-    if (enclosingRefs.nonEmpty) {
-      val minLen = enclosingRefs.map(o => rangeLength(o.range)).min
-      result ++= enclosingRefs.filter(o => rangeLength(o.range) == minLen).map(_.symbol)
+      val data = sourcesMap.get(path)
+      // Probe ref occurrences (refs only — defs live in SymbolTable / open-file locals)
+      val occs = if (data == null) Vector.empty else data.occurrences
+      val enclosingRefs = occs.filter(o => isInsideRange(line, char, o.range))
+      if (enclosingRefs.nonEmpty) {
+        val minLen = enclosingRefs.map(o => rangeLength(o.range)).min
+        result ++= enclosingRefs.filter(o => rangeLength(o.range) == minLen).map(_.symbol)
+      }
+
+      // Probe local defs (locals have exact range info for cursor-on-def-site)
+      val localDefs = if (data == null) Vector.empty else data.locals
+      val enclosingLocals = localDefs.filter(ld => isInsideRange(line, char, ld.range))
+      result ++= enclosingLocals.map(_.symbol)
+
+      // Probe global defs via SymbolTable for this file
+      val globalDefs = symbolTable.byPath(path)
+      val enclosingGlobals = globalDefs.filter(sd => isInsideRange(line, char, sd.range))
+      result ++= enclosingGlobals.map(_.symbol)
+
+      result.result().distinct
     }
-
-    // Probe local defs (locals have exact range info for cursor-on-def-site)
-    val localDefs = if (data == null) Vector.empty else data.locals
-    val enclosingLocals = localDefs.filter(ld => isInsideRange(line, char, ld.range))
-    result ++= enclosingLocals.map(_.symbol)
-
-    // Probe global defs via SymbolTable for this file
-    val globalDefs = symbolTable.byPath(path)
-    val enclosingGlobals = globalDefs.filter(sd => isInsideRange(line, char, sd.range))
-    result ++= enclosingGlobals.map(_.symbol)
-
-    result.result().distinct
   }
 
   def gotoDefinitions(path: os.Path, line: Int, char: Int, depCandidates: List[os.Path] = Nil): Vector[SymbolDefinition] = {
@@ -595,69 +650,77 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   /** One-shot resolution: None = no refs under the cursor (def site), Some =
     * resolution outcome (possibly empty — symbol not found yet). */
   private def resolveDefinitions(path: os.Path, line: Int, char: Int, depCandidates: List[os.Path]): Option[Vector[SymbolDefinition]] = {
-    val data = sourcesMap.get(path)
-    // All occurrences are references (defs live in SymbolTable / open-file locals).
-    val references = if (data == null) Vector.empty else data.occurrences
-    val localDefs = if (data == null) Vector.empty else data.locals
-    val localDefinitionsMap = localDefs.map(ld => ld.symbol -> ld).toMap
+    awaitBufferReady(path)
+    withPathLock(path) {
+      val data = sourcesMap.get(path)
+      // All occurrences are references (defs live in SymbolTable / open-file locals).
+      val references = if (data == null) Vector.empty else data.occurrences
+      val localDefs = if (data == null) Vector.empty else data.locals
+      val localDefinitionsMap = localDefs.map(ld => ld.symbol -> ld).toMap
 
-    val referencesUnderCursor = references.filter(o => isInsideRange(line, char, o.range))
-    // Cursor on a def site (not a ref) → return empty. "Go to definition" from the
-    // definition itself is noise; the user wants references there, not "go to self".
-    if (referencesUnderCursor.isEmpty) None
-    else {
-      val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
-      val candidates =
-        if (local.nonEmpty) local
-        else referencesUnderCursor.flatMap(o => getSymbol(o.symbol, depCandidates))
-      // Filter out the location the cursor is already on (self-filter for refs).
-      // Also filter synthetic zero-range symbols (e.g. evidence params desugared
-      // from context bounds have no source position and would navigate to (0,0)).
-      Some(candidates.filterNot { sd =>
-        val zeroRange = sd.range.startLine == 0 && sd.range.startCharacter == 0 &&
-          sd.range.endLine == 0 && sd.range.endCharacter == 0
-        zeroRange || (sd.path == path && isInsideRange(line, char, sd.range))
-      })
+      val referencesUnderCursor = references.filter(o => isInsideRange(line, char, o.range))
+      // Cursor on a def site (not a ref) → return empty. "Go to definition" from the
+      // definition itself is noise; the user wants references there, not "go to self".
+      if (referencesUnderCursor.isEmpty) None
+      else {
+        val local = referencesUnderCursor.flatMap(o => localDefinitionsMap.get(o.symbol))
+        val candidates =
+          if (local.nonEmpty) local
+          else referencesUnderCursor.flatMap(o => getSymbol(o.symbol, depCandidates))
+        // Filter out the location the cursor is already on (self-filter for refs).
+        // Also filter synthetic zero-range symbols (e.g. evidence params desugared
+        // from context bounds have no source position and would navigate to (0,0)).
+        Some(candidates.filterNot { sd =>
+          val zeroRange = sd.range.startLine == 0 && sd.range.startCharacter == 0 &&
+            sd.range.endLine == 0 && sd.range.endCharacter == 0
+          zeroRange || (sd.path == path && isInsideRange(line, char, sd.range))
+        })
+      }
     }
   }
 
   /** v1: scan only occurrences in CURRENTLY OPEN FILES.
     * Cross-workspace references are explicitly out of scope for v1. */
   def references(path: os.Path, line: Int, char: Int, includeDeclaration: Boolean, depCandidates: List[os.Path] = Nil): Vector[SymbolDefinition] = {
-    val targetSymbols = findSymbolsAt(path, line, char).toSet
-    if (targetSymbols.isEmpty) return Vector.empty
+    awaitBufferReady(path)
+    awaitAllBuffersReady()
+    withPathLock(path) {
+      val targetSymbols = findSymbolsAt(path, line, char).toSet
+      if (targetSymbols.isEmpty) Vector.empty
+      else {
+        val results = Vector.newBuilder[SymbolDefinition]
 
-    val results = Vector.newBuilder[SymbolDefinition]
+        // Scan ref occurrences across all open files
+        for (openPath <- openFiles.asScala) {
+          val data = sourcesMap.get(openPath)
+          val occs = if (data == null) Vector.empty else data.occurrences
+          for (occ <- occs if targetSymbols.contains(occ.symbol)) {
+            results += SymbolDefinition(
+              symbol = occ.symbol,
+              shortName = occ.symbol,
+              isType = SymbolUtils.isTypeSymbol(occ.symbol),
+              range = occ.range,
+              path = openPath
+            )
+          }
+        }
 
-    // Scan ref occurrences across all open files
-    for (openPath <- openFiles.asScala) {
-      val data = sourcesMap.get(openPath)
-      val occs = if (data == null) Vector.empty else data.occurrences
-      for (occ <- occs if targetSymbols.contains(occ.symbol)) {
-        results += SymbolDefinition(
-          symbol = occ.symbol,
-          shortName = occ.symbol,
-          isType = SymbolUtils.isTypeSymbol(occ.symbol),
-          range = occ.range,
-          path = openPath
-        )
+        // If includeDeclaration, append the def site from SymbolTable or locals
+        if (includeDeclaration) {
+          val openLocals = openFiles.asScala.iterator.flatMap { p =>
+            val d = sourcesMap.get(p)
+            if (d == null) Iterator.empty else d.locals.iterator
+          }.toVector
+          for (sym <- targetSymbols) {
+            // Try locals first, then SymbolTable (dep lookups scoped to candidates)
+            val defOpt = openLocals.find(ld => ld.symbol == sym).orElse(getSymbol(sym, depCandidates))
+            defOpt.foreach(d => results += d)
+          }
+        }
+
+        results.result().distinct
       }
     }
-
-    // If includeDeclaration, append the def site from SymbolTable or locals
-    if (includeDeclaration) {
-      val openLocals = openFiles.asScala.iterator.flatMap { p =>
-        val d = sourcesMap.get(p)
-        if (d == null) Iterator.empty else d.locals.iterator
-      }.toVector
-      for (sym <- targetSymbols) {
-        // Try locals first, then SymbolTable (dep lookups scoped to candidates)
-        val defOpt = openLocals.find(ld => ld.symbol == sym).orElse(getSymbol(sym, depCandidates))
-        defOpt.foreach(d => results += d)
-      }
-    }
-
-    results.result().distinct
   }
 
   // ── internal helpers ─────────────────────────────────────────
@@ -668,12 +731,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   def getSymbol(symbol: String, depCandidates: List[os.Path]): Option[SymbolDefinition] =
     symbolTable.get(symbol).orElse(depsTable.flatMap(_.get(symbol, depCandidates)))
 
-  private def refreshOpenBuffer(path: os.Path): Unit = {
-    if (!openFiles.contains(path)) return
-    val textOpt = try Some(os.read(path)) catch { case _: Exception => None }
-    textOpt match {
-      case None => ()
-      case Some(text) =>
+  private def refreshOpenBuffer(path: os.Path): Unit = withPathLock(path) {
+    if (openFiles.contains(path)) {
+      val textOpt = try Some(os.read(path)) catch { case _: Exception => None }
+      textOpt match {
+        case None => ()
+        case Some(text) =>
         val current = sourcesMap.get(path)
         val semPathOpt = if (current == null) None else current.semanticdbPath
         val (occs, locals) = semPathOpt match {
@@ -691,9 +754,18 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             }
           case None =>
             logger.debug(s"Resolving references from source for $path")
-            val rf = sourceResolve(path, text)
-            logger.debug(s"Resolved occurrences from source for $path: ${rf.occurrences}, locals: ${rf.locals}")
-            (rf.occurrences, rf.locals)
+            val stamp = diskStampOf(path)
+            val cached = sourceParseCache.get(path)
+            if (cached != null && cached.stamp == stamp) {
+              (cached.occurrences, cached.locals)
+            } else {
+              val rf = sourceResolve(path, text)
+              // bounded recent-files cache: tab close/reopen of a source-parsed
+              // file (deps, JDK, unpaired workspace files) skips the re-parse
+              if (sourceParseCache.size() >= MaxSourceParseCacheEntries) sourceParseCache.clear()
+              sourceParseCache.put(path, SourceParseCacheEntry(stamp, rf.occurrences, rf.locals))
+              (rf.occurrences, rf.locals)
+            }
         }
         sourcesMap.compute(path, (_, old) => {
           val base = if (old == null) SourceData.empty else old
@@ -701,6 +773,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         })
         diskStamps.put(path, diskStampOf(path))
         bufferRefreshCount.incrementAndGet()
+      }
     }
   }
 
