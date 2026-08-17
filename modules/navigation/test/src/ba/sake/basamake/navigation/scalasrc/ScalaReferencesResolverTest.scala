@@ -391,4 +391,17 @@ class ScalaReferencesResolverTest extends FunSuite {
     val rf = new ScalaReferencesResolver(st).resolveFromContent("Main.scala", code, os.pwd / "Main.scala")
     assertHasOccurrence(rf, "_empty_/Main$package.greeting.")
   }
+
+  // ── import prefix package segments ────────────────────────────
+
+  test("R.PKG import prefix package segments emit package symbols") {
+    val st = new InMemorySymbolTable
+    st.add(SymbolDefinition("a/b/package.", "package", isType = false, new Range(0,0,0,7), os.pwd / "package.scala"))
+    st.add(SymbolDefinition("a/b/C#", "C", isType = true, new Range(0,0,0,1), os.pwd / "C.scala"))
+    val code = "package x\nimport a.b.C\nclass D { val c: C = null }\n"
+    val rf = new ScalaReferencesResolver(st).resolveFromContent("D.scala", code, os.pwd / "D.scala")
+    val segRefs = rf.occurrences.filter(_.range.startLine == 1)
+    assertEquals(segRefs.map(_.symbol).toSet, Set("a/", "a/b/", "a/b/C#"),
+      "package segments emit package symbols (resolvable to the package object), not empty")
+  }
 }

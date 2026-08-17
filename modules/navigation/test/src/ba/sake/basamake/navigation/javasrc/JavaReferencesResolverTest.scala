@@ -355,4 +355,46 @@ class JavaReferencesResolverTest extends FunSuite {
     val rf = resolveWith(st, code)
     assertHasOccurrence(rf, "pkg/Util#")
   }
+
+  // ── R.IMPORT import-line refs ────────────────────────────────
+
+  test("R.IMPORT1 single-type import emits a ref on the type segment") {
+    val st = new InMemorySymbolTable
+    st.add(defn("a/b/C#", "C", isType = true))
+    // line 0: "package x; import a.b.C; class D { C field; }" — `C` at (0,22,0,23)
+    val code = """package x; import a.b.C; class D { C field; }"""
+    val rf = resolveWith(st, code)
+    val importRefs = rf.occurrences.filter(o => o.range.startLine == 0 && o.range.startCharacter == 22)
+    assertEquals(importRefs.map(_.symbol).toSet, Set("a/b/C#"))
+    assertEquals(importRefs.map(_.range).toSet, Set(new Range(0, 22, 0, 23)),
+      "the ref must cover only the type segment, not the package segments")
+  }
+
+  test("R.IMPORT2 static single import emits type + member refs") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    st.add(defn("pkg/Util#helper().", "helper", isType = false))
+    val code = """package x; import static pkg.Util.helper; class D { void m() { helper(); } }"""
+    val rf = resolveWith(st, code)
+    val importRefs = rf.occurrences.filter(o => o.range.startLine == 0 && o.range.startCharacter >= 26)
+    assertEquals(importRefs.map(_.symbol).toSet, Set("pkg/Util#", "pkg/Util#helper()."),
+      "type segment refs the type; the member probes method overloads")
+  }
+
+  test("R.IMPORT3 static wildcard import emits a ref on the type") {
+    val st = new InMemorySymbolTable
+    st.add(defn("pkg/Util#", "Util", isType = true))
+    val code = """package x; import static pkg.Util.*; class D { void m() { int v = 1; } }"""
+    val rf = resolveWith(st, code)
+    val importRefs = rf.occurrences.filter(o => o.range.startLine == 0 && o.range.startCharacter >= 26)
+    assertEquals(importRefs.map(_.symbol).toSet, Set("pkg/Util#"))
+  }
+
+  test("R.IMPORT4 wildcard import emits nothing; package segments emit nothing") {
+    val st = new InMemorySymbolTable
+    val code = """package x; import a.b.*; class D {}"""
+    val rf = resolveWith(st, code)
+    assertEquals(rf.occurrences.count(_.range.startLine == 0), 0,
+      "Java has no package objects — package segments must not emit refs")
+  }
 }

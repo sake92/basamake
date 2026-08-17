@@ -109,7 +109,13 @@ object ImportScope {
         scopeStack.lookup(n, isType = false, inCallContext = false)
           .orElse(PredefSymbols.rawLookup(n))
           .map { sym => emitRef(t, sym); sym }
-          .getOrElse { emitRef(t, ""); SymbolUtils.packageOwner(List(n)) }
+          .getOrElse {
+            // package segment — emit the PACKAGE symbol (resolves to the package
+            // object `<pkg>/package.` at cursor time, when one exists)
+            val pkgSym = SymbolUtils.packageOwner(List(n))
+            emitRef(t, pkgSym)
+            pkgSym
+          }
 
       case Term.Select(qual: Term.Ref, name) =>
         val qualOwner = resolveImportPrefix(qual, scopeStack, emitRef)
@@ -118,12 +124,14 @@ object ImportScope {
         if (scopeStack.symbolTable.get(memberSym).isDefined) {
           emitRef(name, memberSym)
           memberSym
-        } else {
-          // Try as package path: append name as sub-package
-          val pkgPath = if (qualOwner.endsWith("/")) qualOwner + n + "/"
-                        else qualOwner + "/" + n + "/"
-          emitRef(name, "")
+        } else if (qualOwner.endsWith("/")) {
+          // package path: append name as sub-package and emit its package symbol
+          val pkgPath = qualOwner + n + "/"
+          emitRef(name, pkgPath)
           pkgPath
+        } else {
+          emitRef(name, "")
+          qualOwner + "/" + n + "/"
         }
 
       case other: Term.Ref =>

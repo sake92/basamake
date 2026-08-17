@@ -1,7 +1,10 @@
 package ba.sake.basamake.navigation.javasrc
 
+import com.github.javaparser.Range as JpRange
+import com.github.javaparser.Position
 import com.github.javaparser.ast.ImportDeclaration
-import ba.sake.basamake.navigation.{ImportScopeData, SymbolUtils}
+import com.github.javaparser.ast.expr.Name
+import ba.sake.basamake.navigation.{ImportScopeData, ScopeStack, SymbolTable, SymbolUtils}
 
 /** Parses a single javaparser `ImportDeclaration` into a shared `ImportScopeData`.
   *
@@ -65,4 +68,69 @@ object JavaImports {
     val typeName = segments.last
     SymbolUtils.typeSymbol(SymbolUtils.packageOwner(pkgSegs), typeName)
   }
+
+  /** Emit reference occurrences for an import statement (per-segment):
+    *   - single-type `a.b.C`       → `C`      → a/b/C#
+    *   - static single `a.b.C.m`   → `C` + `m` → a/b/C# + (method via overload probe, else term)
+    *   - static wildcard `a.b.C.*` → `C`      → a/b/C#
+    *   - wildcard `a.b.*`          → nothing
+    * Package segments are SKIPPED — Java has no package objects (Scala emits
+    * package symbols there instead). Symbols are deterministic from the
+    * statement itself; the cursor-time lookup decides whether they resolve
+    * (workspace table, owning-jar dep candidates, or the implicit JDK). */
+  def emitRefs(
+      imp: ImportDeclaration,
+      symbolTable: SymbolTable,
+      emit: (java.util.Optional[JpRange], String) => Unit
+  ): Unit = {
+    val name = imp.getName
+    // full dotted path, `*` stripped (same normalization as `parse` above —
+    // `Name.getIdentifier` alone returns only the LAST segment)
+    val segments = imp.getNameAsString.split('.').toList.filter(_ != "*")
+    if (!imp.isAsterisk) {
+      if (imp.isStatic) {
+        val typeIdx = segments.length - 2
+        val memberIdx = segments.length - 1
+        rangeOfSegment(name, segments, typeIdx).foreach { r =>
+          emit(java.util.Optional.of(r), typeOwnerOf(segments.take(typeIdx + 1)))
+        }
+        val owner = typeOwnerOf(segments.take(memberIdx))
+        val member = segments(memberIdx)
+        val sym = ScopeStack.findMethodOverload(owner, member, symbolTable)
+          .getOrElse(SymbolUtils.termSymbol(owner, member))
+        rangeOfSegment(name, segments, memberIdx).foreach { r =>
+          emit(java.util.Optional.of(r), sym)
+        }
+      } else {
+        val idx = segments.length - 1
+        val sym = SymbolUtils.typeSymbol(SymbolUtils.packageOwner(segments.init), segments(idx))
+        rangeOfSegment(name, segments, idx).foreach { r =>
+          emit(java.util.Optional.of(r), sym)
+        }
+      }
+    } else if (imp.isStatic) {
+      // `import static a.b.C.*` — the `*` is not part of the Name node, so all
+      // segments are the type path; the wildcard owner is the TYPE symbol.
+      val idx = segments.length - 1
+      rangeOfSegment(name, segments, idx).foreach { r =>
+        emit(java.util.Optional.of(r), typeOwnerOf(segments))
+      }
+    }
+    // non-static wildcard: no individual refs
+  }
+
+  /** Range of the idx-th dotted segment inside `name` (Java imports are
+    * single-line). javaparser ranges are 1-based with END INCLUSIVE. */
+  private def rangeOfSegment(name: Name, segments: List[String], idx: Int): Option[JpRange] =
+    if (idx < 0 || idx >= segments.length) None
+    else
+      Option(name.getRange.orElse(null)).map { full =>
+        val prefixLen = segments.take(idx).map(_.length + 1).sum
+        val segLen = segments(idx).length
+        val begin = full.begin
+        new JpRange(
+          new Position(begin.line, begin.column + prefixLen),
+          new Position(begin.line, begin.column + prefixLen + segLen - 1)
+        )
+      }
 }

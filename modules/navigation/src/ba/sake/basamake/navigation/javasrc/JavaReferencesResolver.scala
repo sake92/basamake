@@ -86,8 +86,9 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     scopeStack.push(OwnerScope(pkgOwner))
 
-    // imports (file-scoped, never popped)
+    // imports (file-scoped, never popped); also emit import-line refs
     cu.getImports.asScala.foreach { imp =>
+      JavaImports.emitRefs(imp, symbolTable, emitRefRange)
       scopeStack.push(JavaImports.parse(imp))
     }
 
