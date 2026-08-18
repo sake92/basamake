@@ -12,6 +12,11 @@ import ba.sake.basamake.config.{BasamakeConfig, BspOverride}
 import ba.sake.basamake.util.ProcessUtils
 import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 
+/** Orchestrator of the workspace's BSP connections.
+  *
+  * Owns: connections map, BspRouter, diagnostics state, compile progress.
+  * Coordinates WatchFilter, BspWatcher, and per-connection BspConnections —
+  * it manipulates no process state directly (connection.shutdown() only). */
 class BspManager (
     workspaceRoot: os.Path,
     workspaceIndex: WorkspaceIndex,
@@ -49,6 +54,8 @@ class BspManager (
   // Lets detachConnection clear ONLY the detached connection's diagnostics (a
   // multi-BSP workspace keeps the other servers' diagnostics intact).
   private val diagnosticsOwners = mutable.Map.empty[String, BspConnectionId]
+  // guards diagnostics, diagnosticsOwners, knownBspFiles
+  private val stateLock = new java.util.concurrent.locks.ReentrantLock()
 
   /** Warm-start dependency sources from .basamake/bsp data.json files: source root →
     * source jars of that target. Used for lookups + indexing before the first BSP
@@ -102,10 +109,14 @@ class BspManager (
     * Always publishes an empty list — VS Code keeps showing stale diagnostics
     * (e.g. published by a previous server session) unless we explicitly clear them. */
   def clearDiagnostics(uri: String): Unit = {
-    val removed = synchronized {
-      diagnosticsOwners.remove(uri)
-      diagnostics.remove(uri)
-    }
+    stateLock.lock()
+    val removed =
+      try {
+        diagnosticsOwners.remove(uri)
+        diagnostics.remove(uri)
+      } finally {
+        stateLock.unlock()
+      }
     logger.debug(s"clearDiagnostics($uri): entry existed=${removed.isDefined}")
     client.foreach(_.publishDiagnostics(
       new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList())))
@@ -145,20 +156,26 @@ class BspManager (
   // ---- BspEvents: diagnostics ----
   override def onDiagnostics(params: PublishDiagnosticsParams, connId: BspConnectionId): Unit = {
     val uri = params.getTextDocument.getUri
-    synchronized { diagnosticsOwners(uri) = connId }   // (synchronized → ReentrantLock in Task 5)
+    stateLock.lock()
+    try { diagnosticsOwners(uri) = connId }
+    finally { stateLock.unlock() }
     val targetId = Option(params.getBuildTarget).getOrElse(new BuildTargetIdentifier(""))
     val newDiags = Option(params.getDiagnostics).getOrElse(java.util.Collections.emptyList())
       .asScala.map(bspDiagToLsp).toList
     logger.debug(s"onDiagnostics($uri): ${newDiags.size} diagnostic(s), reset=${params.getReset}")
 
-    val perTarget = synchronized {
-      val current = diagnostics.getOrElse(uri, Map.empty)
-      val updated =
-        if (params.getReset) current + (targetId -> newDiags)
-        else current + (targetId -> (current.getOrElse(targetId, Nil) ++ newDiags))
-      diagnostics(uri) = updated
-      updated
-    }
+    stateLock.lock()
+    val perTarget =
+      try {
+        val current = diagnostics.getOrElse(uri, Map.empty)
+        val updated =
+          if (params.getReset) current + (targetId -> newDiags)
+          else current + (targetId -> (current.getOrElse(targetId, Nil) ++ newDiags))
+        diagnostics(uri) = updated
+        updated
+      } finally {
+        stateLock.unlock()
+      }
     val union = perTarget.values.flatten.toList.asJava
     client.foreach(_.publishDiagnostics(new LspPublishDiagnosticsParams(uri, union)))
   }
@@ -275,8 +292,10 @@ class BspManager (
     if (killed > 0) logger.info(s"Killed $killed descendant process node(s) during shutdown")
   }
 
-  private def handleBspChanges(changed: Set[os.Path]): Unit = synchronized {
-    val current = BspDiscovery.discover(workspaceRoot, watchFilter.engine).map(_.path).toSet
+  private def handleBspChanges(changed: Set[os.Path]): Unit = {
+    stateLock.lock()
+    try {
+      val current = BspDiscovery.discover(workspaceRoot, watchFilter.engine).map(_.path).toSet
     val (newFiles, deletedFiles, modifiedFiles) =
       BspManager.classifyBspChanges(knownBspFiles, current, changed)
 
@@ -320,20 +339,27 @@ class BspManager (
         case e: Exception => logger.warn(s"Failed to process modified BSP config $p: ${e.getMessage}", e)
       }
     }
+    } finally {
+      stateLock.unlock()
+    }
   }
 
   private[bsp] def detachConnection(connId: BspConnectionId): Unit = {
     Option(connections.remove(connId)).foreach { conn =>
       // Clear ONLY the URIs this connection published diagnostics for. Other
       // connections' diagnostics (same or different URIs) stay untouched.
-      val ownedUris = synchronized {
-        val uris = diagnosticsOwners.collect { case (uri, owner) if owner == connId => uri }.toList
-        uris.foreach { uri =>
-          diagnosticsOwners.remove(uri)
-          diagnostics.remove(uri)
+      stateLock.lock()
+      val ownedUris =
+        try {
+          val uris = diagnosticsOwners.collect { case (uri, owner) if owner == connId => uri }.toList
+          uris.foreach { uri =>
+            diagnosticsOwners.remove(uri)
+            diagnostics.remove(uri)
+          }
+          uris
+        } finally {
+          stateLock.unlock()
         }
-        uris
-      }
       ownedUris.foreach { uri =>
         client.foreach(_.publishDiagnostics(new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList())))
       }
