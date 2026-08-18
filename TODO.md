@@ -1,5 +1,7 @@
 
 
+"Source inside nested git repo" no need warn..
+
 
 - support inheritance resolution
 
