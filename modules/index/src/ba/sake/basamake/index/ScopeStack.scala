@@ -141,13 +141,6 @@ class ScopeStack(val symbolTable: SymbolTable) {
     None
   }
 
-  /** Get all explicit import bindings currently in scope (for re-export resolution). */
-  def currentImportExplicits: Map[String, String] = {
-    stack.toList.reverse.collect {
-      case ImportScopeData(explicit, _, _, _) => explicit
-    }.foldLeft(Map.empty[String, String])(_ ++ _)
-  }
-
   /** Add a binding to the topmost LocalScope on the stack.
     * Used by the resolver to add val/var bindings without pushing/popping.
     */

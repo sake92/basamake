@@ -12,7 +12,6 @@ trait BasamakeBspServer extends BuildServer, ScalaBuildServer
 final case class HandshakeResult(
     process: java.lang.Process,
     buildServer: BuildServer,
-    targets: WorkspaceBuildTargetsResult,
     sources: SourcesResult,
     dependencySources: DependencySourcesResult,
     scalacOptions: ScalacOptionsResult
@@ -107,7 +106,7 @@ object BspHandshake extends StrictLogging {
       }
       logger.debug("buildTargetScalacOptions OK")
 
-      HandshakeResult(process, remoteProxy, targetsResult, sourcesResult, dependencySourcesResult, scalacOptionsResult)
+      HandshakeResult(process, remoteProxy, sourcesResult, dependencySourcesResult, scalacOptionsResult)
     } catch {
       case e: Exception =>
         val signaled = ProcessUtils.terminateProcessTree(process)

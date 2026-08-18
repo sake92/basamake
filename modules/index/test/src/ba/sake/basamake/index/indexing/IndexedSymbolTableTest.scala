@@ -183,7 +183,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
   test("default-package symbols are not resolvable") {
     val deps = new IndexedSymbolTable
-    assertEquals(deps.get("Foo#"), None)
+    assertEquals(deps.get("Foo#", Nil), None)
     assertEquals(deps.get("Foo#", Nil), None)
   }
 

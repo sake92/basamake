@@ -58,20 +58,6 @@ object GitIgnore {
       simpleGlobMatch(p, filename)
   }
 
-  /** Checks whether `relativePath` matches any pattern in the list.
-    * Patterns are evaluated in order — the LAST matching pattern wins,
-    * enabling proper `!` negation semantics. */
-  def isIgnoredByGitignore(relativePath: String, isDir: Boolean, patterns: Seq[String]): Boolean = {
-    var ignored = false
-    for pattern <- patterns do
-      if pattern.startsWith("!") then
-        val p = pattern.stripPrefix("!")
-        if matchesPattern(p, relativePath, isDir) then ignored = false
-      else
-        if matchesPattern(pattern, relativePath, isDir) then ignored = true
-    ignored
-  }
-
   /** Converts a glob pattern containing ** to a Regex. */
   private def globToRegex(pattern: String): scala.util.matching.Regex = {
     val sb = new StringBuilder

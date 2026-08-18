@@ -60,7 +60,7 @@ class BspConnectionTest extends FunSuite {
             if (n == 1) CompletableFuture.failedFuture(new RuntimeException("boom"))
             else CompletableFuture.completedFuture(new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()))
         }
-        HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+        HandshakeResult(proc, server,
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -97,7 +97,7 @@ class BspConnectionTest extends FunSuite {
               new org.eclipse.lsp4j.jsonrpc.JsonRpcException(new java.io.IOException("Stream closed")))
             else CompletableFuture.completedFuture(new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()))
         }
-        HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+        HandshakeResult(proc, server,
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -128,7 +128,7 @@ class BspConnectionTest extends FunSuite {
           override def workspaceBuildTargets() =
             CompletableFuture.failedFuture(new java.util.concurrent.TimeoutException("busy compiling"))
         }
-        HandshakeResult(proc, server, new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
+        HandshakeResult(proc, server,
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -173,7 +173,6 @@ class BspConnectionTest extends FunSuite {
         spawnCount.incrementAndGet()
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -197,7 +196,6 @@ class BspConnectionTest extends FunSuite {
       spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -222,7 +220,6 @@ class BspConnectionTest extends FunSuite {
         latch.await()  // block spawn until we've tested concurrent access
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -261,7 +258,6 @@ class BspConnectionTest extends FunSuite {
           }
         }
         HandshakeResult(proc, server,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -300,7 +296,6 @@ class BspConnectionTest extends FunSuite {
         if (!spawnSucceed) throw new RuntimeException("spawn fail")
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -341,7 +336,6 @@ class BspConnectionTest extends FunSuite {
           }
         }
         HandshakeResult(proc, server,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -380,7 +374,6 @@ class BspConnectionTest extends FunSuite {
           }
         }
         HandshakeResult(proc, server,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -423,7 +416,6 @@ class BspConnectionTest extends FunSuite {
           }
         }
         HandshakeResult(proc, server,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
@@ -505,7 +497,6 @@ class BspConnectionTest extends FunSuite {
       spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
-          new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
           opts)
@@ -585,7 +576,6 @@ class BspConnectionTest extends FunSuite {
         spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, new MockBuildServer,
-            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
             new SourcesResult(java.util.Collections.emptyList()),
             depSources,
             opts)
@@ -685,7 +675,6 @@ class BspConnectionTest extends FunSuite {
         spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, new MockBuildServer,
-            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
             new SourcesResult(java.util.Collections.emptyList()),
             new DependencySourcesResult(java.util.Collections.emptyList()), // server returns EMPTY deps
             new ScalacOptionsResult(java.util.Collections.emptyList()))
@@ -731,7 +720,6 @@ class BspConnectionTest extends FunSuite {
         spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, server,
-            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
             new SourcesResult(java.util.Collections.emptyList()),
             new DependencySourcesResult(java.util.Collections.emptyList()),
             new ScalacOptionsResult(java.util.Collections.emptyList()))
@@ -781,7 +769,6 @@ class BspConnectionTest extends FunSuite {
         spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, server,
-            new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
             new SourcesResult(java.util.Collections.emptyList()),
             new DependencySourcesResult(java.util.List.of(
               new DependencySourcesItem(tid, java.util.List.of("file:///cache/lib5-1.0-sources.jar")))),

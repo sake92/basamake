@@ -111,20 +111,6 @@ class GitIgnoreEngineTest extends FunSuite {
     }
   }
 
-  test("reload: re-parses base layers after .gitignore change") {
-    withRoot { root =>
-      os.makeDir.all(root / ".git")
-      os.write(root / ".gitignore", "*.class\n")
-      val engine = new GitIgnoreEngine(root)
-      assert(engine.isIgnored(root / "Foo.class", isDir = false))
-      assert(!engine.isIgnored(root / "Foo.scala", isDir = false))
-      os.write.over(root / ".gitignore", "*.scala\n")
-      engine.reload()
-      assert(!engine.isIgnored(root / "Foo.class", isDir = false))
-      assert(engine.isIgnored(root / "Foo.scala", isDir = false))
-    }
-  }
-
   test("file under an ignored dir is ignored (ancestor pruning)") {
     withRoot { root =>
       os.makeDir.all(root / ".git")

@@ -31,24 +31,6 @@ class BspRouterTest extends FunSuite {
     }
   }
 
-  test("ground truth wins over bootstrap heuristic") {
-    withTempDir { root =>
-      val bspDir = Files.createDirectory(root.resolve(".bsp"))
-      val connId = BspConnectionId("sbt-conn")
-      val router = BspRouter()
-      router.registerBspRoot(bspDir.toRealPath(), Set(connId))
-
-      val groundTruthConn = BspConnectionId("mill-conn")
-      val sourceDirs = List(root.resolve("src").toUri.toString)
-      router.registerGroundTruth(groundTruthConn, sourceDirs)
-
-      Files.createDirectories(root.resolve("src"))
-      val fileUri = root.resolve("src/Test.scala").toUri.toString
-      assertEquals(router.route(fileUri), Some(groundTruthConn),
-        "Ground truth (RoutingTable) must win over bootstrap cache")
-    }
-  }
-
   test("route returns None when no .bsp found") {
     withTempDir { root =>
       val router = BspRouter()

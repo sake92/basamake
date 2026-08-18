@@ -40,11 +40,16 @@ class CompileProgressReporter extends StrictLogging {
   private def tokensOf(connId: BspConnectionId): java.util.Set[String] =
     activeByConn.computeIfAbsent(connId, _ => ConcurrentHashMap.newKeySet[String]())
 
+  /** LSP window/workDoneProgress tokens are a single shared namespace — scope
+    * by connection id so two BSP servers emitting the same task id don't collide. */
+  private def tokenFor(connId: BspConnectionId, taskId: String): String =
+    s"basamake-compile-${connId.value}-$taskId"
+
   def onTaskStart(connId: BspConnectionId, params: TaskStartParams): Unit = {
     if (!enabled || client.isEmpty) return
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("")
     if (taskId.isEmpty) return
-    val token = s"basamake-compile-$taskId"
+    val token = tokenFor(connId, taskId)
     try {
       client.get.createProgress(new WorkDoneProgressCreateParams(Either.forLeft(token)))
         .get(5, TimeUnit.SECONDS)
@@ -65,7 +70,7 @@ class CompileProgressReporter extends StrictLogging {
     if (!enabled || client.isEmpty) return
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("")
     if (taskId.isEmpty) return
-    val token = s"basamake-compile-$taskId"
+    val token = tokenFor(connId, taskId)
     if (tokensOf(connId).contains(token)) {
       val r = new WorkDoneProgressReport()
       Option(params.getProgress).foreach { pct =>
@@ -78,7 +83,7 @@ class CompileProgressReporter extends StrictLogging {
 
   def onTaskFinish(connId: BspConnectionId, params: TaskFinishParams): Unit = {
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("")
-    val token = s"basamake-compile-$taskId"
+    val token = tokenFor(connId, taskId)
     // Only the ACTIVE token gets an end — a stray/duplicate finish is a no-op,
     // and a token disabled in flight must never end twice (endAll after a later
     // detach). Removal happens regardless of `enabled`.

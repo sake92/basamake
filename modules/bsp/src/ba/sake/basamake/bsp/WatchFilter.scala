@@ -15,7 +15,7 @@ final class WatchFilter(workspaceRoot: os.Path, config: BasamakeConfig) {
     new GitIgnoreEngine(workspaceRoot, config.ignorePatterns.toVector, exemptLastNames = Set(".bsp"))
 
   /** Engine for discovery (e.g. BspDiscovery.discover). */
-  def engine: GitIgnoreEngine = current
+  private[bsp] def engine: GitIgnoreEngine = current
 
   /** Rebuild after a .gitignore change. */
   def reload(): Unit = { current = build() }

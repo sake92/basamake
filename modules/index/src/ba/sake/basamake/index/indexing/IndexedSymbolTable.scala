@@ -126,11 +126,6 @@ class IndexedSymbolTable(
     (own ++ fromMeta).distinct
   }
 
-  /** Plain lookup — candidate-free: only the implicit JDK candidate is searched.
-    * Used by the resolvers (workspace symbols resolve in the workspace table
-    * before this is reached); non-JDK dependency symbols require candidates. */
-  def get(symbol: String): Option[SymbolDefinition] = get(symbol, Nil)
-
   /** The ONLY dependency lookup. See the class docs for the pipeline. */
   def get(symbol: String, candidates: List[os.Path]): Option[SymbolDefinition] = {
     val pkgOpt = SymbolUtils.packageOf(symbol)

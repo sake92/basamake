@@ -6,19 +6,10 @@ import java.util.concurrent.atomic.AtomicReference
 import scala.collection.mutable
 import com.typesafe.scalalogging.StrictLogging
 
-/** Two-phase routing for multi-BSP workspaces.
-  *
-  * Primary: ground-truth source directories from BSP's buildTarget/sources
-  *   (longest-prefix match via [[RoutingTable]]).
-  * Fallback: nearest-ancestor .bsp/ heuristic, cached per directory.
-  */
+/** Routing for multi-BSP workspaces: nearest-ancestor .bsp/ heuristic, cached
+  * per directory. A .bsp root maps to the connection ids spawned from it. */
 class BspRouter extends StrictLogging {
 
-  // Primary routing (ground truth)
-  // Maps connection ID → list of source directory URIs (from buildTarget/sources)
-  private val routingTable: RoutingTable = RoutingTable.empty
-
-  // Fallback routing (bootstrap heuristic)
   // Maps directory path → set of connection IDs in the nearest .bsp/ ancestor
   private val bootstrapCache: ConcurrentHashMap[Path, Option[Set[BspConnectionId]]] =
     ConcurrentHashMap()
@@ -59,35 +50,16 @@ class BspRouter extends StrictLogging {
     try p.toRealPath()
     catch case _: java.io.IOException => p.toAbsolutePath.normalize()
 
-  /** Register ground-truth source directories from a BSP handshake. */
-  def registerGroundTruth(connId: BspConnectionId, sourceDirs: List[String]): Unit = {
-    routingTable.update(connId, sourceDirs)
-    logger.debug(s"Ground truth registered for $connId: ${sourceDirs.size} dirs")
-    sourceDirs.foreach(d => logger.debug(s"  $d"))
-  }
-
-  /** Remove a connection from ground-truth routing (on detach). */
-  def unregisterGroundTruth(connId: BspConnectionId): Unit =
-    routingTable.remove(connId)
-
   /** Flush entire bootstrap cache. Called when .bsp/ dirs change. */
   def invalidateBootstrapCache(): Unit = {
     bootstrapCache.clear()
     logger.debug("Bootstrap cache invalidated")
   }
 
-  /** Route a document URI to its owning BSP connection.
-    * Layer 1 (primary): RoutingTable longest-prefix match.
-    * Layer 2 (fallback): Bootstrap heuristic — walk up to nearest .bsp/ ancestor.
-    * Returns None if no BSP found. */
-  def route(uri: String): Option[BspConnectionId] = {
-    val filePath = uriToPath(uri)
-    val candidates = routingTable.reverseLookupCandidates(uri)
-    candidates match
-      case Nil          => routeBootstrap(uri, Some(filePath))
-      case connId :: Nil => Some(connId)
-      case many         => tieBreakByNearestBspRoot(filePath, many).orElse(many.sortBy(_.value).headOption)
-  }
+  /** Route a document URI to its owning BSP connection: walk up to the nearest
+    * .bsp/ ancestor. Returns None if no BSP found. */
+  def route(uri: String): Option[BspConnectionId] =
+    routeBootstrap(uri)
 
   /** Walk up from the file's parent directory to find the nearest registered .bsp root.
     * Results are cached per directory — subsequent lookups in the same tree skip the walk. */
@@ -123,23 +95,6 @@ class BspRouter extends StrictLogging {
 
     // Return deterministic connection ID if any found
     found.flatMap(_.toList.sortBy(_.value).headOption)
-  }
-
-  private def tieBreakByNearestBspRoot(filePath: Path, candidates: List[BspConnectionId]): Option[BspConnectionId] = {
-    val candidateSet = candidates.toSet
-    val roots = bspRoots.get()
-    var dir = filePath.getParent
-    while dir != null do
-      val bspSubdir = dir.resolve(".bsp")
-      try
-        val canonical = bspSubdir.toRealPath()
-        roots.get(canonical).map(_.intersect(candidateSet)) match
-          case Some(overlap) if overlap.nonEmpty =>
-            return overlap.toList.sortBy(_.value).headOption
-          case _ => ()
-      catch case _: java.nio.file.NoSuchFileException => ()
-      dir = if dir.getParent != null && dir.getParent != dir then dir.getParent else null
-    None
   }
 
   /** Convert a file:// URI to a java.nio.file.Path. */

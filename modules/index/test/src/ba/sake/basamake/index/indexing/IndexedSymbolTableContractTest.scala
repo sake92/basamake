@@ -61,7 +61,6 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     assertEquals(deps.get("com/foo/Foo#targetOnly().", List(jarA)), None)
     // route-regression guards: no global route, no fallback search
     assertEquals(deps.get("com/foo/Foo#targetOnly().", Nil), None, "no global route")
-    assertEquals(deps.get("com/foo/Foo#targetOnly()."), None, "no global route")
   }
 
   test("package filter skips jars whose metadata lacks the package") {

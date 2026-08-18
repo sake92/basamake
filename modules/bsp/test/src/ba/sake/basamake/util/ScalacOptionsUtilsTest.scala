@@ -75,13 +75,6 @@ class ScalacOptionsUtilsTest extends FunSuite {
 
   // ── other helpers ─────────────────────────────────────────────
 
-  test("hasSemanticdbFlags: detects any semanticdb flag") {
-    assert(ScalacOptionsUtils.hasSemanticdbFlags(List("-Xsemanticdb")))
-    assert(ScalacOptionsUtils.hasSemanticdbFlags(List("-P:semanticdb:targetroot:/x")))
-    assert(ScalacOptionsUtils.hasSemanticdbFlags(List("-Xplugin:semanticdb")))
-    assert(!ScalacOptionsUtils.hasSemanticdbFlags(List("-deprecation")))
-  }
-
   test("hasBestEffortFlag: detects -Ybest-effort") {
     assert(ScalacOptionsUtils.hasBestEffortFlag(List("-Ybest-effort")))
     assert(!ScalacOptionsUtils.hasBestEffortFlag(List("-Xbest-effort")))

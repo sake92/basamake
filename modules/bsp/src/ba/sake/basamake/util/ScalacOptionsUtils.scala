@@ -2,14 +2,6 @@ package ba.sake.basamake.util
 
 object ScalacOptionsUtils {
 
-  /** Detects any SemanticDB-related compiler flag in scalac options.
-    * Supports: -Xsemanticdb, -semanticdb-target, -P:semanticdb:, -Xplugin:semanticdb */
-  def hasSemanticdbFlags(options: List[String]): Boolean =
-    options.exists(_ == "-Xsemanticdb") ||
-      options.exists(s => s == "-semanticdb-target" || s.startsWith("-semanticdb-target:")) ||
-      options.exists(_.startsWith("-P:semanticdb:")) ||
-      options.exists(_ == "-Xplugin:semanticdb")
-
   /** Extracts the source root (`-sourceroot`) from scalac options.
     * Scala 3 accepts both `-sourceroot <dir>` and `-sourceroot:<dir>` (verified
     * on 3.7/3.8); Scala 2 semanticdb uses `-P:semanticdb:sourceroot:<dir>`.

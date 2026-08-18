@@ -1,7 +1,6 @@
 package ba.sake.basamake.index.javasrc
 
 import com.github.javaparser.Range as JpRange
-import com.github.javaparser.ast.Node
 import scala.meta.internal.semanticdb.Range
 
 object JavaPositionUtils {
@@ -18,13 +17,4 @@ object JavaPositionUtils {
       endLine = r.end.line - 1,
       endCharacter = r.end.column
     )
-
-  /** Get the range for the name portion of a node.
-    * For nodes that are `SimpleName` (from `getName()`, `getNameAsString()`, etc.),
-    * returns the range of just the name token.
-    * Falls back to the node's own range if name-specific resolution fails.
-    */
-  def nameRange(n: Node): Option[JpRange] = {
-    if (n.getRange.isPresent) Some(n.getRange.get()) else None
-  }
 }

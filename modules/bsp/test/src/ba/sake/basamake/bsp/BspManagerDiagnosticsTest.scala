@@ -205,7 +205,7 @@ class BspManagerDiagnosticsTest extends FunSuite {
         n.getKind.toString.toLowerCase
       }.toList
       assertEquals(kinds, List("begin", "report", "end"))
-      assertEquals(client.progressed.get(0).getToken.getLeft, "basamake-compile-task-42")
+      assertEquals(client.progressed.get(0).getToken.getLeft, s"basamake-compile-${connId.value}-task-42")
       // logMessage fallback still fires (works even without the progress capability)
       val logTexts = client.logged.asScala.map(_.getMessage).toList
       assert(logTexts.exists(_.contains("Compiling fake project")), s"expected start log, got $logTexts")

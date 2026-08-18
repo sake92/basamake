@@ -62,11 +62,4 @@ class SymbolTableTest extends FunSuite {
     assert(table.all.contains(sd1))
     assert(table.all.contains(sd2))
   }
-
-  test("keys returns all symbol keys") {
-    val table = new InMemorySymbolTable
-    table.add(SymbolDefinition("_empty_/Foo#", "Foo", isType = true, sentinel, path1))
-    table.add(SymbolDefinition("_empty_/Bar#", "Bar", isType = true, sentinel, path2))
-    assertEquals(table.keys, Set("_empty_/Foo#", "_empty_/Bar#"))
-  }
 }

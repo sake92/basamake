@@ -43,7 +43,7 @@ class BspManagerShutdownTest extends FunSuite {
       val symbolTable = new ba.sake.basamake.index.InMemorySymbolTable
       val depsTable = new ba.sake.basamake.index.indexing.IndexedSymbolTable()
       val index = new ba.sake.basamake.index.indexing.WorkspaceIndex(root, symbolTable, Some(depsTable))
-      val mgr = new BspManager(root, index, depsTable)
+      val mgr = new BspManager(root, index, depsTable, ba.sake.basamake.config.BasamakeConfig.load(root))
       mgr.shutdown()
       mgr.shutdown()
     } finally os.remove.all(root)

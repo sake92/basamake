@@ -155,7 +155,6 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         override def byPath(p: os.Path) = symbolTable.byPath(p)
         override def add(sd: SymbolDefinition) = symbolTable.add(sd)
         override def removeByPath(p: os.Path) = symbolTable.removeByPath(p)
-        override def keys = symbolTable.keys
         override def all = symbolTable.all
         override def symbolsIn(pkgOwner: String, name: String) = symbolTable.symbolsIn(pkgOwner, name)
       }
@@ -317,14 +316,16 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             fallbackJobHook(path)
             val tJobStart = System.nanoTime()
             logger.debug(s"Extracting definitions from $path")
-            val content = os.read(path)
-            if (path.ext == "java") {
-              val extractor = JavaDefinitionsExtractor(symbolTable)
-              extractor.extractFromContent(path.last, content, path)
-            } else {
-              val extractor = ScalaDefinitionsExtractor(symbolTable)
-              extractor.extractFromContent(path.last, content, path)
-            }
+            val is = os.read.inputStream(path)
+            try {
+              if (path.ext == "java") {
+                val extractor = JavaDefinitionsExtractor(symbolTable)
+                extractor.extract(path.last, is, path)
+              } else {
+                val extractor = ScalaDefinitionsExtractor(symbolTable)
+                extractor.extract(path.last, is, path)
+              }
+            } finally is.close()
             passBOk.incrementAndGet()
             // opt-in DEBUG diagnostics: only when the user sets a threshold in
             // config (never on the default INFO path, never per-file at INFO)
@@ -492,13 +493,15 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           defs.foreach(symbolTable.add)
         } catch { case _: Exception => () }
       } else if (path.ext == "scala" || path.ext == "sbt") {
-        val content = try os.read(path) catch { case _ => "" }
-        val extractor = ScalaDefinitionsExtractor(symbolTable)
-        extractor.extractFromContent(path.last, content, path)
+        withSourceStream(path) { is =>
+          val extractor = ScalaDefinitionsExtractor(symbolTable)
+          extractor.extract(path.last, is, path)
+        }
       } else if (path.ext == "java") {
-        val content = try os.read(path) catch { case _ => "" }
-        val extractor = JavaDefinitionsExtractor(symbolTable)
-        extractor.extractFromContent(path.last, content, path)
+        withSourceStream(path) { is =>
+          val extractor = JavaDefinitionsExtractor(symbolTable)
+          extractor.extract(path.last, is, path)
+        }
       }
       refreshOpenBuffer(path)
     }
@@ -741,10 +744,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
   private def refreshOpenBuffer(path: os.Path): Unit = withPathLock(path) {
     if (openFiles.contains(path)) {
-      val textOpt = try Some(os.read(path)) catch { case _: Exception => None }
-      textOpt match {
+      val streamOpt = try Some(os.read.inputStream(path)) catch { case _: Exception => None }
+      streamOpt match {
         case None => ()
-        case Some(text) =>
+        case Some(is) =>
+        try {
         val current = sourcesMap.get(path)
         val semPathOpt = if (current == null) None else current.semanticdbPath
         val (occs, locals) = semPathOpt match {
@@ -757,7 +761,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
               // — fall back to source parsing for occurrences. Defs in SymbolTable
               // are full symbols and stay authoritative.
               logger.debug(s"Semanticdb for $path has short ref symbols — falling back to source parse")
-              val rf = sourceResolve(path, text)
+              val rf = sourceResolve(path, is)
               (rf.occurrences, rf.locals)
             }
           case None =>
@@ -767,7 +771,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             if (cached != null && cached.stamp == stamp) {
               (cached.occurrences, cached.locals)
             } else {
-              val rf = sourceResolve(path, text)
+              val rf = sourceResolve(path, is)
               // bounded recent-files cache: tab close/reopen of a source-parsed
               // file (deps, JDK, unpaired workspace files) skips the re-parse
               if (sourceParseCache.size() >= MaxSourceParseCacheEntries) sourceParseCache.clear()
@@ -781,6 +785,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         })
         diskStamps.put(path, diskStampOf(path))
         bufferRefreshCount.incrementAndGet()
+        } finally is.close()
       }
     }
   }
@@ -788,13 +793,23 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   private def diskStampOf(p: os.Path): (Long, Long) =
     try (os.mtime(p), os.size(p)) catch { case _: Exception => (-1L, -1L) }
 
-  private def sourceResolve(path: os.Path, text: String): ResolvedFile =
+  /** Open `path` as a stream and pass it to `f` (parse from the stream — no
+    * intermediate String). None when the file can't be opened (deleted race). */
+  private def withSourceStream[T](path: os.Path)(f: java.io.InputStream => T): Option[T] = {
+    val streamOpt = try Some(os.read.inputStream(path)) catch { case _: Exception => None }
+    streamOpt.map { is =>
+      try f(is)
+      finally is.close()
+    }
+  }
+
+  private def sourceResolve(path: os.Path, is: java.io.InputStream): ResolvedFile =
     if (path.ext == "java") {
       val resolver = new JavaReferencesResolver(resolverTableFor(path))
-      resolver.resolveFromContent(path.last, text, path)
+      resolver.resolve(path.last, is, path)
     } else {
       val resolver = new ScalaReferencesResolver(resolverTableFor(path))
-      resolver.resolveFromContent(path.last, text, path)
+      resolver.resolve(path.last, is, path)
     }
 
   // ── range helpers ────────────────────────────────────────────

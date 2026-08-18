@@ -23,7 +23,6 @@ trait SymbolTable {
   def byPath(path: os.Path): Set[SymbolDefinition]
   def add(symDef: SymbolDefinition): Unit
   def removeByPath(path: os.Path): Unit
-  def keys: Set[String]
   def all: Set[SymbolDefinition]
   /** All full symbols whose owner prefix equals `pkgOwner` (slash-terminated, e.g.
     * `"com/foo/"` or `"_empty_/"`) and whose short name is `name`. Backing for the
@@ -61,8 +60,6 @@ class InMemorySymbolTable extends SymbolTable with StrictLogging {
 
   override def get(symbol: String): Option[SymbolDefinition] =
     Option(definitions.get(symbol))
-
-  override def keys: Set[String] = definitions.keySet().asScala.toSet
 
   override def all: Set[SymbolDefinition] = definitions.values().asScala.toSet
 

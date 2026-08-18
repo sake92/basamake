@@ -19,9 +19,6 @@ object ScalaHoverExtractor {
   def parse(fileName: String, content: String): Option[Source] =
     ScalaParseUtils.parseSource(fileName, content).toOption
 
-  /** Convenience for plain `.scala` content (kept for tests/callers). */
-  def parse(content: String): Option[Source] = parse("file.scala", content)
-
   /** Find the definition whose NAME position matches `range` (tolerant: same
     * start line + same name text) and render its signature + doc comment. */
   def extractSource(src: Source, shortName: String, range: Range): Option[(String, Option[String])] = {

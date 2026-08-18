@@ -6,7 +6,7 @@ import scala.meta.*
 import com.typesafe.scalalogging.StrictLogging
 import scala.util.control.NonFatal
 import scala.collection.mutable
-import ba.sake.basamake.index.{SymbolTable, SymbolDefinition, SymbolUtils, ResolvedFile, ReferenceOccurrence, ScopeStack, Scope, LocalScope, OwnerScope, ImportScopeData}
+import ba.sake.basamake.index.{SymbolTable, SymbolDefinition, SymbolUtils, ResolvedFile, ReferenceOccurrence, ScopeStack, LocalScope, OwnerScope, ImportScopeData}
 
 /** Second pass over a parsed Scala source AST that emits reference occurrences.
   * Operates against an already-populated `SymbolTable` of workspace globals.
@@ -18,23 +18,20 @@ import ba.sake.basamake.index.{SymbolTable, SymbolDefinition, SymbolUtils, Resol
   */
 class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
-  /** Entry point from file-system scan: filename + InputStream. */
+  /** Entry point from file-system scan: filename + InputStream (parsed as a
+    * stream — no intermediate String of the file content). */
   def resolve(name: String, is: InputStream, path: os.Path): ResolvedFile =
-    try {
-      val content = new String(is.readAllBytes(), "UTF-8")
-      resolveFromContent(name, content, path)
-    } catch {
-      case NonFatal(e) =>
-        logger.warn(s"Failed to resolve references in ${path}: ${e.getMessage}")
-        ResolvedFile.empty
-    }
+    resolveParsed(name, path)(ScalaParseUtils.parseSourceStream(name, is))
 
   /** Test-friendly entry point: filename + source string. */
   def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile =
+    resolveParsed(fileName, path)(ScalaParseUtils.parseSource(fileName, content))
+
+  private def resolveParsed(fileName: String, path: os.Path)(parse: => Either[String, Source]): ResolvedFile =
     try {
       currentPath = path
       require(fileName.nonEmpty, "fileName must be non-empty")
-      parseSource(fileName, content) match {
+      parse match {
         case Right(src) =>
           resolveInternal(fileName, src)
         case Left(err) =>
@@ -48,11 +45,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         logger.warn(s"Failed to resolve references in ${path}: ${e.getClass.getSimpleName}: ${e.getMessage}")
         ResolvedFile.empty
     }
-
-  // ── parse ────────────────────────────────────────────────────
-
-  private def parseSource(fileName: String, content: String): Either[String, Source] =
-    ScalaParseUtils.parseSource(fileName, content)
 
   // ── mutable state (cleared per resolve call) ──────────────────
 
@@ -124,10 +116,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         resolveObjectDef(o)
       case e: Defn.Enum =>
         resolveEnum(e)
-      case ec: Defn.EnumCase =>
-        resolveEnumCase(ec)
-      case rec: Defn.RepeatedEnumCase =>
-        resolveRepeatedEnumCase(rec)
       case d: Defn.Def =>
         resolveDef(d)
       case dd: Decl.Def =>
@@ -140,16 +128,10 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         resolveVar(vr)
       case dvr: Decl.Var =>
         resolveDeclVar(dvr)
-      case dt: Defn.Type =>
-        resolveTypeAlias(dt)
       case g: Defn.Given =>
         resolveGiven(g)
-      case ga: Defn.GivenAlias =>
-        resolveGivenAlias(ga)
       case eg: Defn.ExtensionGroup =>
         resolveExtensionGroup(eg)
-      case cs: Ctor.Secondary =>
-        resolveSecondaryCtor(cs)
       case b: Term.Block =>
         resolveBlock(b)
       case t: Term =>
@@ -300,7 +282,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         addLocal(tp.name.pos, localTpSym, tp.name.value, isType = false)
       }
 
-      val ctorSym = SymbolUtils.constructorSymbol(globalSym, 0)
       c.ctor.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
 
       // Push owner scope and local scope
@@ -324,7 +305,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       currentOwnerIsType = oldIsType
     } else {
       // Global class
-      val ctorSym = SymbolUtils.constructorSymbol(classSym, 0)
       c.ctor.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
 
       val oldOwner = currentOwner
@@ -357,7 +337,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolveTrait(t: Defn.Trait): Unit = {
     val effOwner = currentOwner
     val traitSym = SymbolUtils.typeSymbol(effOwner, t.name.value)
-    val ctorSym = SymbolUtils.constructorSymbol(traitSym, 0)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
@@ -430,7 +409,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val effOwner = currentOwner
     val typeSym = SymbolUtils.typeSymbol(effOwner, e.name.value)
     val termSym = SymbolUtils.termSymbol(effOwner, e.name.value)
-    val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
 
     val oldOwner = currentOwner
     val oldIsType = currentOwnerIsType
@@ -446,16 +424,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     currentOwner = oldOwner
     currentOwnerIsType = oldIsType
-  }
-
-  private def resolveEnumCase(ec: Defn.EnumCase): Unit = {
-    val sym = SymbolUtils.termSymbol(currentOwner, ec.name.value)
-  }
-
-  private def resolveRepeatedEnumCase(rec: Defn.RepeatedEnumCase): Unit = {
-    rec.cases.foreach { c =>
-      val sym = SymbolUtils.termSymbol(currentOwner, c.value)
-    }
   }
 
   // ── def ──────────────────────────────────────────────────────
@@ -506,8 +474,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   // ── val ──────────────────────────────────────────────────────
 
   private def resolveVal(v: Defn.Val): Unit = {
-    val effOwner = effectiveOwner
-
     v.decltpe.foreach(resolveType)
     if (isInsideMethod) {
       v.pats.foreach {
@@ -526,14 +492,12 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   }
 
   private def resolveDeclVal(dv: Decl.Val): Unit = {
-    val effOwner = effectiveOwner
     resolveType(dv.decltpe)
   }
 
   // ── var ──────────────────────────────────────────────────────
 
   private def resolveVar(vr: Defn.Var): Unit = {
-    val effOwner = effectiveOwner
     vr.decltpe.foreach(resolveType)
     if (isInsideMethod) {
       vr.pats.foreach {
@@ -556,14 +520,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   }
 
   private def resolveDeclVar(dvr: Decl.Var): Unit = {
-    val effOwner = effectiveOwner
     resolveType(dvr.decltpe)
-  }
-
-  // ── type alias ───────────────────────────────────────────────
-
-  private def resolveTypeAlias(dt: Defn.Type): Unit = {
-    // Type alias is registered in SymbolTable by the extractor
   }
 
   // ── given ────────────────────────────────────────────────────
@@ -582,12 +539,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       scopeStack.pop()
       currentOwner = oldOwner
       currentOwnerIsType = oldIsType
-    }
-  }
-
-  private def resolveGivenAlias(ga: Defn.GivenAlias): Unit = {
-    if (ga.name.value.nonEmpty) {
-      // Name is registered in SymbolTable by the extractor — nothing to emit here
     }
   }
 
@@ -615,12 +566,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case s: Stat => resolveStat(s)
     }
     methodDepth -= 1
-  }
-
-  // ── secondary constructor ────────────────────────────────────
-
-  private def resolveSecondaryCtor(cs: Ctor.Secondary): Unit = {
-    // Ctor params are resolved by the extractor; nothing to emit here
   }
 
   // ── import ───────────────────────────────────────────────────

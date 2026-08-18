@@ -96,13 +96,13 @@ object SourceJarIndexer extends StrictLogging {
               doneEntries += 1
               try {
                 val entryPath = entry.getName
-                val content = new String(zip.getInputStream(entry).readAllBytes(), "UTF-8")
                 // the recorded def path is where the file WILL live once extracted
                 val extractedPath = srcRoot / os.RelPath(entryPath)
+                val entryIs = zip.getInputStream(entry)
                 if (entryPath.endsWith(".java"))
-                  javaExtractor.extractFromContent(entryPath, content, extractedPath)
+                  javaExtractor.extract(entryPath, entryIs, extractedPath)
                 else
-                  scalaExtractor.extractFromContent(entryPath, content, extractedPath)
+                  scalaExtractor.extract(entryPath, entryIs, extractedPath)
               } catch {
                 case NonFatal(e) =>
                   logger.warn(s"Skipping unindexable entry ${entry.getName} in $source: ${e.getMessage}")

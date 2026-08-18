@@ -33,7 +33,7 @@ class BspConnection (
   @volatile private var process: Option[java.lang.Process] = None
   @volatile private var buildServer: Option[BuildServer] = None
   @volatile private var alive = false
-  @volatile var inverseSourcesUnsupported = false
+  @volatile private var inverseSourcesUnsupported = false
 
 
   @volatile private var sourceRootDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
@@ -443,7 +443,7 @@ object BspConnection {
 
   /** True when the exception (possibly ExecutionException-wrapped from future.get)
     * indicates the BSP stream is closed — i.e. a real error, not a busy server. */
-  private[bsp] def isStreamClosed(e: Throwable): Boolean = {
+  private def isStreamClosed(e: Throwable): Boolean = {
     val unwrapped = e match {
       case ee: java.util.concurrent.ExecutionException if ee.getCause != null => ee.getCause
       case other => other
@@ -467,7 +467,7 @@ object BspConnection {
     }.toMap
   }
 
-  private[bsp] def extractTargetSourceDirs(sources: SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
+  private def extractTargetSourceDirs(sources: SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
     def ensureTrailingSlash(uri: String): String = if (uri.endsWith("/")) uri else s"$uri/"
     def parentDirUri(uri: String): String = {
       val noTrail = if (uri.endsWith("/")) uri.stripSuffix("/") else uri
@@ -489,14 +489,14 @@ object BspConnection {
     }.toMap
   }
 
-  private[bsp] def extractTargetClassDir(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, os.Path] = {
+  private def extractTargetClassDir(opts: ScalacOptionsResult): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
       val path = os.Path(URI.create(item.getClassDirectory))
       item.getTarget -> path
     }.toMap
   }
 
-  private[bsp] def extractTargetSemanticdbDir(opts: ScalacOptionsResult, classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path]): Map[BuildTargetIdentifier, os.Path] = {
+  private def extractTargetSemanticdbDir(opts: ScalacOptionsResult, classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path]): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
       val target = item.getTarget
       val path = ScalacOptionsUtils.semanticdbTargetPath(Option(item.getOptions).toList.flatMap(_.asScala))
@@ -515,7 +515,7 @@ object BspConnection {
   }
 
   /** Converts a dependency-source URI (possibly a `jar:` URI) to an absolute path. */
-  private[bsp] def toSourcePath(uri: String): Option[os.Path] = {
+  private def toSourcePath(uri: String): Option[os.Path] = {
     try {
       val cleaned = if (uri.startsWith("jar:")) uri.stripPrefix("jar:") else uri
       val noEntry = cleaned.takeWhile(_ != '!') // drop any "!/entry" suffix
@@ -525,7 +525,7 @@ object BspConnection {
     }
   }
 
-  private[bsp] def targetIdsForUri(
+  private def targetIdsForUri(
       uri: String, targetToSourceRoots: Map[BuildTargetIdentifier, List[String]]
   ): List[BuildTargetIdentifier] = {
     def inSourceRoot(u: String, root: String): Boolean = {

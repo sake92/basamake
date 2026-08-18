@@ -13,7 +13,7 @@ object GitIgnoreEngine {
     * (a dir for normal repos, a file for worktrees), ordered outermost-first.
     * If no `.git` is found in the chain: just `Vector(start)` — ancestor .gitignore
     * files above a non-git folder do not apply. */
-  private[indexing] def ancestorChain(start: os.Path): Vector[os.Path] = {
+  private def ancestorChain(start: os.Path): Vector[os.Path] = {
     var chain = Vector.empty[os.Path]
     var cur: os.Path = start
     while true do {
@@ -44,7 +44,7 @@ object GitIgnoreEngine {
   *
   * The rules cache is guarded by a reentrant lock, so concurrent `isIgnored`
   * calls (file-watcher thread + BSP debounce timer) are safe. `baseLayers` is
-  * written only at construction; `reload()` takes the same lock. */
+  * written only at construction (callers rebuild the engine on .gitignore change). */
 final class GitIgnoreEngine(
     root: os.Path,
     extraRootPatterns: Vector[String] = Vector.empty,
@@ -131,11 +131,5 @@ final class GitIgnoreEngine(
         else
           if GitIgnore.matchesPattern(pattern, rel, isDir) then ignored = true
     ignored
-  }
-
-  /** Re-parse base layers after a `.gitignore` change; drops the nested-rules cache. */
-  def reload(): Unit = rulesLock.synchronized {
-    rulesCache.clear()
-    baseLayers = computeBaseLayers()
   }
 }

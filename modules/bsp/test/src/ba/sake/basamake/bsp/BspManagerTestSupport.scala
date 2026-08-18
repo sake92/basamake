@@ -1,5 +1,7 @@
 package ba.sake.basamake.bsp
 
+import ba.sake.basamake.config.BasamakeConfig
+
 /** Builds real components for BspManager tests using the same construction
   * production uses (BasamakeLanguageServer fields). No testing-only
   * constructors, no nulls, no injected fake clients in production code. */
@@ -20,7 +22,7 @@ object BspManagerTestSupport {
       symbolTable,
       Some(depsTable)
     )
-    val mgr = new BspManager(root, index, depsTable)
+    val mgr = new BspManager(root, index, depsTable, BasamakeConfig.load(root))
     mgr.initialize(client, warmDeps = Nil, workDoneProgress = workDoneProgress)
     mgr
   }

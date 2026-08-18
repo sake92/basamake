@@ -18,8 +18,9 @@ object BspDiscovery extends StrictLogging {
     jsonFiles.toList.sortBy(_.toString).flatMap(parseBspSpec(_, workspaceRoot))
   }
 
-  /** Parse a single .bsp JSON file. Public for the file watcher. */
-  def parseSingleSpec(jsonPath: os.Path, workspaceRoot: os.Path): Option[BspConnectionSpec] =
+  /** Parse a single .bsp JSON file. Called from BspManager.handleBspChanges
+    * (same package) when the watcher detects a new/changed .bsp JSON. */
+  private[bsp] def parseSingleSpec(jsonPath: os.Path, workspaceRoot: os.Path): Option[BspConnectionSpec] =
     parseBspSpec(jsonPath, workspaceRoot)
 
   private def findBspJsonFiles(workspaceRoot: os.Path, engine: GitIgnoreEngine): Set[os.Path] =

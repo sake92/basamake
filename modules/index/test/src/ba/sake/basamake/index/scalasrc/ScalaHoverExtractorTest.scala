@@ -8,7 +8,7 @@ class ScalaHoverExtractorTest extends FunSuite {
   /** Parse `content`, then extract hover at the line containing `marker`
     * for the definition named `name`. */
   private def extractAt(content: String, name: String, marker: String): Option[(String, Option[String])] = {
-    val src = ScalaHoverExtractor.parse(content).get
+    val src = ScalaHoverExtractor.parse("test.scala", content).get
     val line = content.linesIterator.indexWhere(_.contains(marker))
     assert(line >= 0, s"marker not found: $marker")
     ScalaHoverExtractor.extractSource(src, name, new Range(line, 0, line, 0))
@@ -106,7 +106,7 @@ class ScalaHoverExtractorTest extends FunSuite {
 
   test("no match on wrong line") {
     val code = "object A {\n  def foo(): Int = 1\n}"
-    val src = ScalaHoverExtractor.parse(code).get
+    val src = ScalaHoverExtractor.parse("test.scala", code).get
     val res = ScalaHoverExtractor.extractSource(src, "foo", new Range(0, 0, 0, 0))
     assertEquals(res, None)
   }

@@ -80,7 +80,6 @@ object LmdbSerializer extends StrictLogging {
     override def get(symbol: String): Option[SymbolDefinition] = None
     override def byPath(path: os.Path): Set[SymbolDefinition] = Set.empty
     override def removeByPath(path: os.Path): Unit = ()
-    override def keys: Set[String] = Set.empty
     override def all: Set[SymbolDefinition] = Set.empty
     override def symbolsIn(pkgOwner: String, name: String): Set[String] = Set.empty
 
@@ -136,12 +135,6 @@ object LmdbSerializer extends StrictLogging {
       // on failure remove the partial write (no-op on success — dir was renamed away)
       os.remove.all(tmpPath)
     }
-  }
-
-  /** Convenience wrapper for callers that already hold a table (tests). */
-  def save(table: SymbolTable, path: os.Path): Unit = {
-    streamingSave(path, path / os.up) { sink => table.all.foreach(sink.add) }
-    ()
   }
 
   // Shared read-only envs: ONE open env per index path, reused across point

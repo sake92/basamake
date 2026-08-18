@@ -79,12 +79,12 @@ class CompileProgressReporterTest extends FunSuite {
     rep.onTaskProgress(connId, progressParams("task-1", 50L, "50%"))
     rep.onTaskFinish(connId, finishParams("task-1", StatusCode.OK, "Compiled"))
 
-    assertEquals(created.asScala.map(_.getToken.getLeft).toList, List("basamake-compile-task-1"))
+    assertEquals(created.asScala.map(_.getToken.getLeft).toList, List(s"basamake-compile-${connId.value}-task-1"))
     val events = sent.asScala.toList.map(progressEvent)
     assertEquals(events, List(
-      ("basamake-compile-task-1", "begin", "Compiling project A"),
-      ("basamake-compile-task-1", "report", "50%"),
-      ("basamake-compile-task-1", "end", "Compiled")
+      (s"basamake-compile-${connId.value}-task-1", "begin", "Compiling project A"),
+      (s"basamake-compile-${connId.value}-task-1", "report", "50%"),
+      (s"basamake-compile-${connId.value}-task-1", "end", "Compiled")
     ))
     assertEquals(rep.activeTokenCount(connId), 0, "token must not leak after finish")
   }
@@ -129,7 +129,7 @@ class CompileProgressReporterTest extends FunSuite {
     rep.endAll(connId) // connection died mid-task — no finish will ever arrive
 
     val ends = sent.asScala.toList.map(progressEvent).filter(_._2 == "end")
-    assertEquals(ends.map(_._1), List("basamake-compile-a"))
+    assertEquals(ends.map(_._1), List(s"basamake-compile-${connId.value}-a"))
     assertEquals(rep.activeTokenCount(connId), 0)
     assertEquals(rep.activeTokenCount(other), 1, "other connection's token must survive")
     rep.endAllConnections()
@@ -142,6 +142,24 @@ class CompileProgressReporterTest extends FunSuite {
 
     rep.onTaskProgress(connId, progressParams("ghost", 50L, "50%"))
     assertEquals(sent.size(), 0)
+  }
+
+  test("same task id on two connections yields distinct tokens (no cross-connection collision)") {
+    val created = new CopyOnWriteArrayList[WorkDoneProgressCreateParams]()
+    val sent = new CopyOnWriteArrayList[ProgressParams]()
+    val rep = freshReporter(created, sent)
+    val connA = BspConnectionId("bsp://a")
+    val connB = BspConnectionId("bsp://b")
+
+    rep.onTaskStart(connA, startParams("t", "Compiling A"))
+    rep.onTaskStart(connB, startParams("t", "Compiling B"))
+
+    val tokens = created.asScala.map(_.getToken.getLeft).toList
+    assertEquals(tokens.distinct.size, 2, s"tokens must differ across connections, got $tokens")
+    val begins = sent.asScala.toList.map(progressEvent)
+    assertEquals(begins.map(_._1).distinct.size, 2, "both begins must reach the client")
+    assertEquals(rep.activeTokenCount(connA), 1)
+    assertEquals(rep.activeTokenCount(connB), 1)
   }
 
   test("emits nothing when disabled (no window.workDoneProgress capability)") {

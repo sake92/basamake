@@ -29,18 +29,19 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
   // setup churn. NOT thread-safe: never share an extractor across threads.
   private val javaParser = new JavaParser()
 
+  /** Entry point from file-system scan: filename + InputStream (parsed as a
+    * stream — no intermediate String of the file content). */
   def extract(name: String, is: InputStream, path: os.Path): Unit =
-    try {
-      val content = new String(is.readAllBytes(), "UTF-8")
-      extractFromContent(name, content, path)
-    } catch {
-      case NonFatal(e) => logger.warn(s"Failed to parse Java source ${path}: ${e.getMessage}")
-    }
+    extractParsed(path)(parseStream(is))
 
+  /** Test-friendly entry point: filename + source string. */
   def extractFromContent(fileName: String, content: String, path: os.Path): Unit =
+    extractParsed(path)(parse(content))
+
+  private def extractParsed(path: os.Path)(parsed: => Option[CompilationUnit]): Unit =
     try {
       currentPath = path
-      parse(content) match {
+      parsed match {
         case Some(cu) => extractCompilationUnit(cu)
         case None     => ()
       }
@@ -53,6 +54,11 @@ class JavaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 
   private def parse(content: String): Option[CompilationUnit] = {
     val res: ParseResult[CompilationUnit] = javaParser.parse(content)
+    if (res.getResult.isPresent) Some(res.getResult.get()) else None
+  }
+
+  private def parseStream(is: InputStream): Option[CompilationUnit] = {
+    val res: ParseResult[CompilationUnit] = javaParser.parse(is, java.nio.charset.StandardCharsets.UTF_8)
     if (res.getResult.isPresent) Some(res.getResult.get()) else None
   }
 

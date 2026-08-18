@@ -40,9 +40,18 @@ object ScalaFileStyle {
   * named, so matching them is impossible). */
 object ScalaParseUtils {
 
-  def parseSource(fileName: String, content: String): Either[String, Source] = {
+  /** Test-friendly entry point: filename + source string. */
+  def parseSource(fileName: String, content: String): Either[String, Source] =
+    parseInput(fileName, Input.String(content))
+
+  /** Production entry point: filename + raw InputStream (disk file, zip entry).
+    * scalameta reads the stream itself (`Input.Stream`), so basamake never
+    * materializes the file content as a String. */
+  def parseSourceStream(fileName: String, is: java.io.InputStream): Either[String, Source] =
+    parseInput(fileName, Input.Stream(is, java.nio.charset.StandardCharsets.UTF_8))
+
+  private def parseInput(fileName: String, input: Input): Either[String, Source] = {
     val style = ScalaFileStyle.fromFileName(fileName)
-    val input = Input.String(content)
     val sbtLike = style == ScalaFileStyle.Sbt
     val step1 =
       if sbtLike then Scala3Future.withAllowToplevelStatements(true).withAllowToplevelTerms(true)

@@ -8,7 +8,7 @@ import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.index.{SymbolDefinition, InMemorySymbolTable, HoverProvider}
-import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
+import ba.sake.basamake.index.indexing.{WorkspaceIndex, IndexedSymbolTable}
 import ba.sake.basamake.bsp.{BspManager, BspWarmStart}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.util.LoggingUtils
@@ -43,7 +43,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     basamakeConfig.debugSymbolTableDump.getOrElse(false),
     basamakeConfig.debugSlowFallbackMs
   )
-  private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable)
+  private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable, basamakeConfig)
   private val hoverProvider = HoverProvider(workspaceIndex)
 
   // ----- LanguageClientAware
@@ -60,7 +60,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
-    capabilities.setDocumentSymbolProvider(true)
     capabilities.setHoverProvider(true)
     // Advertise rename handling so VS Code sends didRenameFiles notifications.
     // MUST declare filters: vscode-languageclient only registers its
@@ -219,12 +218,13 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   }
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
-    // TODO in new thread?
     val uri = params.getTextDocument.getUri
     logger.debug(s"didClose: $uri")
     val path = os.Path(URI.create(uri))
-    workspaceIndex.onDidClose(path)
-    bspManager.clearDiagnostics(uri)
+    Thread.ofVirtual().start(() => {
+      workspaceIndex.onDidClose(path)
+      bspManager.clearDiagnostics(uri)
+    })
   }
 
   override def definition(params: DefinitionParams)
@@ -288,17 +288,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
           null
       }
     }, navigationExecutor)
-
-  // documentSymbol returns empty for v1 — descriptor → SymbolKind map is deferred follow-up
-  override def documentSymbol(params: DocumentSymbolParams)
-      : CompletableFuture[
-        java.util.List[org.eclipse.lsp4j.jsonrpc.messages.Either[SymbolInformation, DocumentSymbol]]
-      ] = {
-    logger.debug(s"documentSymbol: ${params.getTextDocument.getUri}")
-    CompletableFuture.completedFuture(
-      List.empty.asJava
-    )
-  }
 
   private def toLspLocation(loc: SymbolDefinition): Location = {
     val uri = loc.path.toNIO.toUri.toString

@@ -20,7 +20,8 @@ import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedS
 class BspManager (
     workspaceRoot: os.Path,
     workspaceIndex: WorkspaceIndex,
-    depsSymbolTable: IndexedSymbolTable
+    depsSymbolTable: IndexedSymbolTable,
+    config: BasamakeConfig
 ) extends BspEvents with StrictLogging {
 
   private val connections = new ConcurrentHashMap[BspConnectionId, BspConnection]()
@@ -30,7 +31,6 @@ class BspManager (
     * logMessage when the client lacks the progress capability. */
   private val compileProgress = new CompileProgressReporter
   private var knownBspFiles: Set[os.Path] = Set.empty
-  private val config = BasamakeConfig.load(workspaceRoot)
 
   private val watchFilter = new WatchFilter(workspaceRoot, config)
   private val bspWatcher = new BspWatcher(
@@ -365,7 +365,6 @@ class BspManager (
       }
       // a killed server never sends taskFinish — end its progress tokens now
       compileProgress.endAll(connId)
-      router.unregisterGroundTruth(connId)
       val bspDir = conn.spec.path.toNIO.getParent
       router.unregisterBspRoot(bspDir, connId)
       conn.shutdown()
@@ -427,10 +426,10 @@ class BspManager (
 }
 
 object BspManager {
-  def apply(workspaceRoot: os.Path, workspaceIndex: WorkspaceIndex, depsSymbolTable: IndexedSymbolTable): BspManager =
-    new BspManager(workspaceRoot, workspaceIndex, depsSymbolTable)
+  def apply(workspaceRoot: os.Path, workspaceIndex: WorkspaceIndex, depsSymbolTable: IndexedSymbolTable, config: BasamakeConfig): BspManager =
+    new BspManager(workspaceRoot, workspaceIndex, depsSymbolTable, config)
 
-  private[bsp] def classifyBspChanges(
+  private def classifyBspChanges(
       known: Set[os.Path], current: Set[os.Path], changed: Set[os.Path]
   ): (Set[os.Path], Set[os.Path], Set[os.Path]) = {
     val newFiles = current -- known

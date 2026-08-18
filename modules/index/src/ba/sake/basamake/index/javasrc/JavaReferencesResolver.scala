@@ -26,20 +26,19 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private var currentPath: os.Path = uninitialized
 
+  /** Entry point from file-system scan: filename + InputStream (parsed as a
+    * stream — no intermediate String of the file content). */
   def resolve(name: String, is: InputStream, path: os.Path): ResolvedFile =
-    try {
-      val content = new String(is.readAllBytes(), "UTF-8")
-      resolveFromContent(name, content, path)
-    } catch {
-      case NonFatal(e) =>
-        logger.warn(s"Failed to resolve references in ${path}: ${e.getMessage}")
-        ResolvedFile(Vector.empty, Vector.empty)
-    }
+    resolveParsed(path)(parseStream(is))
 
+  /** Test-friendly entry point: filename + source string. */
   def resolveFromContent(fileName: String, content: String, path: os.Path): ResolvedFile =
+    resolveParsed(path)(parse(content))
+
+  private def resolveParsed(path: os.Path)(parsed: => Option[CompilationUnit]): ResolvedFile =
     try {
       currentPath = path
-      parse(content) match {
+      parsed match {
         case Some(cu) => resolveInternal(cu)
         case None => ResolvedFile(Vector.empty, Vector.empty)
       }
@@ -53,6 +52,11 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def parse(content: String): Option[CompilationUnit] = {
     val res: ParseResult[CompilationUnit] = new JavaParser().parse(content)
+    if (res.getResult.isPresent) Some(res.getResult.get()) else None
+  }
+
+  private def parseStream(is: InputStream): Option[CompilationUnit] = {
+    val res: ParseResult[CompilationUnit] = new JavaParser().parse(is, java.nio.charset.StandardCharsets.UTF_8)
     if (res.getResult.isPresent) Some(res.getResult.get()) else None
   }
 
@@ -79,10 +83,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       .getOrElse(SymbolUtils.packageOwner(Nil))
     currentOwner = pkgOwner
     currentOwnerIsType = false
-
-    // emit def for package
-    cu.getPackageDeclaration.toScala.foreach { pd =>
-    }
 
     scopeStack.push(OwnerScope(pkgOwner))
 
@@ -178,17 +178,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       scopeStack.push(LocalScope(collection.mutable.Map(tp.getNameAsString -> localSym)))
     }
 
-    // ctor def
-    val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
-
-    // ctor params (from first constructor or implicit)
-    val ctors = c.getConstructors.asScala
-    if (ctors.nonEmpty) {
-      ctors.head.getParameters.asScala.foreach { p =>
-        // TODO: emit param def
-      }
-    }
-
     // recurse members
     withOwner(typeSym, isType = true, c.getNameAsString) {
       c.getMembers.asScala.foreach(resolveMember(_, typeSym))
@@ -202,10 +191,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveEnum(e: EnumDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, e.getNameAsString)
-
-    e.getEntries.asScala.foreach { en =>
-      val termSym = SymbolUtils.termSymbol(typeSym, en.getNameAsString)
-    }
 
     withOwner(typeSym, isType = true, e.getNameAsString) {
       e.getMembers.asScala.foreach(resolveMember(_, typeSym))
@@ -230,19 +215,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     r.getTypeParameters.asScala.foreach { tp =>
       val localSym = nextLocalSymbol()
       addLocalRange(tp.getName.getRange, localSym, tp.getNameAsString, isType = false)
-    }
-
-    // canonical ctor
-    val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
-    r.getParameters.asScala.foreach { p =>
-    }
-
-    // synth accessors (skip if user method same name)
-    val userMethodNames = r.getMembers.asScala.collect { case md: MethodDeclaration => md.getNameAsString }.toSet
-    r.getParameters.asScala.foreach { p =>
-      val cn = p.getNameAsString
-      if (!userMethodNames.contains(cn)) {
-      }
     }
 
     withOwner(typeSym, isType = true, r.getNameAsString) {
@@ -270,7 +242,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         v.getInitializer.toScala.foreach(e => resolveExpr(e, isType = false, inCallContext = false))
       }
     case amd: AnnotationMemberDeclaration =>
-      val methodSym = SymbolUtils.methodSymbol(owner, amd.getNameAsString, 0)
     case td: TypeDeclaration[?] =>
       resolveTypeDecl(td, owner)
     case _ => ()
@@ -280,9 +251,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveMethod(md: MethodDeclaration, owner: String): Unit = {
     val methodSym = SymbolUtils.methodSymbol(owner, md.getNameAsString, 0)
-
-    md.getParameters.asScala.foreach { p =>
-    }
 
     md.getTypeParameters.asScala.foreach { tp =>
       val localSym = nextLocalSymbol()

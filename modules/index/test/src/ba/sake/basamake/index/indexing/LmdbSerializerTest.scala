@@ -25,7 +25,7 @@ class LmdbSerializerTest extends FunSuite {
       path = srcDir / "Bar.java"
     ))
 
-    LmdbSerializer.save(table, indexDir)
+    LmdbSerializer.streamingSave(indexDir, indexDir / os.up) { sink => table.all.foreach(sink.add) }
 
     val bar = LmdbSerializer.get(indexDir, "foo.Bar#")
     assertEquals(bar.map(_.symbol), Some("foo.Bar#"))
@@ -43,7 +43,7 @@ class LmdbSerializerTest extends FunSuite {
     table.add(SymbolDefinition("java/lang/Object#clone().", "clone", false, Range(1, 0, 1, 5), srcDir / "Object.java"))
     table.add(SymbolDefinition("java/lang/Object#wait().(millis)", "millis", false, Range(2, 0, 2, 5), srcDir / "Object.java"))
 
-    LmdbSerializer.save(table, indexDir)
+    LmdbSerializer.streamingSave(indexDir, indexDir / os.up) { sink => table.all.foreach(sink.add) }
 
     assertEquals(LmdbSerializer.get(indexDir, "java/lang/Object#").map(_.shortName), Some("Object"))
     assertEquals(LmdbSerializer.get(indexDir, "java/lang/Object#clone().").map(_.shortName), Some("clone"))
@@ -54,7 +54,7 @@ class LmdbSerializerTest extends FunSuite {
   test("empty table roundtrip") {
     val table = new InMemorySymbolTable()
     val path = os.temp.dir() / "empty.lmdb"
-    LmdbSerializer.save(table, path)
+    LmdbSerializer.streamingSave(path, path / os.up) { sink => table.all.foreach(sink.add) }
     assertEquals(LmdbSerializer.get(path, "anything"), None)
   }
 
@@ -70,7 +70,7 @@ class LmdbSerializerTest extends FunSuite {
       path = srcDir / "Bar.scala"
     ))
 
-    LmdbSerializer.save(table, indexDir)
+    LmdbSerializer.streamingSave(indexDir, indexDir / os.up) { sink => table.all.foreach(sink.add) }
 
     assert(LmdbSerializer.get(indexDir, "foo.Bar.`<init>`().").isDefined)
   }

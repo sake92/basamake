@@ -11,22 +11,20 @@ import ba.sake.basamake.index.{SymbolTable, SymbolDefinition, SymbolUtils}
 
 class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging {
 
-  /** Entry point from file-system scan: filename + InputStream. */
+  /** Entry point from file-system scan: filename + InputStream (parsed as a
+    * stream — no intermediate String of the file content). */
   def extract(name: String, is: InputStream, path: os.Path): Unit =
-    try {
-      val content = new String(is.readAllBytes(), "UTF-8")
-      extractFromContent(name, content, path)
-    } catch {
-      case NonFatal(e) =>
-        logger.error(s"Failed to parse Scala source '${path}': ${e.getMessage}")
-    }
+    extractParsed(name, path)(ScalaParseUtils.parseSourceStream(name, is))
 
   /** Test-friendly entry point: filename + source string. */
   def extractFromContent(fileName: String, content: String, path: os.Path): Unit =
+    extractParsed(fileName, path)(ScalaParseUtils.parseSource(fileName, content))
+
+  private def extractParsed(fileName: String, path: os.Path)(parse: => Either[String, Source]): Unit =
     try {
       currentPath = path
       require(fileName.nonEmpty, "fileName must be non-empty — Scala 3 wraps top-level defs under `<basename>$package.` (`.sbt` under `<basename>.`) and needs the filename to compute it")
-      parseSource(fileName, content) match {
+      parse match {
         case Right(src) =>
           extractInternal(fileName, src)
         case Left(err) =>
@@ -38,11 +36,6 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         // (MatchError's message names the tree class) and continue.
         logger.warn(s"Failed to extract definitions from ${path}: ${e.getClass.getSimpleName}: ${e.getMessage}")
     }
-
-  // ── parse ────────────────────────────────────────────────────
-
-  private def parseSource(fileName: String, content: String): Either[String, Source] =
-    ScalaParseUtils.parseSource(fileName, content)
 
   // ── main traversal ───────────────────────────────────────────
 
@@ -111,10 +104,10 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       case c: Defn.Class =>
         val sym = SymbolUtils.typeSymbol(owner, c.name.value)
         addSymbol(sym, c.name.value, isType = true, c.name.pos)
-        emitTypeParams(sym, c.tparams, c.name.pos)
+        emitTypeParams(sym, c.tparams)
         val ctorSym = SymbolUtils.constructorSymbol(sym, bumpOvl(ovl, sym, "<init>"))
         addSymbol(ctorSym, "<init>", isType = false, c.name.pos) // stand-in: class name position
-        emitCtorParams(ctorSym, c.ctor.paramss, c.name.pos)
+        emitCtorParams(ctorSym, c.ctor.paramss)
         emitCtorFieldAccessors(sym, c.ctor.paramss, c.name.pos)
         val isCaseClass = c.mods.exists(_.isInstanceOf[Mod.Case])
         if (isCaseClass)
@@ -150,7 +143,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         addSymbol(SymbolUtils.termSymbol(owner, t.name.value), t.name.value, isType = false, t.name.pos)
         val ctorIdx = bumpOvl(ovl, sym, "<init>")
         addSymbol(SymbolUtils.constructorSymbol(sym, ctorIdx), "<init>", isType = false, t.name.pos)
-        emitTypeParams(sym, t.tparams, t.name.pos)
+        emitTypeParams(sym, t.tparams)
         extractStats(t.templ.stats, sym, ovl, None)
 
       // ── object ────────────────────────────────────────────────
@@ -167,7 +160,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         addSymbol(termSym, e.name.value, isType = false, e.name.pos)
         val ctorIdx = bumpOvl(ovl, typeSym, "<init>")
         addSymbol(SymbolUtils.constructorSymbol(typeSym, ctorIdx), "<init>", isType = false, e.name.pos)
-        emitTypeParams(typeSym, e.tparams, e.name.pos)
+        emitTypeParams(typeSym, e.tparams)
         extractStats(e.templ.stats, termSym, ovl, None)
 
       // ── enum case (single) ────────────────────────────────────
@@ -186,7 +179,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
         val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
         addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
-        emitParams(methodSym, d.paramss, d.name.pos)
+        emitParams(methodSym, d.paramss)
 
       // ── abstract decl def ─────────────────────────────────────
       case dd: Decl.Def =>
@@ -194,7 +187,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         val idx = bumpOvl(ovl, effectiveOwner, dd.name.value)
         val methodSym = SymbolUtils.methodSymbol(effectiveOwner, dd.name.value, idx)
         addSymbol(methodSym, dd.name.value, isType = false, dd.name.pos)
-        emitParams(methodSym, dd.paramss, dd.name.pos)
+        emitParams(methodSym, dd.paramss)
 
       // ── abstract decl val ─────────────────────────────────────
       case dv: Decl.Val =>
@@ -221,7 +214,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
         val idx = bumpOvl(ovl, owner, "<init>")
         val ctorSym = SymbolUtils.constructorSymbol(owner, idx)
         addSymbol(ctorSym, "<init>", isType = false, cs.name.pos)
-        emitParams(ctorSym, cs.paramss, cs.name.pos)
+        emitParams(ctorSym, cs.paramss)
 
       // ── val ───────────────────────────────────────────────────
       case v: Defn.Val =>
@@ -274,16 +267,16 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
                 val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
                 val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
                 addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
-                emitParams(methodSym, eg.paramss, d.name.pos)   // extension params
-                emitParams(methodSym, d.paramss, d.name.pos)    // method's own params
+                emitParams(methodSym, eg.paramss)   // extension params
+                emitParams(methodSym, d.paramss)    // method's own params
               case s => extractStat(s, effectiveOwner, ovl, None)
             }
           case d: Defn.Def =>
             val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
             val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
             addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
-            emitParams(methodSym, eg.paramss, d.name.pos)
-            emitParams(methodSym, d.paramss, d.name.pos)
+            emitParams(methodSym, eg.paramss)
+            emitParams(methodSym, d.paramss)
           case s: Stat => extractStat(s, effectiveOwner, ovl, None)
         }
 
@@ -348,7 +341,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
   // ── type parameter emission ──────────────────────────────────
 
-  private def emitTypeParams(ownerTypeSym: String, tparams: List[Type.Param], standInPos: Position): Unit = {
+  private def emitTypeParams(ownerTypeSym: String, tparams: List[Type.Param]): Unit = {
     tparams.foreach { tp =>
       val n = tp.name.value
       if (n.nonEmpty)
@@ -359,16 +352,16 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
   // ── parameter emission helpers ───────────────────────────────
 
   /** Emits `<methodSym>(<paramName>)` for each Term.Param in the paramss. */
-  private def emitParams(methodSym: String, paramss: List[List[Term.Param]], standInPos: Position): Unit =
+  private def emitParams(methodSym: String, paramss: List[List[Term.Param]]): Unit =
     paramss.foreach { clause => clause.foreach { p =>
       val n = p.name.value
       if (n.nonEmpty) addSymbol(SymbolUtils.parameterSymbol(methodSym, n), n, isType = false, p.name.pos)
     }}
 
-  /** Primary-constructor params double as init parameters.
-    * Uses standInPos for the range (enclosing class name position). */
-  private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]], standInPos: Position): Unit =
-    emitParams(ctorSym, paramss, standInPos)
+  /** Primary-constructor params double as init parameters. Ranges are the
+    * params' own name positions (same as emitParams). */
+  private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]]): Unit =
+    emitParams(ctorSym, paramss)
 
   /** Emits `<classSym>.<paramName>.` for each primary-ctor param.
     * Uses standInPos for the range (enclosing class name position). */
@@ -406,7 +399,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
     val applyIdx = bumpOvl(ovl, companion, "apply")
     val applySym = SymbolUtils.methodSymbol(companion, "apply", applyIdx)
     addSymbol(applySym, "apply", isType = false, classPos) // synthetic → stand-in
-    emitParams(applySym, primaryCtorParamss, classPos)
+    emitParams(applySym, primaryCtorParamss)
 
     // Synthetic unapply in companion.
     val unapplyIdx = bumpOvl(ovl, companion, "unapply")
@@ -425,7 +418,7 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       val copyIdx = bumpOvl(ovl, classSym, "copy")
       val copySym = SymbolUtils.methodSymbol(classSym, "copy", copyIdx)
       addSymbol(copySym, "copy", isType = false, classPos) // synthetic → stand-in
-      emitParams(copySym, primaryCtorParamss, classPos)
+      emitParams(copySym, primaryCtorParamss)
     }
   }
 
