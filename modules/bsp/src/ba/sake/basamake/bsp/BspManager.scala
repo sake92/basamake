@@ -1,9 +1,9 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{ConcurrentHashMap, CopyOnWriteArrayList, Executors, ScheduledFuture, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, Executors, ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable
-import scala.compiletime.uninitialized
+import scala.compiletime.uninitialized // still needed by `watcher` — removed in Task 3
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams, StatusCode, TaskFinishParams, TaskProgressParams, TaskStartParams}
 import org.eclipse.lsp4j.{Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams => LspPublishDiagnosticsParams, Range}
@@ -14,7 +14,7 @@ import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
 import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable, GitIgnoreEngine}
 
-class BspManager private (
+class BspManager (
     workspaceRoot: os.Path,
     workspaceIndex: WorkspaceIndex,
     depsSymbolTable: IndexedSymbolTable
@@ -22,7 +22,7 @@ class BspManager private (
 
   private val connections = new ConcurrentHashMap[BspConnectionId, BspConnection]()
   private val router = new BspRouter
-  private var client: LanguageClient = uninitialized
+  private var client: Option[LanguageClient] = None
   /** BSP compile tasks → window/workDoneProgress (spinner). Falls back to
     * logMessage when the client lacks the progress capability. */
   private val compileProgress = new CompileProgressReporter
@@ -61,17 +61,15 @@ class BspManager private (
   private val shuttingDown = new AtomicBoolean(false)
 
   def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, warmDeps: List[(os.Path, List[os.Path])] = Nil, workDoneProgress: Boolean = false): Unit = {
-    this.client = lspClient
+    client = Some(lspClient)
     compileProgress.setClient(lspClient)
     compileProgress.setEnabled(workDoneProgress)
     warmDepsBySourceRoot = warmDeps
     // Register warm-start dependency sources: cached jars become routable NOW,
     // uncached jars stay unindexed until a file of that target is opened.
-    if (depsSymbolTable != null) {
-      warmDeps.foreach { case (srcRoot, deps) =>
-        try depsSymbolTable.registerTarget(deps)
-        catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
-      }
+    warmDeps.foreach { case (srcRoot, deps) =>
+      try depsSymbolTable.registerTarget(deps)
+      catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
     }
     ignoreEngine = Some(newEngine())
     val discovered = BspDiscovery.discover(workspaceRoot, ignoreEngine.get)
@@ -118,10 +116,8 @@ class BspManager private (
       diagnostics.remove(uri)
     }
     logger.debug(s"clearDiagnostics($uri): entry existed=${removed.isDefined}")
-    if (client != null) {
-      client.publishDiagnostics(
-        new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList()))
-    }
+    client.foreach(_.publishDiagnostics(
+      new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList())))
   }
 
   /** React to filesystem create/delete/change events (workspace/didChangeWatchedFiles).
@@ -173,7 +169,7 @@ class BspManager private (
       updated
     }
     val union = perTarget.values.flatten.toList.asJava
-    if (client != null) client.publishDiagnostics(new LspPublishDiagnosticsParams(uri, union))
+    client.foreach(_.publishDiagnostics(new LspPublishDiagnosticsParams(uri, union)))
   }
 
   // ---- BspEvents: after-compile → WorkspaceIndex.invalidate ----
@@ -183,7 +179,6 @@ class BspManager private (
 
   // ---- BspEvents: dependency sources — register target deps, paths only ----
   override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = {
-    if (depsSymbolTable == null) return
     // Register per target — paths only. Nothing is indexed here; lookups index
     // exactly the jars they need, inline (see IndexedSymbolTable).
     depsByTarget.foreach { case (tid, paths) =>
@@ -210,7 +205,6 @@ class BspManager private (
   /** Candidates for a dep/JDK source file (`~/.cache/basamake/deps/<fp>/src/...`):
     * the jar the file was extracted from (owning jar). */
   private def depFileCandidates(uri: String): List[os.Path] = {
-    if (depsSymbolTable == null) return Nil
     val path = try os.Path(java.net.URI.create(uri)) catch { case _: Exception => return Nil }
     depsSymbolTable.candidatesForPath(path)
   }
@@ -228,7 +222,7 @@ class BspManager private (
   }
 
   override def onShowMessage(params: org.eclipse.lsp4j.MessageParams): Unit =
-    if (client != null) client.showMessage(params)
+    client.foreach(_.showMessage(params))
 
   // ---- BSP task notifications → LSP logMessage ----
   override def onTaskStart(params: TaskStartParams, connId: BspConnectionId): Unit = {
@@ -272,8 +266,8 @@ class BspManager private (
       s"Failed to connect to ${spec.content.name}: $error")
 
   private def logToClient(msgType: org.eclipse.lsp4j.MessageType, msg: String): Unit = {
-    if (client != null) {
-      client.logMessage(new org.eclipse.lsp4j.MessageParams(msgType, msg))
+    client.foreach { c =>
+      c.logMessage(new org.eclipse.lsp4j.MessageParams(msgType, msg))
       logger.debug(s"→ LSP client: [$msgType] $msg")
     }
   }
@@ -304,8 +298,7 @@ class BspManager private (
     if (gitignoreChanges.nonEmpty) {
       logger.info(s"Detected .gitignore change(s): ${gitignoreChanges.mkString(", ")} — reloading ignore engine")
       ignoreEngine = Some(newEngine())
-      // null in testing constructors (BspManager.forTesting)
-      if (workspaceIndex != null) workspaceIndex.reloadIgnores()
+      workspaceIndex.reloadIgnores()
     }
     if (changedBspFiles.nonEmpty) {
       logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
@@ -395,8 +388,8 @@ class BspManager private (
         }
         uris
       }
-      if (client != null) ownedUris.foreach { uri =>
-        client.publishDiagnostics(new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList()))
+      ownedUris.foreach { uri =>
+        client.foreach(_.publishDiagnostics(new LspPublishDiagnosticsParams(uri, java.util.Collections.emptyList())))
       }
       // a killed server never sends taskFinish — end its progress tokens now
       compileProgress.endAll(connId)
@@ -478,21 +471,10 @@ class BspManager private (
 
   private val AnsiPattern = "\u001b\\[[0-9;]*m".r
   private def stripAnsi(s: String): String = AnsiPattern.replaceAllIn(s, "")
-
-  private[bsp] def routeForTesting(uri: String): Option[BspConnectionId] = router.route(uri)
-  /** Test seam — the compile progress reporter (drive task notifications
-    * through the BspEvents interface; this exposes the reporter for assertions). */
-  private[bsp] def compileProgressForTesting: CompileProgressReporter = compileProgress
-  private[bsp] def initializeForTestingOnlyDiscover(): Unit = {
-    ignoreEngine = Some(newEngine())
-    val discovered = BspDiscovery.discover(workspaceRoot, ignoreEngine.get)
-    knownBspFiles = discovered.map(_.path).toSet
-    for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
-  }
 }
 
 object BspManager {
-  def apply(workspaceRoot: os.Path, workspaceIndex: WorkspaceIndex, depsSymbolTable: IndexedSymbolTable = null): BspManager =
+  def apply(workspaceRoot: os.Path, workspaceIndex: WorkspaceIndex, depsSymbolTable: IndexedSymbolTable): BspManager =
     new BspManager(workspaceRoot, workspaceIndex, depsSymbolTable)
 
   private[bsp] def classifyBspChanges(
@@ -502,30 +484,5 @@ object BspManager {
     val deletedFiles = known -- current
     val modifiedFiles = known.intersect(current).intersect(changed)
     (newFiles, deletedFiles, modifiedFiles)
-  }
-
-  private[bsp] def forTesting(root: os.Path, index: WorkspaceIndex = null): BspManager =
-    new BspManager(root, index, null)
-
-  private[bsp] def forTestingWithCapturedDiagnostics(
-      root: os.Path = os.temp.dir(prefix = "bsp-diag-test-")
-  ): (BspManager, java.util.List[LspPublishDiagnosticsParams], java.util.List[org.eclipse.lsp4j.MessageParams], java.util.List[org.eclipse.lsp4j.ProgressParams]) = {
-    val captured = new CopyOnWriteArrayList[LspPublishDiagnosticsParams]()
-    val capturedLog = new CopyOnWriteArrayList[org.eclipse.lsp4j.MessageParams]()
-    val capturedProgress = new CopyOnWriteArrayList[org.eclipse.lsp4j.ProgressParams]()
-    val fakeClient = new LanguageClient {
-      override def publishDiagnostics(p: LspPublishDiagnosticsParams): Unit = captured.add(p)
-      override def telemetryEvent(x$0: Any): Unit = ()
-      override def showMessage(x$0: org.eclipse.lsp4j.MessageParams): Unit = ()
-      override def showMessageRequest(x$0: org.eclipse.lsp4j.ShowMessageRequestParams): java.util.concurrent.CompletableFuture[org.eclipse.lsp4j.MessageActionItem] = java.util.concurrent.CompletableFuture.completedFuture(null)
-      override def logMessage(x$0: org.eclipse.lsp4j.MessageParams): Unit = capturedLog.add(x$0)
-      override def createProgress(x$0: org.eclipse.lsp4j.WorkDoneProgressCreateParams): java.util.concurrent.CompletableFuture[Void] = java.util.concurrent.CompletableFuture.completedFuture(null)
-      override def notifyProgress(x$0: org.eclipse.lsp4j.ProgressParams): Unit = capturedProgress.add(x$0)
-      override def applyEdit(x$0: org.eclipse.lsp4j.ApplyWorkspaceEditParams): java.util.concurrent.CompletableFuture[org.eclipse.lsp4j.ApplyWorkspaceEditResponse] = java.util.concurrent.CompletableFuture.completedFuture(new org.eclipse.lsp4j.ApplyWorkspaceEditResponse(false))
-    }
-    val mgr = new BspManager(root, null, null)
-    mgr.client = fakeClient
-    mgr.compileProgressForTesting.setClient(fakeClient)
-    (mgr, captured, capturedLog, capturedProgress)
   }
 }
