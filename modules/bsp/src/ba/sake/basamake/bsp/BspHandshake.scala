@@ -26,7 +26,8 @@ object BspHandshake extends StrictLogging {
     * killed before the exception propagates. */
   def execute(
       bspFile: BspConnectionSpec,
-      eventSink: BspEventSink
+      events: BspEvents,
+      connId: BspConnectionId
   ): HandshakeResult = {
     val timeoutSec = bspFile.handshakeTimeoutSec
     val pb = new java.lang.ProcessBuilder(bspFile.content.argv*)
@@ -44,7 +45,7 @@ object BspHandshake extends StrictLogging {
     Thread.sleep(200)
 
     try {
-      val buildClient = BasamakeBuildClient(eventSink)
+      val buildClient = BasamakeBuildClient(events, connId)
 
       val launcher =
         new org.eclipse.lsp4j.jsonrpc.Launcher.Builder[BasamakeBspServer]()

@@ -18,7 +18,7 @@ class BspManager private (
     workspaceRoot: os.Path,
     workspaceIndex: WorkspaceIndex,
     depsSymbolTable: IndexedSymbolTable
-) extends BspEventSink with BspAfterCompileSink with BspDependencySourcesSink with StrictLogging {
+) extends BspEvents with StrictLogging {
 
   private val connections = new ConcurrentHashMap[BspConnectionId, BspConnection]()
   private val router = new BspRouter
@@ -155,9 +155,10 @@ class BspManager private (
     lower.endsWith(".scala") || lower.endsWith(".java") || lower.endsWith(".sbt")
   }
 
-  // ---- BspEventSink: diagnostics ----
-  override def onDiagnostics(params: PublishDiagnosticsParams): Unit = {
+  // ---- BspEvents: diagnostics ----
+  override def onDiagnostics(params: PublishDiagnosticsParams, connId: BspConnectionId): Unit = {
     val uri = params.getTextDocument.getUri
+    synchronized { diagnosticsOwners(uri) = connId }   // (synchronized → ReentrantLock in Task 5)
     val targetId = Option(params.getBuildTarget).getOrElse(new BuildTargetIdentifier(""))
     val newDiags = Option(params.getDiagnostics).getOrElse(java.util.Collections.emptyList())
       .asScala.map(bspDiagToLsp).toList
@@ -175,12 +176,12 @@ class BspManager private (
     if (client != null) client.publishDiagnostics(new LspPublishDiagnosticsParams(uri, union))
   }
 
-  // ---- BspAfterCompileSink: forward to WorkspaceIndex.invalidate ----
+  // ---- BspEvents: after-compile → WorkspaceIndex.invalidate ----
   override def onAfterCompile(roots: List[SemanticdbDirs]): Unit =
     try workspaceIndex.invalidate(roots)
     catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
 
-  // ---- BspDependencySourcesSink: register target deps, paths only ----
+  // ---- BspEvents: dependency sources — register target deps, paths only ----
   override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = {
     if (depsSymbolTable == null) return
     // Register per target — paths only. Nothing is indexed here; lookups index
@@ -219,21 +220,30 @@ class BspManager private (
     path.startsWith(root)
   }
 
-  override def onTargetChanged(params: DidChangeBuildTarget): Unit =
-    logger.debug(s"buildTargetDidChange: ${params.getChanges.size()} events — no-op in v1")
+  override def onTargetChanged(params: DidChangeBuildTarget, connId: BspConnectionId): Unit = {
+    logger.debug(s"buildTargetDidChange: ${params.getChanges.size()} events")
+    Option(connections.get(connId)).foreach { conn =>
+      conn.refreshDependencySources(BspConnection.changedTargetIds(params))
+    }
+  }
 
   override def onShowMessage(params: org.eclipse.lsp4j.MessageParams): Unit =
     if (client != null) client.showMessage(params)
 
   // ---- BSP task notifications → LSP logMessage ----
-  override def onTaskStart(params: TaskStartParams): Unit = {
+  override def onTaskStart(params: TaskStartParams, connId: BspConnectionId): Unit = {
+    compileProgress.onTaskStart(connId, params)
     val msg = Option(params.getMessage).filter(_.nonEmpty)
     msg.foreach { m =>
       logToClient(org.eclipse.lsp4j.MessageType.Info, s"Compiling: $m")
     }
   }
 
-  override def onTaskFinish(params: TaskFinishParams): Unit = {
+  override def onTaskProgress(params: TaskProgressParams, connId: BspConnectionId): Unit =
+    compileProgress.onTaskProgress(connId, params)
+
+  override def onTaskFinish(params: TaskFinishParams, connId: BspConnectionId): Unit = {
+    compileProgress.onTaskFinish(connId, params)
     val msg = Option(params.getMessage).filter(_.nonEmpty)
     val (msgType, text) = params.getStatus match {
       case StatusCode.ERROR =>
@@ -397,40 +407,10 @@ class BspManager private (
     }
   }
 
-  /** Per-connection event sink wrapper: stamps diagnostics and task notifications
-    * with the owning connection id, so BspManager can attribute them (diagnostic
-    * ownership for detach, progress tokens for the compile spinner). Everything
-    * else delegates to the manager. */
-  private[bsp] def connectionSinkFor(connId: BspConnectionId): BspEventSink =
-    new BspEventSink with BspAfterCompileSink with BspDependencySourcesSink {
-      override def onDiagnostics(p: PublishDiagnosticsParams): Unit = {
-        val uri = p.getTextDocument.getUri
-        BspManager.this.synchronized { diagnosticsOwners(uri) = connId }
-        BspManager.this.onDiagnostics(p)
-      }
-      override def onTargetChanged(p: DidChangeBuildTarget): Unit = BspManager.this.onTargetChanged(p)
-      override def onShowMessage(p: org.eclipse.lsp4j.MessageParams): Unit = BspManager.this.onShowMessage(p)
-      override def onTaskStart(p: TaskStartParams): Unit = {
-        compileProgress.onTaskStart(connId, p)
-        BspManager.this.onTaskStart(p)
-      }
-      override def onTaskProgress(p: TaskProgressParams): Unit =
-        compileProgress.onTaskProgress(connId, p)
-      override def onTaskFinish(p: TaskFinishParams): Unit = {
-        compileProgress.onTaskFinish(connId, p)
-        BspManager.this.onTaskFinish(p)
-      }
-      override def onConnectionStarted(s: BspConnectionSpec): Unit = BspManager.this.onConnectionStarted(s)
-      override def onConnectionSucceeded(s: BspConnectionSpec, targetCount: Int): Unit = BspManager.this.onConnectionSucceeded(s, targetCount)
-      override def onConnectionFailed(s: BspConnectionSpec, error: String): Unit = BspManager.this.onConnectionFailed(s, error)
-      override def onAfterCompile(roots: List[SemanticdbDirs]): Unit = BspManager.this.onAfterCompile(roots)
-      override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = BspManager.this.onDependencySources(depsByTarget)
-    }
-
   private def attachConnection(spec: BspConnectionSpec): Unit = {
     val specWithRoot = spec.copy(workspaceRoot = workspaceRoot)
     val id = BspConnectionId(specWithRoot.path.toString)
-    val conn = BspConnection(specWithRoot, connectionSinkFor(id))
+    val conn = BspConnection(specWithRoot, this)
     connections.put(id, conn)
     val bspDir = specWithRoot.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
@@ -501,7 +481,7 @@ class BspManager private (
 
   private[bsp] def routeForTesting(uri: String): Option[BspConnectionId] = router.route(uri)
   /** Test seam — the compile progress reporter (drive task notifications
-    * through `connectionSinkFor`; this exposes the reporter for assertions). */
+    * through the BspEvents interface; this exposes the reporter for assertions). */
   private[bsp] def compileProgressForTesting: CompileProgressReporter = compileProgress
   private[bsp] def initializeForTestingOnlyDiscover(): Unit = {
     ignoreEngine = Some(newEngine())

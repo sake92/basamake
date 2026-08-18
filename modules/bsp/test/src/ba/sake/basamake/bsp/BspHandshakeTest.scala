@@ -16,10 +16,9 @@ class BspHandshakeTest extends FunSuite {
     )
     var thrown: Option[Exception] = None
     try
-      BspHandshake.execute(spec, eventSink = new BspEventSink {
-        def onDiagnostics(p: ch.epfl.scala.bsp4j.PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: ch.epfl.scala.bsp4j.DidChangeBuildTarget): Unit = ()
-      })
+      BspHandshake.execute(spec, events = new BspEvents {
+        def onDiagnostics(p: ch.epfl.scala.bsp4j.PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+      }, connId = BspConnectionId("test"))
     catch
       case e: Exception => thrown = Some(e)
     assert(thrown.isDefined, "handshake should throw for a process that exits immediately")

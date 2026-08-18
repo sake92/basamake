@@ -40,9 +40,8 @@ class BspConnectionTest extends FunSuite {
   private def fakeSpec: BspConnectionSpec =
     BspConnectionSpec(content = BspDiscoveryFile("fake", List("true")), path = os.pwd, compileTimeoutSec = 2, workspaceRoot = os.pwd)
 
-  private def noopSink = new BspEventSink {
-    def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-    def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
+  private def noopSink = new BspEvents {
+    def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
   }
 
   test("dead process on ping → respawn (killTree skips already-dead process)") {
@@ -482,10 +481,9 @@ class BspConnectionTest extends FunSuite {
     val tid1 = new BuildTargetIdentifier("//m1")
     val tid2 = new BuildTargetIdentifier("//m2")
     val captured = new java.util.concurrent.CopyOnWriteArrayList[List[SemanticdbDirs]]()
-    val sink = new BspEventSink with BspAfterCompileSink {
-      def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-      def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-      def onAfterCompile(roots: List[SemanticdbDirs]): Unit = captured.add(roots)
+    val sink = new BspEvents {
+      def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+      override def onAfterCompile(roots: List[SemanticdbDirs]): Unit = captured.add(roots)
     }
     val opts = new ScalacOptionsResult(java.util.List.of(
       new ScalacOptionsItem(tid1, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out1").asJava,
@@ -555,11 +553,10 @@ class BspConnectionTest extends FunSuite {
       val tid2 = new BuildTargetIdentifier("//m2")
       val capturedRoots = new java.util.concurrent.CopyOnWriteArrayList[List[SemanticdbDirs]]()
       val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
-      val sink = new BspEventSink with BspAfterCompileSink with BspDependencySourcesSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-        def onAfterCompile(roots: List[SemanticdbDirs]): Unit = capturedRoots.add(roots)
-        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      val sink = new BspEvents {
+        def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+        override def onAfterCompile(roots: List[SemanticdbDirs]): Unit = capturedRoots.add(roots)
+        override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
       }
       val opts = new ScalacOptionsResult(java.util.List.of(
         new ScalacOptionsItem(tid1, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out1").asJava,
@@ -668,10 +665,9 @@ class BspConnectionTest extends FunSuite {
       os.write.over(dataDir / "data.json", ba.sake.tupson.toJson(persisted))
 
       val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
-      val sink = new BspEventSink with BspDependencySourcesSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      val sink = new BspEvents {
+        def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+        override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
       }
       val conn = BspConnection.forTesting(
         spec = spec,
@@ -707,10 +703,9 @@ class BspConnectionTest extends FunSuite {
       )
       val tid = new BuildTargetIdentifier("//m1")
       val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
-      val sink = new BspEventSink with BspDependencySourcesSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      val sink = new BspEvents {
+        def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+        override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
       }
       // handshake result is pre-built (empty deps); the mock server is only
       // consulted by refreshDependencySources — returns POPULATED deps there
@@ -758,10 +753,9 @@ class BspConnectionTest extends FunSuite {
       )
       val tid = new BuildTargetIdentifier("//m1")
       val capturedDeps = new java.util.concurrent.CopyOnWriteArrayList[Map[BuildTargetIdentifier, List[os.Path]]]()
-      val sink = new BspEventSink with BspDependencySourcesSink {
-        def onDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-        def onTargetChanged(p: DidChangeBuildTarget): Unit = ()
-        def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
+      val sink = new BspEvents {
+        def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+        override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
       }
       // handshake result is pre-built with POPULATED deps; the mock server is only
       // consulted by refreshDependencySources — returns EMPTY there

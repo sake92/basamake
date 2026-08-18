@@ -25,7 +25,7 @@ class BspConnection private (
     val spec: BspConnectionSpec,
     spawnFn: () => HandshakeResult,
     killTreeFn: java.lang.Process => Unit,
-    eventSink: BspEventSink,
+    events: BspEvents,
     debounceMs: Long
 ) extends StrictLogging {
 
@@ -69,11 +69,11 @@ class BspConnection private (
       if (spawning) return        // another thread started spawn between our check and lock
       spawning = true
       try {
-        eventSink.onConnectionStarted(spec)
+        events.onConnectionStarted(spec)
         spawnAndHandshake()
         process.onExit().thenRun(() => alive = false)
         alive = true
-        eventSink.onConnectionSucceeded(spec, sourceDirsByTarget.size)
+        events.onConnectionSucceeded(spec, sourceDirsByTarget.size)
         // Index catch-up: push ALL targets' semanticdb dirs to the index right after
         // handshake, so pre-existing semanticdb output (e.g. from earlier builds) is
         // paired without waiting for each target to be compiled on demand.
@@ -85,7 +85,7 @@ class BspConnection private (
       } catch {
         case e: Exception =>
           pendingCompileTargetIds.clear()   // discard queued work
-          eventSink.onConnectionFailed(spec, e.getMessage)
+          events.onConnectionFailed(spec, e.getMessage)
           throw e
       } finally {
         spawning = false
@@ -224,22 +224,16 @@ class BspConnection private (
     } yield SemanticdbDirs(srcRoot, semDir)
     if (roots.nonEmpty) {
       logger.info(s"Compile done → forwarding ${roots.size} semanticdb root(s) to index: ${roots.map(r => r.semanticdbDir.toString).mkString(", ")}")
-      eventSink match {
-        case s: BspAfterCompileSink => s.onAfterCompile(roots)
-        case _ => ()
-      }
+      events.onAfterCompile(roots)
     }
     // Persist BSP metadata for faster startup next time
     writeTargetData()
   }
 
-  /** Fires the dependency-source sink once per connection (after handshake).
-    * Per-target map — the sink registers targets lazily and indexes nothing eagerly. */
+  /** Fires the dependency-source hook once per connection (after handshake).
+    * Per-target map — the receiver registers targets lazily and indexes nothing eagerly. */
   private def notifyDependencySources(): Unit = {
-    if (dependencySourcesByTarget.nonEmpty) eventSink match {
-      case s: BspDependencySourcesSink => s.onDependencySources(dependencySourcesByTarget)
-      case _ => ()
-    }
+    if (dependencySourcesByTarget.nonEmpty) events.onDependencySources(dependencySourcesByTarget)
   }
 
   /** Dependency source jars for the BSP target owning `uri` (source-root match,
@@ -302,33 +296,8 @@ class BspConnection private (
     }
   }
 
-  /** Wraps the event sink handed to the build client so buildTargetDidChange
-    * notifications trigger a dependencySources refresh on the OWNING connection
-    * (the shared BspManager sink cannot know which connection a target belongs
-    * to). Everything else delegates unchanged. */
-  private def targetChangeAwareSink(sink: BspEventSink): BspEventSink = new BspEventSink {
-    override def onDiagnostics(p: PublishDiagnosticsParams): Unit = sink.onDiagnostics(p)
-    override def onTargetChanged(p: DidChangeBuildTarget): Unit = {
-      sink.onTargetChanged(p)
-      refreshDependencySourcesOnTargetChange(p)
-    }
-    override def onShowMessage(p: org.eclipse.lsp4j.MessageParams): Unit = sink.onShowMessage(p)
-    override def onTaskStart(p: TaskStartParams): Unit = sink.onTaskStart(p)
-    override def onTaskProgress(p: TaskProgressParams): Unit = sink.onTaskProgress(p)
-    override def onTaskFinish(p: TaskFinishParams): Unit = sink.onTaskFinish(p)
-    override def onConnectionStarted(s: BspConnectionSpec): Unit = sink.onConnectionStarted(s)
-    override def onConnectionSucceeded(s: BspConnectionSpec, targetCount: Int): Unit = sink.onConnectionSucceeded(s, targetCount)
-    override def onConnectionFailed(s: BspConnectionSpec, error: String): Unit = sink.onConnectionFailed(s, error)
-  }
-
-  private def refreshDependencySourcesOnTargetChange(params: DidChangeBuildTarget): Unit = {
-    if (!alive) return
-    val tids = BspConnection.changedTargetIds(params)
-    if (tids.nonEmpty) refreshDependencySources(tids)
-  }
-
   /** Re-request dependency sources for `tids` and merge (non-empty only — an
-    * empty result keeps the existing deps). Re-fires the dep sink and persists
+    * empty result keeps the existing deps). Re-fires the dep hook and persists
     * data.json when anything actually changed. */
   private[bsp] def refreshDependencySources(tids: List[BuildTargetIdentifier]): Unit = {
     if (buildServer == null) return
@@ -425,27 +394,24 @@ class BspConnection private (
 }
 
 object BspConnection {
-  /** Production factory: wraps the event sink so buildTargetDidChange refreshes
-    * dependency sources on this connection. `conn` is captured by the spawn
-    * closure — it is non-null by the time spawnFn runs (post-construction). */
-  def apply(spec: BspConnectionSpec, eventSink: BspEventSink): BspConnection = {
-    var conn: BspConnection = null
-    conn = new BspConnection(
+  /** Production factory. The spawn closure captures only `events` and the spec
+    * — no instance self-reference, no wrapper (connection-scoped events carry
+    * the connection id themselves). */
+  def apply(spec: BspConnectionSpec, events: BspEvents): BspConnection =
+    new BspConnection(
       spec,
-      () => BspHandshake.execute(spec, conn.targetChangeAwareSink(eventSink)),
+      () => BspHandshake.execute(spec, events, BspConnectionId(spec.path.toString)),
       p => ProcessUtils.terminateProcessTree(p),
-      eventSink,
+      events,
       debounceMs = 500
     )
-    conn
-  }
 
   /** Test factory: inject spawn + killTree. */
   private[bsp] def forTesting(
       spec: BspConnectionSpec,
       spawn: () => HandshakeResult,
       killTree: java.lang.Process => Unit,
-      eventSink: BspEventSink,
+      eventSink: BspEvents,
       debounceMs: Long = 500
   ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink, debounceMs)
 

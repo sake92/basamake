@@ -13,8 +13,8 @@ class BspManagerDiagnosticsTest extends FunSuite {
     val targetA = new BuildTargetIdentifier("bsp://A")
     val targetB = new BuildTargetIdentifier("bsp://B")
 
-    mgr.onDiagnostics(makeParams(uri, targetA, "err-A1", reset = true))
-    mgr.onDiagnostics(makeParams(uri, targetB, "err-B1", reset = true))
+    mgr.onDiagnostics(makeParams(uri, targetA, "err-A1", reset = true), BspConnectionId("bsp://A"))
+    mgr.onDiagnostics(makeParams(uri, targetB, "err-B1", reset = true), BspConnectionId("bsp://B"))
 
     assert(published.size >= 2)
     val last = published.get(published.size - 1)
@@ -32,12 +32,12 @@ class BspManagerDiagnosticsTest extends FunSuite {
     val targetA = new BuildTargetIdentifier("bsp://A")
     val targetB = new BuildTargetIdentifier("bsp://B")
 
-    mgr.onDiagnostics(makeParams(uri, targetA, "err-A1", reset = true))
-    mgr.onDiagnostics(makeParams(uri, targetB, "err-B1", reset = true))
+    mgr.onDiagnostics(makeParams(uri, targetA, "err-A1", reset = true), BspConnectionId("bsp://A"))
+    mgr.onDiagnostics(makeParams(uri, targetB, "err-B1", reset = true), BspConnectionId("bsp://B"))
     // Reset A with an empty diagnostic list → A's slice becomes empty, union is just B.
     val emptyParams = makeParams(uri, targetA, "<none>", reset = true)
     emptyParams.setDiagnostics(java.util.Collections.emptyList())
-    mgr.onDiagnostics(emptyParams)
+    mgr.onDiagnostics(emptyParams, BspConnectionId("bsp://A"))
 
     val last = published.get(published.size - 1)
     assertEquals(last.getUri, uri)
@@ -65,7 +65,7 @@ class BspManagerDiagnosticsTest extends FunSuite {
     val createdUri = "file:///x/Created.scala"
     // Seed a diagnostic for the deleted file, then deliver watcher events.
     val target = new BuildTargetIdentifier("bsp://A")
-    mgr.onDiagnostics(makeParams(deletedUri, target, "old-err", reset = true))
+    mgr.onDiagnostics(makeParams(deletedUri, target, "old-err", reset = true), BspConnectionId("bsp://A"))
     published.clear()
     mgr.onWatchedFilesChanged(created = List(createdUri), deleted = List(deletedUri))
 
@@ -90,7 +90,7 @@ class BspManagerDiagnosticsTest extends FunSuite {
     // (created=empty, deleted + changed source events — e.g. git checkout
     // rewriting a file produces a Changed event).
     val target = new BuildTargetIdentifier("bsp://A")
-    mgr.onDiagnostics(makeParams(deletedUri, target, "old-err", reset = true))
+    mgr.onDiagnostics(makeParams(deletedUri, target, "old-err", reset = true), BspConnectionId("bsp://A"))
     published.clear()
     mgr.onWatchedFilesChanged(created = Nil, deleted = List(deletedUri), changed = List(changedUri))
 
@@ -120,8 +120,8 @@ class BspManagerDiagnosticsTest extends FunSuite {
       val uriB = "file:///x/projB/src/B.scala"
 
       // connection A publishes for uriA, connection B publishes for uriB
-      mgr.connectionSinkFor(idA).onDiagnostics(makeParams(uriA, target, "err-A", reset = true))
-      mgr.connectionSinkFor(idB).onDiagnostics(makeParams(uriB, target, "err-B", reset = true))
+      mgr.onDiagnostics(makeParams(uriA, target, "err-A", reset = true), idA)
+      mgr.onDiagnostics(makeParams(uriB, target, "err-B", reset = true), idB)
 
       published.clear()
       mgr.detachConnection(idA)
@@ -141,18 +141,17 @@ class BspManagerDiagnosticsTest extends FunSuite {
     val (mgr, _, logMsgs, progress) = BspManager.forTestingWithCapturedDiagnostics()
     mgr.compileProgressForTesting.setEnabled(true)
     val connId = BspConnectionId("bsp://fake")
-    val sink = mgr.connectionSinkFor(connId)
 
     val taskId = new ch.epfl.scala.bsp4j.TaskId("task-42")
     val start = new ch.epfl.scala.bsp4j.TaskStartParams(taskId)
     start.setMessage("Compiling fake project")
-    sink.onTaskStart(start)
+    mgr.onTaskStart(start, connId)
     val prog = new ch.epfl.scala.bsp4j.TaskProgressParams(taskId)
     prog.setProgress(50L)
-    sink.onTaskProgress(prog)
+    mgr.onTaskProgress(prog, connId)
     val finish = new ch.epfl.scala.bsp4j.TaskFinishParams(taskId, ch.epfl.scala.bsp4j.StatusCode.OK)
     finish.setMessage("Compiled")
-    sink.onTaskFinish(finish)
+    mgr.onTaskFinish(finish, connId)
 
     // spinner: begin → report → end on one token
     val kinds = progress.asScala.map { p =>
