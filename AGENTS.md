@@ -12,10 +12,10 @@
 | Task | Command |
 |------|---------|
 | Compile | `deder exec` |
-| Test navigation module | `deder exec -t test -m modules-navigation-test` |
-| Test main module | `deder exec -t test -m modules-main-test` |
+| Test index module | `deder exec -t test -m modules-index-test` |
+| Test lsp module | `deder exec -t test -m modules-lsp-test` |
 | All tests | `deder exec -t test` |
-| Fat JAR (for VS Code) | `deder exec -t assembly -m modules-main` → `.deder/out/modules-main/assembly/out.jar` |
+| Fat JAR (for VS Code) | `deder exec -t assembly -m modules-lsp` → `.deder/out/modules-lsp/assembly/out.jar` |
 | Clean build state | `deder clean && deder exec` |
 | Build docs | `./scripts/build-docs.sh` |
 | Serve docs (dev) | `./scripts/build-docs.sh serve` → http://localhost:5555 |
@@ -42,9 +42,9 @@
 
 ## Tests
 
-- Layout: `modules/<m>/test/src/...`; module ids `modules-navigation-test` / `modules-main-test`; munit
-- `modules-navigation-test`: extractors + resolvers (Pass 1/Pass 2), import/scope, indexing (`WorkspaceIndexTest`, GitIgnore*, LmdbSerializer, SourceJarIndexer, DepsGotoDef)
-- `modules-main-test`: real JSON-RPC transport (`LspTransportTest`), server behavior (`BasamakeLanguageServerTest`), BSP lifecycle, config
+- Layout: `modules/<m>/test/src/...`; module ids `modules-core-test` / `modules-index-test` / `modules-bsp-test` / `modules-lsp-test`; munit
+- `modules-index-test`: extractors + resolvers (Pass 1/Pass 2), import/scope, indexing (`WorkspaceIndexTest`, GitIgnore*, LmdbSerializer, SourceJarIndexer, DepsGotoDef)
+- `modules-lsp-test`: real JSON-RPC transport (`LspTransportTest`), server behavior (`BasamakeLanguageServerTest`); `modules-bsp-test`: BSP lifecycle, config
 - Integration tests copy fixtures to `<repo>/tmp/<test>-<timestamp>/` first; never write into `test/resources`; no `.semanticdb` committed — `SemanticdbFixture` compiles a tmp copy with `scala-cli compile --server=false --semanticdb`
 - No build-tool shell-outs in tests except scala-cli inside tmp copies
 
@@ -75,21 +75,21 @@
 
 | File | Why |
 |------|-----|
-| `modules/main/src/ba/sake/basamake/Main.scala` | JVM entry, project-root resolution, stdout/lsp4j wiring |
-| `modules/main/src/ba/sake/basamake/lsp/BasamakeLanguageServer.scala` | LSP handlers (definition, references, text doc lifecycle) |
-| `modules/navigation/src/ba/sake/basamake/navigation/indexing/WorkspaceIndex.scala` | Core index — goto-def, references, buffer state, SemanticDB fallback |
-| `modules/navigation/src/ba/sake/basamake/navigation/indexing/SemanticdbIndexing.scala` | `.semanticdb` file parser |
-| `modules/navigation/src/ba/sake/basamake/navigation/SymbolTable.scala` | Symbol table (ConcurrentHashMap) |
-| `modules/navigation/src/ba/sake/basamake/navigation/SymbolUtils.scala` | SemanticDB symbol encoding |
-| `modules/navigation/src/ba/sake/basamake/navigation/scalasrc/ScalaDefinitionsExtractor.scala` | Pass 1: Scala def extraction |
-| `modules/navigation/src/ba/sake/basamake/navigation/scalasrc/ScalaReferencesResolver.scala` | Pass 2: Scala ref resolution |
-| `modules/navigation/src/ba/sake/basamake/navigation/javasrc/JavaDefinitionsExtractor.scala` | Pass 1: Java def extraction |
-| `modules/navigation/src/ba/sake/basamake/navigation/javasrc/JavaReferencesResolver.scala` | Pass 2: Java ref resolution |
-| `modules/main/src/ba/sake/basamake/bsp/BspManager.scala` | Owns connections, router, watcher, diagnostics, shutdown |
-| `modules/main/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, `spawnLock`, `spawning` flag, pending-compile queue |
-| `modules/main/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, eventSink-based build client |
-| `modules/main/src/ba/sake/basamake/bsp/BspRouter.scala` | Two-phase URI routing (ground-truth + bootstrap heuristic) |
-| `modules/navigation/src/ba/sake/basamake/navigation/indexing/SourceJarIndexer.scala` | Dep/JDK sources cache (LMDB index, lazy unpack) |
-| `modules/navigation/src/ba/sake/basamake/navigation/indexing/IndexedSymbolTable.scala` | Read-only dep/JDK symbol lookups |
+| `modules/lsp/src/ba/sake/basamake/Main.scala` | JVM entry, project-root resolution, stdout/lsp4j wiring |
+| `modules/lsp/src/ba/sake/basamake/lsp/BasamakeLanguageServer.scala` | LSP handlers (definition, references, text doc lifecycle) |
+| `modules/index/src/ba/sake/basamake/index/indexing/WorkspaceIndex.scala` | Core index — goto-def, references, buffer state, SemanticDB fallback |
+| `modules/index/src/ba/sake/basamake/index/indexing/SemanticdbIndexing.scala` | `.semanticdb` file parser |
+| `modules/index/src/ba/sake/basamake/index/SymbolTable.scala` | Symbol table (ConcurrentHashMap) |
+| `modules/index/src/ba/sake/basamake/index/SymbolUtils.scala` | SemanticDB symbol encoding |
+| `modules/index/src/ba/sake/basamake/index/scalasrc/ScalaDefinitionsExtractor.scala` | Pass 1: Scala def extraction |
+| `modules/index/src/ba/sake/basamake/index/scalasrc/ScalaReferencesResolver.scala` | Pass 2: Scala ref resolution |
+| `modules/index/src/ba/sake/basamake/index/javasrc/JavaDefinitionsExtractor.scala` | Pass 1: Java def extraction |
+| `modules/index/src/ba/sake/basamake/index/javasrc/JavaReferencesResolver.scala` | Pass 2: Java ref resolution |
+| `modules/bsp/src/ba/sake/basamake/bsp/BspManager.scala` | Owns connections, router, watcher, diagnostics, shutdown |
+| `modules/bsp/src/ba/sake/basamake/bsp/BspConnection.scala` | One BSP process — `@volatile alive`, `spawnLock`, `spawning` flag, pending-compile queue |
+| `modules/bsp/src/ba/sake/basamake/bsp/BspHandshake.scala` | Spawn + handshake, eventSink-based build client |
+| `modules/bsp/src/ba/sake/basamake/bsp/BspRouter.scala` | Two-phase URI routing (ground-truth + bootstrap heuristic) |
+| `modules/index/src/ba/sake/basamake/index/indexing/SourceJarIndexer.scala` | Dep/JDK sources cache (LMDB index, lazy unpack) |
+| `modules/index/src/ba/sake/basamake/index/indexing/IndexedSymbolTable.scala` | Read-only dep/JDK symbol lookups |
 | `examples/hello/` | Manual-test project (VS Code extension; per-machine `.bsp` via README flow) |
 | `docs/content/` | User-facing docs (flatmark SSG; build via `scripts/build-docs.sh`) |

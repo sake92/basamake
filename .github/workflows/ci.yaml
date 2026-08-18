@@ -24,7 +24,7 @@ jobs:
       # scala-cli must be installed BEFORE setup-java — it ships its own JVM
       # detection and can interfere with the JDK setup when installed after.
       # SemanticdbFixture compiles test fixtures with scala-cli — required by the
-      # sbt-fixture tests in modules-navigation-test. Pinned to the version used
+      # sbt-fixture tests in modules-index-test. Pinned to the version used
       # in local dev for deterministic fixture output.
       - name: Install scala-cli
         run: |
@@ -45,7 +45,7 @@ jobs:
         run: brew install sake92/tap/deder
       - name: Unit tests
         shell: bash -eo pipefail {0}
-        run: deder exec -t test -m modules-main-test -m modules-navigation-test
+        run: deder exec -t test -m modules-core-test -m modules-index-test -m modules-bsp-test -m modules-lsp-test
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v6
         if: success() || failure()

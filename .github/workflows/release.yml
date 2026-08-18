@@ -36,14 +36,14 @@ jobs:
         run: brew install sake92/tap/deder
 
       - name: Run tests
-        run: deder exec -t test -m modules-main-test
+        run: deder exec -t test -m modules-lsp-test
 
       - name: Build assembly JAR
-        run: deder exec -t assembly -m modules-main
+        run: deder exec -t assembly -m modules-lsp
 
       - name: Prepare artifact
         run: |
-          cp .deder/out/modules-main/assembly/out.jar basamake.jar
+          cp .deder/out/modules-lsp/assembly/out.jar basamake.jar
           ls -lh basamake.jar
 
       - name: Create GitHub Release

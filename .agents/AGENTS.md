@@ -5,14 +5,16 @@
 - Scala 3.7.4, **JDK 21+**; build tool: **deder** (config: `deder.pkl`, v0.20.0)
 - **lsp4j 1.0.0** (LSP protocol), **bsp4j 2.2.0-M2** (BSP client protocol)
 - scalameta `semanticdb-shared` + `parsers` 4.17.2 (Scala parsing), javaparser-core 3.28.2 (Java parsing)
-- os-lib 0.11.9-M8 (+ `os-lib-watch` in main), lmdbjava 0.9.1, tupson (JSON), mainargs, logback-classic 1.5.12, munit 1.0.4
+- os-lib 0.11.9-M8 (+ `os-lib-watch` in bsp), lmdbjava 0.9.1, tupson (JSON), mainargs, logback-classic 1.5.12, munit 1.0.4
 
 ## Modules (deder module ids)
 
 | Module id | Sources | Tests |
 |-----------|---------|-------|
-| `modules-navigation` | `modules/navigation/src` | `modules/navigation/test/src` → `modules-navigation-test` |
-| `modules-main` (mainClass `ba.sake.basamake.Main`) | `modules/main/src` | `modules/main/test/src` → `modules-main-test` |
+| `modules-core` | `modules/core/src` | `modules/core/test/src` → `modules-core-test` |
+| `modules-index` | `modules/index/src` | `modules/index/test/src` → `modules-index-test` |
+| `modules-bsp` | `modules/bsp/src` | `modules/bsp/test/src` → `modules-bsp-test` |
+| `modules-lsp` (mainClass `ba.sake.basamake.Main`) | `modules/lsp/src` | `modules/lsp/test/src` → `modules-lsp-test` |
 
 Test resources live at `<root>/test/resources` (committed fixtures, incl. binary source jars).
 
@@ -25,7 +27,7 @@ Two-pass source extraction for Scala and Java:
 
 `SymbolTable` is a workspace-scoped interface (`get`/`byPath`/`add`/`removeByPath`/`keys`/`all`), implemented by `InMemorySymbolTable` (`ConcurrentHashMap[String, SymbolDefinition]` keyed by SemanticDB-style symbol; thread-safe for concurrent reads during LSP requests). Dependency/JDK symbols live in `IndexedSymbolTable` — a SEPARATE read-only lookup service (no shared interface). `WorkspaceIndex` holds both (`depsTable: Option[IndexedSymbolTable]`). `WorkspaceIndex` builds the resolver's table PER FILE (`resolverTableFor`): workspace symbols plus dep symbols scoped to the file's OWNING jar when the file lives in the dep cache (goto-def chains INTO dep sources keep resolving same-jar refs); workspace and JDK files get the JDK-scoped lookup (JDK = implicit candidate). Cross-jar dep→dep is out of scope — dep-file candidates are always just the owning jar. Package-segment refs (import prefixes, incl. semanticdb occurrences) resolve to the package object (`pkg/package.`); Java import statements emit per-segment refs (type/static-member only — Java has no package objects).
 
-## WorkspaceIndex (`modules/navigation/src/.../navigation/indexing/WorkspaceIndex.scala`)
+## WorkspaceIndex (`modules/index/src/.../index/indexing/WorkspaceIndex.scala`)
 
 - On `initialize()`: walks workspace, discovers `.semanticdb` files via `SemanticdbIndexing`
 - **SemanticDB preferred** (more accurate); falls back to source parsing (Pass 1 + Pass 2) when unavailable
@@ -41,7 +43,7 @@ Two-pass source extraction for Scala and Java:
 - **Lookups are candidate-scoped LMDB point queries — no fallback.** `LmdbSerializer.get`: open env per call (serialized per index path — concurrent read-only Env objects on one path trip lmdbjava's reader-slot management), B-tree lookup, deserialize one entry. `get(symbol, candidates)` iterates the current file's BSP target jars (+ the JDK `src.zip` as an implicit candidate — a dependency of every target that BSP never lists): each jar is package-filtered via metadata.json (packages ALWAYS come from the real classes jar — zip folder listing — both in the sprinkled `indexed = false` state and after a full index), a matching jar without an index is indexed in the background (a cold lookup misses fast), then one exact LMDB point query per matching jar; the first hit wins, a miss ends the lookup with `None`. There is NO global package route, no recency/version ranking, no remembered candidate state, no fallback search — a jar outside the target's dependency set is never consulted, even if it shares the package. A jar with no metadata (no classes-jar sibling) is unfilterable: it gets indexed in the background on first lookup. A failed query logs a warning (once per fingerprint per session) and returns `None` — there is NO corruption detection/recovery: index publication is atomic (tmp + rename), so only `CacheMetadata.isValid` (format-version bump or source staleness) ever triggers a reindex; the user deletes the cache dir to rebuild manually. **Dep files get owning-jar candidates**: `candidatesForPath` derives the fingerprint from an extracted file's cache path (`<cacheRoot>/<fingerprint>/src/<entry>`) and returns the owning jar (recovered from metadata.json when the jar isn't registered this session) — lookups from inside scala-library 3.8.4 stay in 3.8.4, **and the reference resolvers parsing that file use the same owning-jar candidates** (`WorkspaceIndex.resolverTableFor`). JDK paths return nothing (`candidatesForPath`); the implicit JDK candidate in `get` covers them. `byPath`/`all`/`keys` do not exist on `IndexedSymbolTable` — dep/JDK symbols resolve by symbol only
 - **Index writes are streamed** (`LmdbSerializer.streamingSave` + `SymbolSink`): extractors put each definition into LMDB immediately while parsing — no in-memory symbol table is ever built (a JDK index would be 570k `SymbolDefinition`s ≈ 500MB of heap). `save(table, path)` is a thin wrapper for tests. Each `index.lmdb/` holds `data.mdb` + `lock.mdb`; `MapSize` is 1GB (JDK index ~570k symbols). Value format versioned by `CacheMetadata.FormatVersion` (mismatch reindexes): symbol is the key only, shortName derived at read, paths stored src-relative (`java.base/java/lang/Object.java`). JDK index ~120MB
 - **Background indexing, bounded — no queue.** Each cold lookup spawns one background virtual thread per jar it needs (single-flight per fingerprint via `IndexedSymbolTable`'s in-progress set: a duplicate trigger is a no-op, a failed index unmarks so a later lookup retries); the lookup itself MISSES FAST — goto-def never blocks on parsing again. A global `Semaphore` caps concurrent indexes at `max(1, min(CPUs-1, 4))`: one CPU stays free for the build server, and beyond 4 jar parsing is memory-bandwidth bound, not CPU bound. `SourceJarIndexer`'s per-fingerprint `ReentrantLock` still serializes CROSS-SERVER races on the shared cache dir (parks virtual threads, no carrier pinning). The JDK uses the same background path: `ensureJdkIndexed` (started at `initialize()`, unconditionally — no BSP dependency) indexes `src.zip` in the background, and a COLD JDK is never indexed by a lookup — a `java.*` lookup before the background index finishes is a fast transient miss
-- **Indexing progress** — the navigation module emits `IndexingProgressListener` events (per-phase `Workspace`/`Dependencies`/`Jdk`, done/total counts); `IndexingProgressReporter` (main) forwards them to the LSP client as `window/workDoneProgress` items (throttled to 100ms per phase, gated on the client's `window.workDoneProgress` capability, fail-safe: a rejected `createProgress` — the client's handler only exists after the initialize handshake — is retried after a 5s cooldown; only a broken transport disables the reporter). Workspace indexing + the JDK index run on background threads launched by `initialize()` (nothing progress-related may fire on the initialize thread); a failed index sends a terminal `(1,1,"... failed")` event so the phase ends; `isWorkspaceIndexingDone` exposes readiness for tests
+- **Indexing progress** — the index module emits `IndexingProgressListener` events (per-phase `Workspace`/`Dependencies`/`Jdk`, done/total counts); `IndexingProgressReporter` (lsp) forwards them to the LSP client as `window/workDoneProgress` items (throttled to 100ms per phase, gated on the client's `window.workDoneProgress` capability, fail-safe: a rejected `createProgress` — the client's handler only exists after the initialize handshake — is retried after a 5s cooldown; only a broken transport disables the reporter). Workspace indexing + the JDK index run on background threads launched by `initialize()` (nothing progress-related may fire on the initialize thread); a failed index sends a terminal `(1,1,"... failed")` event so the phase ends; `isWorkspaceIndexingDone` exposes readiness for tests
 - Cache-dir fingerprints embed the maven groupId from the sibling POM (direct `<project>` child only); filename-derived flat names when no POM
 - `SourceJarIndexer.cacheRoot` is a `@volatile var` — tests override it to `./tmp/deps-cache-*` (trait `TestCacheRoot`); never write into the real home cache
 - **Known limitation:** scalameta (Scala 3 and 2.13 dialects) cannot parse a few dotty compiler sources (e.g. `dotty/tools/dotc/ast/Desugar.scala`) — those definitions are skipped from the dep index. `scala/util/Try.scala`-style sources parse fine via the Scala 2.13 fallback
@@ -50,7 +52,7 @@ Two-pass source extraction for Scala and Java:
 
 `.basamake/` (logs, config, data.json, source walk, `.bsp` discovery) lives at the project root, resolved in `Main.run` by climbing from the opened folder to the first ancestor containing `.git` (dir or file — a file marks a git worktree) or an existing `.basamake/` dir; non-git folders fall back to the opened folder. `.bsp` dirs are usually gitignored but are exempted from ignore checks in BspDiscovery and the file watcher.
 
-## LSP handlers (`modules/main/src/.../lsp/BasamakeLanguageServer.scala`)
+## LSP handlers (`modules/lsp/src/.../lsp/BasamakeLanguageServer.scala`)
 
 `BasamakeLanguageServer` implements `LanguageClientAware`, `LanguageServer`, `TextDocumentService`, `WorkspaceService`:
 
@@ -64,7 +66,7 @@ Two-pass source extraction for Scala and Java:
 
 `Main.run()` blocks on `future.get()` (returns on stdin EOF). A JVM shutdown hook calls `server.cleanup()` (SIGTERM/SIGINT/VS Code close) so deder processes don't outlive the LSP server. `cleanup()` also shuts down `navigationExecutor`. Concurrency uses virtual threads throughout (request handlers, `poke`, JDK indexing, metadata sprinkling); blocking primitives are `ReentrantLock`/`ConcurrentHashMap` — never `synchronized` on long critical sections (virtual threads must park, not pin carriers).
 
-## BSP lifecycle
+## BSP lifecycle (`modules/bsp/src/.../bsp/`)
 
 `BspManager` discovers `.bsp/*.json` at `initialize()` but spawns nothing (lazy). The first LSP-side `poke(uri, compile)` (from `didOpen`/`didSave`/`definition`/`references`) calls `BspConnection.ensureConnected()` which spawns + handshakes (`BspHandshake`; `BasamakeBuildClient` event sink). `spawnLock` serializes `spawnAndHandshake`; a volatile `spawning` flag lets fast-path callers detect an in-progress spawn: pokes return immediately (no-op), compiles queue in a `CopyOnWriteArrayList` (deduped via `addIfAbsent`) and drain after spawn succeeds. On spawn failure the queue clears; no cooldown, no retry limits — every user action is a fresh attempt. `BspRouter` does two-phase URI routing (ground-truth + bootstrap heuristic). Diagnostics flow BSP `PublishDiagnosticsParams` → LSP.
 
