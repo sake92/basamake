@@ -21,7 +21,7 @@ object BspManagerTestSupport {
       Some(depsTable)
     )
     val mgr = new BspManager(root, index, depsTable)
-    mgr.initialize(root, client, warmDeps = Nil, workDoneProgress = workDoneProgress)
+    mgr.initialize(client, warmDeps = Nil, workDoneProgress = workDoneProgress)
     mgr
   }
 }

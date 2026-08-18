@@ -109,7 +109,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       }
     })
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
-    bspManager.initialize(workspacePath, client, warmDeps, workDoneProgress)
+    bspManager.initialize(client, warmDeps, workDoneProgress)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 

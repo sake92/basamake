@@ -1,18 +1,16 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{ConcurrentHashMap, Executors, ScheduledFuture, TimeUnit}
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable
-import scala.compiletime.uninitialized // still needed by `watcher` — removed in Task 3
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.{BuildTargetIdentifier, DidChangeBuildTarget, PublishDiagnosticsParams, StatusCode, TaskFinishParams, TaskProgressParams, TaskStartParams}
 import org.eclipse.lsp4j.{Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams => LspPublishDiagnosticsParams, Range}
 import org.eclipse.lsp4j.services.LanguageClient
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.config.{BasamakeConfig, BspOverride}
-import ba.sake.basamake.watcher.FileChangeWatcher
 import ba.sake.basamake.util.ProcessUtils
-import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable, GitIgnoreEngine}
+import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
 
 class BspManager (
     workspaceRoot: os.Path,
@@ -26,14 +24,24 @@ class BspManager (
   /** BSP compile tasks → window/workDoneProgress (spinner). Falls back to
     * logMessage when the client lacks the progress capability. */
   private val compileProgress = new CompileProgressReporter
-  private var watcher: FileChangeWatcher = uninitialized
-  /** Gitignore engine for the file watcher. Built in initialize(); rebuilt on
-    * .gitignore changes. Exempts .bsp so watcher events for build servers pass.
-    * Note: .gitignore files ABOVE the workspace root (repo boundary chain) are
-    * loaded at build time, but their changes are not watched (only the root is). */
-  @volatile private var ignoreEngine: Option[GitIgnoreEngine] = None
   private var knownBspFiles: Set[os.Path] = Set.empty
   private val config = BasamakeConfig.load(workspaceRoot)
+
+  private val watchFilter = new WatchFilter(workspaceRoot, config)
+  private val bspWatcher = new BspWatcher(
+    workspaceRoot,
+    watchFilter.isIgnored,
+    onGitignoreChanged = () => {
+      watchFilter.reload()
+      workspaceIndex.reloadIgnores()
+    },
+    onBspFilesChanged = batch => {
+      router.invalidateBootstrapCache()
+      // never let a failing batch escape the watcher's executor thread
+      try handleBspChanges(batch)
+      catch { case e: Exception => logger.error(s"Failed to process .bsp changes: ${e.getMessage}", e) }
+    }
+  )
 
   // Diagnostics: uri → (targetId → List[Diagnostic])
   private val diagnostics = mutable.Map.empty[String, Map[BuildTargetIdentifier, List[Diagnostic]]]
@@ -47,20 +55,9 @@ class BspManager (
     * handshake of a session; live handshake data takes precedence once available. */
   @volatile private var warmDepsBySourceRoot: List[(os.Path, List[os.Path])] = Nil
 
-  private val DebounceMs = 500L
-  // ScheduledExecutorService survives task exceptions (unlike java.util.Timer,
-  // whose thread dies forever on an uncaught exception in a task).
-  private val debounceExecutor = Executors.newSingleThreadScheduledExecutor((r: Runnable) => {
-    val t = new Thread(r, "basamake-bsp-watcher-debounce")
-    t.setDaemon(true)
-    t
-  })
-  private val debounceLock = new Object
-  private var pendingBspChanges: Set[os.Path] = Set.empty
-  private var pendingDebounceTask: Option[ScheduledFuture[?]] = None
   private val shuttingDown = new AtomicBoolean(false)
 
-  def initialize(workspaceRoot: os.Path, lspClient: LanguageClient, warmDeps: List[(os.Path, List[os.Path])] = Nil, workDoneProgress: Boolean = false): Unit = {
+  def initialize(lspClient: LanguageClient, warmDeps: List[(os.Path, List[os.Path])] = Nil, workDoneProgress: Boolean = false): Unit = {
     client = Some(lspClient)
     compileProgress.setClient(lspClient)
     compileProgress.setEnabled(workDoneProgress)
@@ -71,18 +68,12 @@ class BspManager (
       try depsSymbolTable.registerTarget(deps)
       catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
     }
-    ignoreEngine = Some(newEngine())
-    val discovered = BspDiscovery.discover(workspaceRoot, ignoreEngine.get)
+    val discovered = BspDiscovery.discover(workspaceRoot, watchFilter.engine)
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
 
-    watcher = FileChangeWatcher(workspaceRoot, onFileChanged, !watchIgnored(_))
-    watcher.start()
-    logger.debug(s"File watcher started for workspace $workspaceRoot")
+    bspWatcher.start()
   }
-
-  private def newEngine(): GitIgnoreEngine =
-    new GitIgnoreEngine(workspaceRoot, config.ignorePatterns.toVector, exemptLastNames = Set(".bsp"))
 
   // ---- poke: the one entry point from LSP handlers ----
   // makes sure BSP connection is alive, respawns if needed, and (when requested)
@@ -276,13 +267,7 @@ class BspManager (
   def shutdown(): Unit = {
     if (!shuttingDown.compareAndSet(false, true)) return
     logger.info("BspManager shutdown started...")
-    if (watcher != null) watcher.stop()
-    debounceLock.synchronized {
-      pendingDebounceTask.foreach(_.cancel(false))
-      pendingDebounceTask = None
-      pendingBspChanges = Set.empty
-    }
-    debounceExecutor.shutdownNow()
+    bspWatcher.stop()
     compileProgress.endAllConnections()
     connections.values().asScala.foreach(_.shutdown())
     connections.clear()
@@ -290,47 +275,8 @@ class BspManager (
     if (killed > 0) logger.info(s"Killed $killed descendant process node(s) during shutdown")
   }
 
-  // ---- File watcher ----
-  private[bsp] def onFileChanged(changedPaths: Set[os.Path]): Unit = {
-    val watched = changedPaths.filterNot(watchIgnored)
-    val changedBspFiles = watched.filter(_.segments.toSeq.contains(".bsp"))
-    val gitignoreChanges = watched.filter(_.last == ".gitignore")
-    if (gitignoreChanges.nonEmpty) {
-      logger.info(s"Detected .gitignore change(s): ${gitignoreChanges.mkString(", ")} — reloading ignore engine")
-      ignoreEngine = Some(newEngine())
-      workspaceIndex.reloadIgnores()
-    }
-    if (changedBspFiles.nonEmpty) {
-      logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")
-      enqueueBspChangeBatch(changedBspFiles)
-    }
-  }
-
-  private def enqueueBspChangeBatch(changedBspFiles: Set[os.Path]): Unit = {
-    debounceLock.synchronized {
-      pendingBspChanges = pendingBspChanges ++ changedBspFiles
-      pendingDebounceTask.foreach(_.cancel(false))
-      val task: Runnable = () => {
-        val batch = debounceLock.synchronized {
-          val toHandle = pendingBspChanges
-          pendingBspChanges = Set.empty
-          pendingDebounceTask = None
-          toHandle
-        }
-        if (batch.nonEmpty) {
-          router.invalidateBootstrapCache()
-          // never let a failing batch kill the debounce executor
-          try handleBspChanges(batch)
-          catch { case e: Exception => logger.error(s"Failed to process .bsp changes: ${e.getMessage}", e) }
-        }
-      }
-      val future = debounceExecutor.schedule(task, DebounceMs, TimeUnit.MILLISECONDS)
-      pendingDebounceTask = Some(future)
-    }
-  }
-
   private def handleBspChanges(changed: Set[os.Path]): Unit = synchronized {
-    val current = BspDiscovery.discover(workspaceRoot, ignoreEngine.getOrElse(newEngine())).map(_.path).toSet
+    val current = BspDiscovery.discover(workspaceRoot, watchFilter.engine).map(_.path).toSet
     val (newFiles, deletedFiles, modifiedFiles) =
       BspManager.classifyBspChanges(knownBspFiles, current, changed)
 
@@ -426,25 +372,6 @@ class BspManager (
           None
         }
       case None => Some(spec)
-    }
-  }
-
-  private[bsp] def watchIgnored(path: os.Path): Boolean = {
-    val relOpt = try Some(path.relativeTo(workspaceRoot)) catch { case _: Exception => None }
-    relOpt match {
-      case None => true
-      case Some(rel) if rel.segments.isEmpty => false
-      case Some(rel) =>
-        if (rel.segments.toSeq.contains(".git")) true
-        else if (rel.segments.toSeq.sliding(2).exists(_.toSeq == Seq(".basamake", "logs"))) true
-        else ignoreEngine match {
-          case Some(engine) => engine.isIgnored(path, os.isDir(path))
-          // pre-initialize (tests): keep the legacy hardcoded top-level list
-          case None =>
-            val segs = rel.segments.toSeq
-            segs.head == "target" || segs.head == "out" ||
-            segs.head == ".deder" || segs.head == ".metals"
-        }
     }
   }
 
