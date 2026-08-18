@@ -1,8 +1,30 @@
 amends "https://sake92.github.io/deder/config/v0.20.0/DederProject.pkl"
 
-local const navigationModules =
+local const coreModules =
   new CreateScalaModules {
-    root = "modules/navigation"
+    root = "modules/core"
+    template = new {
+      scalaVersion = "3.7.4"
+      scalacOptions { "-deprecation" }
+      deps {
+        "com.typesafe.scala-logging::scala-logging:3.9.5"
+        "ba.sake::tupson:0.20.0"
+        "com.lihaoyi::os-lib:0.11.9-M8"
+      }
+    }
+    testTemplate = (template.asTest()) {
+      deps { "org.scalameta::munit::1.0.4" }
+      jvmOptions {
+        "--add-opens=java.base/java.nio=ALL-UNNAMED"
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+      }
+      junitXmlReport { enabled = true }
+    }
+  }.get
+
+local const indexModules =
+  new CreateScalaModules {
+    root = "modules/index"
     template = new {
       scalaVersion = "3.7.4"
       scalacOptions { "-Xfatal-warnings" } // non-exhaustive matches (e.g. scalameta trees) fail the build
@@ -17,54 +39,78 @@ local const navigationModules =
       }
     }
     testTemplate = (template.asTest()) {
-      deps {
-        "org.scalameta::munit::1.0.4"
-      }
+      deps { "org.scalameta::munit::1.0.4" }
       jvmOptions {
         "--add-opens=java.base/java.nio=ALL-UNNAMED"
         "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
       }
-      junitXmlReport {
-        enabled = true
-      }
+      junitXmlReport { enabled = true }
     }
   }.get
 
-local const mainModules =
+local const bspModules =
   new CreateScalaModules {
-    root = "modules/main"
+    root = "modules/bsp"
+    template = new {
+      scalaVersion = "3.7.4"
+      scalacOptions { "-deprecation" }
+      moduleDeps {
+        indexModules.main
+        coreModules.main
+      }
+      deps {
+        "com.typesafe.scala-logging::scala-logging:3.9.5"
+        "com.lihaoyi::os-lib:0.11.9-M8"
+        "com.lihaoyi::os-lib-watch:0.11.9-M8"
+        "ba.sake::tupson:0.20.0"
+        "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0" // LanguageClient + WorkDoneProgress types
+        "ch.epfl.scala:bsp4j:2.2.0-M2"
+      }
+    }
+    testTemplate = (template.asTest()) {
+      deps { "org.scalameta::munit::1.0.4" }
+      jvmOptions {
+        "--add-opens=java.base/java.nio=ALL-UNNAMED"
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+      }
+      junitXmlReport { enabled = true }
+    }
+  }.get
+
+local const lspModules =
+  new CreateScalaModules {
+    root = "modules/lsp"
     template = new {
       scalaVersion = "3.7.4"
       scalacOptions { "-deprecation" }
       mainClass = "ba.sake.basamake.Main"
       moduleDeps {
-        navigationModules.main
+        bspModules.main
+        indexModules.main
+        coreModules.main
       }
       deps {
+        "com.typesafe.scala-logging::scala-logging:3.9.5"
         "ch.qos.logback:logback-classic:1.5.12"
         "com.lihaoyi::mainargs:0.7.8"
-        "com.lihaoyi::os-lib-watch:0.11.9-M8"
+        "com.lihaoyi::os-lib:0.11.9-M8"
         "ba.sake::tupson:0.20.0"
-        "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0" // just for some basic types like SymbolKind, etc.
-        "ch.epfl.scala:bsp4j:2.2.0-M2"
-        //"com.softwaremill.ox::core:1.0.5"
+        "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0"
       }
     }
     testTemplate = (template.asTest()) {
-      deps {
-        "org.scalameta::munit::1.0.4"
-      }
+      deps { "org.scalameta::munit::1.0.4" }
       jvmOptions {
         "--add-opens=java.base/java.nio=ALL-UNNAMED"
         "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
       }
-      junitXmlReport {
-        enabled = true
-      }
+      junitXmlReport { enabled = true }
     }
   }.get
 
 modules {
-  ...navigationModules.all
-  ...mainModules.all
+  ...coreModules.all
+  ...indexModules.all
+  ...bspModules.all
+  ...lspModules.all
 }
