@@ -2,7 +2,6 @@ package ba.sake.basamake.lsp
 
 import java.net.URI
 import java.util.concurrent.{CompletableFuture, Executors}
-import scala.compiletime.uninitialized
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
@@ -16,7 +15,9 @@ import ba.sake.basamake.util.LoggingUtils
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
 
-  @volatile private var client: LanguageClient = uninitialized
+  // Set by connect() — the LSP launcher always connects before initialize()
+  // (the protocol guarantees it), so `.get` at the initialize call site is safe.
+  @volatile private var client: Option[LanguageClient] = None
 
   private val progressReporter = new IndexingProgressReporter
   private val workspaceIndexingDone = new java.util.concurrent.atomic.AtomicBoolean(false)
@@ -48,7 +49,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
     logger.debug(s"Client connected: ${client}")
-    this.client = client
+    this.client = Some(client)
     progressReporter.setClient(client)
   }
 
@@ -108,7 +109,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       }
     })
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
-    bspManager.initialize(client, warmDeps, workDoneProgress)
+    bspManager.initialize(client.get, warmDeps, workDoneProgress)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
   }
 

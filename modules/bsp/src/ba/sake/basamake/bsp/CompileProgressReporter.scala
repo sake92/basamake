@@ -2,7 +2,6 @@ package ba.sake.basamake.bsp
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import scala.compiletime.uninitialized
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.LanguageClient
 import org.eclipse.lsp4j.jsonrpc.messages.Either
@@ -26,14 +25,14 @@ import ba.sake.basamake.bsp.BspConnectionId
   * finish either way). */
 class CompileProgressReporter extends StrictLogging {
 
-  @volatile private var client: LanguageClient = _
+  @volatile private var client: Option[LanguageClient] = None
   @volatile private var enabled: Boolean = false
 
   /** connection → active tokens of that connection (token = progress token). */
   private val activeByConn = new ConcurrentHashMap[BspConnectionId, java.util.Set[String]]()
 
   /** Called from connect() — the client proxy arrives before initialize. */
-  def setClient(c: LanguageClient): Unit = client = c
+  def setClient(c: LanguageClient): Unit = client = Some(c)
 
   /** Called from initialize() with the client's window.workDoneProgress capability. */
   def setEnabled(flag: Boolean): Unit = enabled = flag
@@ -42,12 +41,12 @@ class CompileProgressReporter extends StrictLogging {
     activeByConn.computeIfAbsent(connId, _ => ConcurrentHashMap.newKeySet[String]())
 
   def onTaskStart(connId: BspConnectionId, params: TaskStartParams): Unit = {
-    if (!enabled || client == null) return
+    if (!enabled || client.isEmpty) return
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("")
     if (taskId.isEmpty) return
     val token = s"basamake-compile-$taskId"
     try {
-      client.createProgress(new WorkDoneProgressCreateParams(Either.forLeft(token)))
+      client.get.createProgress(new WorkDoneProgressCreateParams(Either.forLeft(token)))
         .get(5, TimeUnit.SECONDS)
     } catch {
       case e: Exception =>
@@ -63,7 +62,7 @@ class CompileProgressReporter extends StrictLogging {
   }
 
   def onTaskProgress(connId: BspConnectionId, params: TaskProgressParams): Unit = {
-    if (!enabled || client == null) return
+    if (!enabled || client.isEmpty) return
     val taskId = Option(params.getTaskId).map(_.getId).getOrElse("")
     if (taskId.isEmpty) return
     val token = s"basamake-compile-$taskId"
@@ -84,7 +83,7 @@ class CompileProgressReporter extends StrictLogging {
     // and a token disabled in flight must never end twice (endAll after a later
     // detach). Removal happens regardless of `enabled`.
     val wasActive = tokensOf(connId).remove(token)
-    if (wasActive && enabled && client != null && taskId.nonEmpty) {
+    if (wasActive && enabled && client.isDefined && taskId.nonEmpty) {
       val end = new WorkDoneProgressEnd()
       Option(params.getMessage).filter(_.nonEmpty).foreach(end.setMessage)
       notify(token, end)
@@ -94,7 +93,7 @@ class CompileProgressReporter extends StrictLogging {
   /** End all active items of one connection (server died / connection detached). */
   def endAll(connId: BspConnectionId): Unit = {
     val tokens = activeByConn.remove(connId)
-    if (tokens == null || !enabled || client == null) return
+    if (tokens == null || !enabled || client.isEmpty) return
     tokens.forEach { token => notify(token, new WorkDoneProgressEnd()) }
   }
 
@@ -110,7 +109,7 @@ class CompileProgressReporter extends StrictLogging {
 
   private def notify(token: String, value: WorkDoneProgressNotification): Boolean = {
     try {
-      client.notifyProgress(new ProgressParams(Either.forLeft(token), Either.forLeft(value)))
+      client.get.notifyProgress(new ProgressParams(Either.forLeft(token), Either.forLeft(value)))
       true
     } catch {
       case e: Exception =>

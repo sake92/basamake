@@ -68,7 +68,7 @@ Two-pass source extraction for Scala and Java:
 
 ## BSP lifecycle (`modules/bsp/src/.../bsp/`)
 
-`BspManager` discovers `.bsp/*.json` at `initialize()` but spawns nothing (lazy). The first LSP-side `poke(uri, compile)` (from `didOpen`/`didSave`/`definition`/`references`) calls `BspConnection.ensureConnected()` which spawns + handshakes (`BspHandshake`; `BasamakeBuildClient` event sink). `spawnLock` serializes `spawnAndHandshake`; a volatile `spawning` flag lets fast-path callers detect an in-progress spawn: pokes return immediately (no-op), compiles queue in a `CopyOnWriteArrayList` (deduped via `addIfAbsent`) and drain after spawn succeeds. On spawn failure the queue clears; no cooldown, no retry limits — every user action is a fresh attempt. `BspRouter` does two-phase URI routing (ground-truth + bootstrap heuristic). Diagnostics flow BSP `PublishDiagnosticsParams` → LSP.
+`BspManager` discovers `.bsp/*.json` lazily via `BspDiscovery` + `WatchFilter`; first LSP-side poke calls `BspConnection.ensureConnected()` (spawnLock = ReentrantLock; volatile `spawning` flag; pending-compile queue in CopyOnWriteArrayList drained after spawn). Events flow through ONE `BspEvents` interface; connection-scoped events carry `BspConnectionId`; `buildTargetDidChange` on a connection triggers a dependencySources refresh on that same connection (routed by the manager). `BspWatcher` owns the file watcher + .bsp debounce; `WatchFilter` owns the gitignore engine (exempts `.bsp`); manager handles .bsp attach/detach batches.
 
 ## Logging & stdout
 

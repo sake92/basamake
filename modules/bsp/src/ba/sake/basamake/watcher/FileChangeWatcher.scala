@@ -11,18 +11,19 @@ class FileChangeWatcher(
     filterOnCreated: os.Path => Boolean = _ => true
 ) extends StrictLogging {
 
-  private var watcher: AutoCloseable = scala.compiletime.uninitialized
+  private var watcher: Option[AutoCloseable] = None
 
   def start(): Unit = {
     logger.info(s"Starting file watcher on $workspaceRoot")
     // os.watch.watch spawns a daemon thread
-    watcher = os.watch.watch(
+    watcher = Some(os.watch.watch(
       Seq(workspaceRoot),
       changed => onChanged(changed),
       filter = filterOnCreated // applies only to created files, not existing/modified or deleted files
-    )
+    ))
   }
 
   def stop(): Unit =
-    if watcher != null then watcher.close()
+    watcher.foreach(_.close())
+    watcher = None
 }
