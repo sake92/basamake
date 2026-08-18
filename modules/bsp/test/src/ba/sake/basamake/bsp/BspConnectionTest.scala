@@ -47,9 +47,9 @@ class BspConnectionTest extends FunSuite {
   test("dead process on ping → respawn (killTree skips already-dead process)") {
     var spawnCount = new AtomicInteger(0)
     var killCalled = new AtomicBoolean(false)
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val n = spawnCount.incrementAndGet()
         val proc = new FakeProcess {
           override def isAlive = n > 1   // first spawn's process is dead
@@ -65,8 +65,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => { killCalled.set(true); () },
-      eventSink = noopSink
+      killTreeFn = _ => { killCalled.set(true); () },
+      events = noopSink,
+      debounceMs = 500
     )
 
     conn.poke()  // spawn #1: alive=false → ensureConnected → return (no liveness check yet)
@@ -82,9 +83,9 @@ class BspConnectionTest extends FunSuite {
   test("stream closed with alive process → killTree + respawn (real error)") {
     var spawnCount = new AtomicInteger(0)
     var killCalled = new AtomicBoolean(false)
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val n = spawnCount.incrementAndGet()
         val proc = new FakeProcess {
           override def isAlive = true
@@ -101,8 +102,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => { killCalled.set(true); () },
-      eventSink = noopSink
+      killTreeFn = _ => { killCalled.set(true); () },
+      events = noopSink,
+      debounceMs = 500
     )
 
     conn.poke()  // spawn #1
@@ -114,9 +116,9 @@ class BspConnectionTest extends FunSuite {
   test("ping failure with alive process → no kill, no respawn (busy server)") {
     var spawnCount = new AtomicInteger(0)
     var killCalled = new AtomicBoolean(false)
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         spawnCount.incrementAndGet()
         val proc = new FakeProcess {
           override def isAlive = true   // healthy process, just slow to answer
@@ -131,8 +133,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => { killCalled.set(true); () },
-      eventSink = noopSink
+      killTreeFn = _ => { killCalled.set(true); () },
+      events = noopSink,
+      debounceMs = 500
     )
 
     conn.poke()  // spawn #1: alive=false → ensureConnected → return
@@ -144,14 +147,15 @@ class BspConnectionTest extends FunSuite {
 
   test("spawn failure → next poke triggers fresh spawn") {
     var spawnCount = new AtomicInteger(0)
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         spawnCount.incrementAndGet()
         throw new RuntimeException("deder refuses to start")
       },
-      killTree = _ => (),
-      eventSink = noopSink
+      killTreeFn = _ => (),
+      events = noopSink,
+      debounceMs = 500
     )
     // First attempt fails
     try conn.ensureConnected() catch { case _: RuntimeException => () }
@@ -163,9 +167,9 @@ class BspConnectionTest extends FunSuite {
 
   test("successful handshake → alive → exit → respawn → alive") {
     var spawnCount = new AtomicInteger(0)
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         spawnCount.incrementAndGet()
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
@@ -174,8 +178,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink
+      killTreeFn = _ => (),
+      events = noopSink,
+      debounceMs = 500
     )
     conn.poke()   // spawn #1, success
     assertEquals(spawnCount.get(), 1)
@@ -187,9 +192,9 @@ class BspConnectionTest extends FunSuite {
   }
 
   test("process.onExit callback flips alive=false") {
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
           new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
@@ -197,8 +202,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink
+      killTreeFn = _ => (),
+      events = noopSink,
+      debounceMs = 500
     )
     conn.poke()
     assert(conn.aliveForTesting, "alive should be true after handshake")
@@ -209,9 +215,9 @@ class BspConnectionTest extends FunSuite {
   test("poke during spawn returns immediately without blocking") {
     val latch = new java.util.concurrent.CountDownLatch(1)
     var spawnCount = new AtomicInteger(0)
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         spawnCount.incrementAndGet()
         latch.await()  // block spawn until we've tested concurrent access
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
@@ -221,8 +227,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink
+      killTreeFn = _ => (),
+      events = noopSink,
+      debounceMs = 500
     )
     // Start spawn in background
     val t = new Thread(() => conn.poke())
@@ -243,9 +250,9 @@ class BspConnectionTest extends FunSuite {
     val tid = new BuildTargetIdentifier("//test")
     val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
     val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         val server = new MockBuildServer {
           override def buildTargetCompile(p: CompileParams) = {
@@ -259,8 +266,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink
+      killTreeFn = _ => (),
+      events = noopSink,
+      debounceMs = 500
     )
     // First spawn: success (populates sourceDirsByTarget)
     conn.ensureConnected()
@@ -286,9 +294,9 @@ class BspConnectionTest extends FunSuite {
     val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
     val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
     var spawnSucceed = true
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         if (!spawnSucceed) throw new RuntimeException("spawn fail")
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
@@ -297,8 +305,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink
+      killTreeFn = _ => (),
+      events = noopSink,
+      debounceMs = 500
     )
     // First spawn: success (populates sourceDirsByTarget)
     conn.ensureConnected()
@@ -321,9 +330,9 @@ class BspConnectionTest extends FunSuite {
     val tid = new BuildTargetIdentifier("//debounce")
     val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
     val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         val server = new MockBuildServer {
           override def buildTargetCompile(p: CompileParams) = {
@@ -337,8 +346,8 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink,
+      killTreeFn = _ => (),
+      events = noopSink,
       debounceMs = 100
     )
     conn.ensureConnected()
@@ -358,9 +367,9 @@ class BspConnectionTest extends FunSuite {
     val tid = new BuildTargetIdentifier("//inflight")
     val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
     val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         val server = new MockBuildServer {
           override def buildTargetCompile(p: CompileParams) = {
@@ -376,8 +385,8 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink,
+      killTreeFn = _ => (),
+      events = noopSink,
       debounceMs = 100
     )
     conn.ensureConnected()
@@ -403,9 +412,9 @@ class BspConnectionTest extends FunSuite {
     val sourcesResult = new SourcesResult(java.util.List.of(
       new SourcesItem(tid1, java.util.List.of(sourceItem1)),
       new SourcesItem(tid2, java.util.List.of(sourceItem2))))
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = fakeSpec,
-      spawn = () => {
+      spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         val server = new MockBuildServer {
           override def buildTargetCompile(p: CompileParams) = {
@@ -419,8 +428,8 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
-      killTree = _ => (),
-      eventSink = noopSink,
+      killTreeFn = _ => (),
+      events = noopSink,
       debounceMs = 100
     )
     conn.ensureConnected()
@@ -491,9 +500,9 @@ class BspConnectionTest extends FunSuite {
       new ScalacOptionsItem(tid2, List("-sourceroot", "/flag/root", "-semanticdb-target", "/sem/out2").asJava,
         java.util.Collections.emptyList(), "file:///class/dir2")
     ))
-    val conn = BspConnection.forTesting(
+    val conn = new BspConnection(
       spec = spec,
-      spawn = () => {
+      spawnFn = () => {
         val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
         HandshakeResult(proc, new MockBuildServer,
           new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
@@ -501,8 +510,9 @@ class BspConnectionTest extends FunSuite {
           new DependencySourcesResult(java.util.Collections.emptyList()),
           opts)
       },
-      killTree = _ => (),
-      eventSink = sink
+      killTreeFn = _ => (),
+      events = sink,
+      debounceMs = 500
     )
 
     conn.ensureConnected()
@@ -570,9 +580,9 @@ class BspConnectionTest extends FunSuite {
         new DependencySourcesItem(tid2, java.util.List.of(
           "file:///cache/lib2-2.0-sources.jar"))
       ))
-      val conn = BspConnection.forTesting(
+      val conn = new BspConnection(
         spec = spec,
-        spawn = () => {
+        spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, new MockBuildServer,
             new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
@@ -580,8 +590,9 @@ class BspConnectionTest extends FunSuite {
             depSources,
             opts)
         },
-        killTree = _ => (),
-        eventSink = sink
+        killTreeFn = _ => (),
+        events = sink,
+        debounceMs = 500
       )
 
       conn.ensureConnected()
@@ -669,9 +680,9 @@ class BspConnectionTest extends FunSuite {
         def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
         override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = capturedDeps.add(depsByTarget)
       }
-      val conn = BspConnection.forTesting(
+      val conn = new BspConnection(
         spec = spec,
-        spawn = () => {
+        spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, new MockBuildServer,
             new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
@@ -679,8 +690,9 @@ class BspConnectionTest extends FunSuite {
             new DependencySourcesResult(java.util.Collections.emptyList()), // server returns EMPTY deps
             new ScalacOptionsResult(java.util.Collections.emptyList()))
         },
-        killTree = _ => (),
-        eventSink = sink
+        killTreeFn = _ => (),
+        events = sink,
+        debounceMs = 500
       )
 
       conn.ensureConnected()
@@ -714,9 +726,9 @@ class BspConnectionTest extends FunSuite {
           CompletableFuture.completedFuture(new DependencySourcesResult(java.util.List.of(
             new DependencySourcesItem(tid, java.util.List.of("file:///cache/lib9-1.0-sources.jar")))))
       }
-      val conn = BspConnection.forTesting(
+      val conn = new BspConnection(
         spec = spec,
-        spawn = () => {
+        spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, server,
             new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
@@ -724,8 +736,9 @@ class BspConnectionTest extends FunSuite {
             new DependencySourcesResult(java.util.Collections.emptyList()),
             new ScalacOptionsResult(java.util.Collections.emptyList()))
         },
-        killTree = _ => (),
-        eventSink = sink
+        killTreeFn = _ => (),
+        events = sink,
+        debounceMs = 500
       )
 
       conn.ensureConnected()
@@ -763,9 +776,9 @@ class BspConnectionTest extends FunSuite {
         override def buildTargetDependencySources(p: DependencySourcesParams): CompletableFuture[DependencySourcesResult] =
           CompletableFuture.completedFuture(new DependencySourcesResult(java.util.Collections.emptyList()))
       }
-      val conn = BspConnection.forTesting(
+      val conn = new BspConnection(
         spec = spec,
-        spawn = () => {
+        spawnFn = () => {
           val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
           HandshakeResult(proc, server,
             new WorkspaceBuildTargetsResult(java.util.Collections.emptyList()),
@@ -774,8 +787,9 @@ class BspConnectionTest extends FunSuite {
               new DependencySourcesItem(tid, java.util.List.of("file:///cache/lib5-1.0-sources.jar")))),
             new ScalacOptionsResult(java.util.Collections.emptyList()))
         },
-        killTree = _ => (),
-        eventSink = sink
+        killTreeFn = _ => (),
+        events = sink,
+        debounceMs = 500
       )
 
       conn.ensureConnected()

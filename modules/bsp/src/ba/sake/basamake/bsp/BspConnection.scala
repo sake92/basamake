@@ -11,7 +11,8 @@ import ba.sake.tupson.{given, *}
 
 /** One BSP connection: process + liveness.
   *
-  * Concurrency: spawnLock serializes spawnAndHandshake + killTree (ping-failure recovery).
+  * Concurrency: spawnLock (ReentrantLock — virtual threads park, not pin)
+  * serializes spawnAndHandshake + killTree (ping-failure recovery).
   * Volatile spawning flag lets fast-path callers detect an in-progress spawn and queue/return
   * without blocking. Pending compiles that arrive during spawn are queued in a CopyOnWriteArrayList
   * with deduplication (addIfAbsent) and drained after spawn succeeds. On spawn failure the
@@ -21,7 +22,7 @@ import ba.sake.tupson.{given, *}
   * most, 500 ms after the first request; further requests for the same target within the
   * window are coalesced, and a request arriving while a compile runs yields exactly ONE
   * follow-up. The single-thread executor serializes all compiles on this connection. */
-class BspConnection private (
+class BspConnection (
     val spec: BspConnectionSpec,
     spawnFn: () => HandshakeResult,
     killTreeFn: java.lang.Process => Unit,
@@ -29,8 +30,8 @@ class BspConnection private (
     debounceMs: Long
 ) extends StrictLogging {
 
-  @volatile private var process: java.lang.Process = null
-  @volatile private var buildServer: BuildServer = null
+  @volatile private var process: Option[java.lang.Process] = None
+  @volatile private var buildServer: Option[BuildServer] = None
   @volatile private var alive = false
   @volatile var inverseSourcesUnsupported = false
 
@@ -44,7 +45,7 @@ class BspConnection private (
   /** target → dependency source jars (from handshake DependencySourcesResult). */
   @volatile private var dependencySourcesByTarget: Map[BuildTargetIdentifier, List[os.Path]] = Map.empty
 
-  private val spawnLock = new Object
+  private val spawnLock = new java.util.concurrent.locks.ReentrantLock()
   /** True while spawnAndHandshake is in progress. Volatile for fast-path checks. */
   @volatile private var spawning = false
   /** Compile target IDs that arrived during spawn. Dedup via addIfAbsent. */
@@ -64,14 +65,15 @@ class BspConnection private (
   def ensureConnected(): Unit = {
     if (alive) return
     if (spawning) return          // another caller is spawning; any intent is already queued
-    spawnLock.synchronized {
+    spawnLock.lock()
+    try {
       if (alive) return           // re-check after lock acquire
       if (spawning) return        // another thread started spawn between our check and lock
       spawning = true
       try {
         events.onConnectionStarted(spec)
         spawnAndHandshake()
-        process.onExit().thenRun(() => alive = false)
+        process.foreach(_.onExit().thenRun(() => alive = false))
         alive = true
         events.onConnectionSucceeded(spec, sourceDirsByTarget.size)
         // Index catch-up: push ALL targets' semanticdb dirs to the index right after
@@ -90,6 +92,8 @@ class BspConnection private (
       } finally {
         spawning = false
       }
+    } finally {
+      spawnLock.unlock()
     }
     drainPendingCompiles()         // outside spawnLock — BSP is alive now
   }
@@ -101,17 +105,19 @@ class BspConnection private (
       return
     }
     try {
-      buildServer.workspaceBuildTargets().get(PingTimeoutSec, TimeUnit.SECONDS)
+      buildServer.get.workspaceBuildTargets().get(PingTimeoutSec, TimeUnit.SECONDS)
     } catch {
       case e: Exception =>
         // Kill ONLY on a real error (stream closed) or when the process is dead.
         // A live-but-unresponsive process is usually busy compiling — killing it
         // destroys a healthy build server and forces a slow respawn for nothing.
         val streamClosed = BspConnection.isStreamClosed(e)
-        val processAlive = process != null && process.isAlive
+        val processAlive = process.exists(_.isAlive)
         if (streamClosed || !processAlive) {
           logger.warn(s"ping failed, process dead or stream closed (${e.getMessage}) — killing and respawning")
-          spawnLock.synchronized { killTree(); alive = false }
+          spawnLock.lock()
+          try { killTree(); alive = false }
+          finally { spawnLock.unlock() }
           if (!spawning) ensureConnected()
         } else {
           logger.debug(s"ping failed but process alive (${e.getMessage}) — keeping connection, server may be busy")
@@ -165,7 +171,7 @@ class BspConnection private (
       val idsStr = targetIds.map(_.getUri).mkString(", ")
       logger.info(s"Compile start: $idsStr")
       try {
-        val result = buildServer.buildTargetCompile(new CompileParams(targetIds.asJava))
+        val result = buildServer.get.buildTargetCompile(new CompileParams(targetIds.asJava))
           .get(spec.compileTimeoutSec, TimeUnit.SECONDS)
         val took = System.currentTimeMillis() - startTime
         logger.info(s"Compile finished: $idsStr — ${result.getStatusCode} in ${took}ms")
@@ -181,20 +187,28 @@ class BspConnection private (
     }
   }
 
-  def shutdown(): Unit = spawnLock.synchronized {
-    alive = false
-    spawning = false
-    pendingCompileTargetIds.clear()
-    pendingCompileTargets.clear()
-    compileExecutor.shutdownNow()
-    if (buildServer != null) tryGracefulShutdown()
-    killTree()
+  def shutdown(): Unit = {
+    spawnLock.lock()
+    try {
+      alive = false
+      spawning = false
+      pendingCompileTargetIds.clear()
+      pendingCompileTargets.clear()
+      compileExecutor.shutdownNow()
+      tryGracefulShutdown()
+      killTree()
+      // process/buildServer are dead — drop the references
+      process = None
+      buildServer = None
+    } finally {
+      spawnLock.unlock()
+    }
   }
 
   private def spawnAndHandshake(): Unit = {
     val result = spawnFn()
-    process = result.process
-    buildServer = result.buildServer
+    process = Some(result.process)
+    buildServer = Some(result.buildServer)
     sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions, spec.workingDir)
     sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
     classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
@@ -300,9 +314,9 @@ class BspConnection private (
     * empty result keeps the existing deps). Re-fires the dep hook and persists
     * data.json when anything actually changed. */
   private[bsp] def refreshDependencySources(tids: List[BuildTargetIdentifier]): Unit = {
-    if (buildServer == null) return
+    if (buildServer.isEmpty) return
     try {
-      val result = buildServer.buildTargetDependencySources(new DependencySourcesParams(tids.asJava))
+      val result = buildServer.get.buildTargetDependencySources(new DependencySourcesParams(tids.asJava))
         .get(5, TimeUnit.SECONDS)
       val fresh = BspConnection.extractTargetDependencySources(result)
       val merged = BspConnection.mergeDeps(dependencySourcesByTarget, fresh)
@@ -318,17 +332,19 @@ class BspConnection private (
   }
 
   private def killTree(): Unit =
-    if (process != null && process.isAlive) killTreeFn(process)
+    process.foreach(p => if (p.isAlive) killTreeFn(p))
 
   private def tryGracefulShutdown(): Unit =
-    try {
-      buildServer.buildShutdown().get(ShutdownTimeoutSec, TimeUnit.SECONDS)
-      buildServer.onBuildExit()
-    } catch { case _: Exception => () }
+    buildServer.foreach { bs =>
+      try {
+        bs.buildShutdown().get(ShutdownTimeoutSec, TimeUnit.SECONDS)
+        bs.onBuildExit()
+      } catch { case _: Exception => () }
+    }
 
   private def hasBestEffortFlag(targetIds: List[BuildTargetIdentifier]): Boolean =
     try buildServer match {
-      case scalaServer: ScalaBuildServer =>
+      case Some(scalaServer: ScalaBuildServer) =>
         val result = scalaServer.buildTargetScalacOptions(new ScalacOptionsParams(targetIds.asJava))
           .get(2, TimeUnit.SECONDS)
         Option(result.getItems).toList.flatMap(_.asScala).exists { item =>
@@ -350,9 +366,9 @@ class BspConnection private (
   }
 
   private def tryInverseSources(uri: String): List[BuildTargetIdentifier] = {
-    if (buildServer == null || inverseSourcesUnsupported) return Nil
+    if (buildServer.isEmpty || inverseSourcesUnsupported) return Nil
     try {
-      val result = buildServer.buildTargetInverseSources(
+      val result = buildServer.get.buildTargetInverseSources(
         new InverseSourcesParams(new TextDocumentIdentifier(uri))
       ).get(2, TimeUnit.SECONDS)
       result.getTargets.asScala.toList
@@ -385,7 +401,7 @@ class BspConnection private (
   // ---- test hooks (package-private) ----
   private[bsp] def aliveForTesting: Boolean = alive
   private[bsp] def simulateProcessExitForTesting(): Unit =
-    if (process != null) alive = false
+    process.foreach(_ => alive = false)
   private[bsp] def setSpawningFlagForTesting(v: Boolean): Unit = { spawning = v }
   private[bsp] def pendingCompileTargetIdsForTesting: Vector[BuildTargetIdentifier] = {
     import scala.jdk.CollectionConverters.*
@@ -405,15 +421,6 @@ object BspConnection {
       events,
       debounceMs = 500
     )
-
-  /** Test factory: inject spawn + killTree. */
-  private[bsp] def forTesting(
-      spec: BspConnectionSpec,
-      spawn: () => HandshakeResult,
-      killTree: java.lang.Process => Unit,
-      eventSink: BspEvents,
-      debounceMs: Long = 500
-  ): BspConnection = new BspConnection(spec, spawn, killTree, eventSink, debounceMs)
 
   /** Merge fresh dependency sources into old. A fresh EMPTY list never replaces an
     * existing non-empty one (servers intermittently return empty results — known
