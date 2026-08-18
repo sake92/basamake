@@ -1,10 +1,9 @@
 package ba.sake.basamake.lsp
 
 import java.net.URI
-import java.util.concurrent.{CompletableFuture, TimeUnit}
+import java.util.concurrent.TimeUnit
 import munit.FunSuite
 import org.eclipse.lsp4j.*
-import org.eclipse.lsp4j.services.LanguageClient
 import scala.jdk.CollectionConverters.*
 
 class BasamakeLanguageServerTest extends FunSuite {
@@ -21,34 +20,11 @@ class BasamakeLanguageServerTest extends FunSuite {
   private def sanitize(name: String): String =
     name.replaceAll("[^a-zA-Z0-9_-]", "-").take(60)
 
-  /** LanguageClient fake — accepts all methods as no-ops. */
-  private def fakeClient: LanguageClient = new LanguageClient {
-    override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-    override def telemetryEvent(x: Any): Unit = ()
-    override def showMessage(p: MessageParams): Unit = ()
-    override def showMessageRequest(p: ShowMessageRequestParams) =
-      CompletableFuture.completedFuture(null.asInstanceOf[MessageActionItem])
-    override def logMessage(p: MessageParams): Unit = ()
-    override def createProgress(p: WorkDoneProgressCreateParams) =
-      CompletableFuture.completedFuture(null.asInstanceOf[Void])
-    override def applyEdit(p: ApplyWorkspaceEditParams) =
-      CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
+  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    cond
   }
-
-  /** LanguageClient fake that captures publishDiagnostics calls. */
-  private def capturingClient(captured: java.util.List[PublishDiagnosticsParams]): LanguageClient =
-    new LanguageClient {
-      override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = captured.add(p)
-      override def telemetryEvent(x: Any): Unit = ()
-      override def showMessage(p: MessageParams): Unit = ()
-      override def showMessageRequest(p: ShowMessageRequestParams) =
-        CompletableFuture.completedFuture(null.asInstanceOf[MessageActionItem])
-      override def logMessage(p: MessageParams): Unit = ()
-      override def createProgress(p: WorkDoneProgressCreateParams) =
-        CompletableFuture.completedFuture(null.asInstanceOf[Void])
-      override def applyEdit(p: ApplyWorkspaceEditParams) =
-        CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
-    }
 
   /** Returns (0-indexed line, 0-indexed startCharacter) for the first match of
     * `regex` in `content`. If a named group `p` exists, its start is used. */
@@ -64,31 +40,6 @@ class BasamakeLanguageServerTest extends FunSuite {
     val char = if lastNl < 0 then before.length else before.length - lastNl - 1
     (line, char)
   }
-
-  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
-    cond
-  }
-
-  /** LanguageClient fake that captures workDoneProgress create + notify calls. */
-  private def progressClient(created: java.util.List[WorkDoneProgressCreateParams],
-                             sent: java.util.List[ProgressParams]): LanguageClient =
-    new LanguageClient {
-      override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = ()
-      override def telemetryEvent(x: Any): Unit = ()
-      override def showMessage(p: MessageParams): Unit = ()
-      override def showMessageRequest(p: ShowMessageRequestParams) =
-        CompletableFuture.completedFuture(null.asInstanceOf[MessageActionItem])
-      override def logMessage(p: MessageParams): Unit = ()
-      override def applyEdit(p: ApplyWorkspaceEditParams) =
-        CompletableFuture.completedFuture(new ApplyWorkspaceEditResponse(false))
-      override def createProgress(p: WorkDoneProgressCreateParams): CompletableFuture[Void] = {
-        created.add(p)
-        CompletableFuture.completedFuture(null.asInstanceOf[Void])
-      }
-      override def notifyProgress(p: ProgressParams): Unit = sent.add(p)
-    }
 
   /** (token, kind, message) of one ProgressParams — kind+message live on the
     * concrete Begin/Report/End classes, not on WorkDoneProgressNotification. */
@@ -110,7 +61,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     val root = copyFixture("sbt", "lsp-rename-caps")
     try {
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       val result = server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
       val didRename = result.getCapabilities.getWorkspace.getFileOperations.getDidRename
@@ -127,9 +78,9 @@ class BasamakeLanguageServerTest extends FunSuite {
   test("didRenameFiles: publishes empty diagnostics for the old uri") {
     val root = copyFixture("sbt", "lsp-rename-handler")
     try {
-      val captured = new java.util.concurrent.CopyOnWriteArrayList[PublishDiagnosticsParams]()
+      val client = new TestLanguageClient
       val server = new BasamakeLanguageServer(root)
-      server.connect(capturingClient(captured))
+      server.connect(client)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -138,19 +89,18 @@ class BasamakeLanguageServerTest extends FunSuite {
       server.didRenameFiles(new RenameFilesParams(
         java.util.List.of(new FileRename(oldUri, newUri))))
 
-      val cleared = captured.asScala.filter(_.getUri == oldUri)
-      assert(cleared.nonEmpty,
-        s"expected empty publish for old uri, got ${captured.asScala.map(_.getUri)}")
-      assertEquals(cleared.last.getDiagnostics.size(), 0)
+      val cleared = client.diagnosticsFor(oldUri)
+      assert(cleared.isEmpty,
+        s"expected empty publish for old uri, got: $cleared")
     } finally os.remove.all(root)
   }
 
   test("didChangeWatchedFiles: deleted file → empty diagnostics published") {
     val root = copyFixture("sbt", "lsp-watched")
     try {
-      val captured = new java.util.concurrent.CopyOnWriteArrayList[PublishDiagnosticsParams]()
+      val client = new TestLanguageClient
       val server = new BasamakeLanguageServer(root)
-      server.connect(capturingClient(captured))
+      server.connect(client)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -161,10 +111,9 @@ class BasamakeLanguageServerTest extends FunSuite {
           new FileEvent(createdUri, FileChangeType.Created),
           new FileEvent(deletedUri, FileChangeType.Deleted))))
 
-      val cleared = captured.asScala.filter(_.getUri == deletedUri)
-      assert(cleared.nonEmpty,
-        s"expected empty publish for deleted file, got ${captured.asScala.map(_.getUri)}")
-      assertEquals(cleared.last.getDiagnostics.size(), 0)
+      val cleared = client.diagnosticsFor(deletedUri)
+      assert(cleared.isEmpty,
+        s"expected empty publish for deleted file, got: $cleared")
     } finally os.remove.all(root)
   }
 
@@ -177,7 +126,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     try {
       os.remove.all(root / "target") // force source-only
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -216,7 +165,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     try {
       os.remove.all(root / "target") // force source-only
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -257,7 +206,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     try {
       os.remove.all(root / "target")
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -297,7 +246,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     try {
       os.remove.all(root / "target") // force source-only
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -323,7 +272,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     try {
       os.remove.all(root / "target")
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -352,7 +301,7 @@ class BasamakeLanguageServerTest extends FunSuite {
       os.write.over(mainFile, "// edited after compile\n" + original)
 
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -380,10 +329,9 @@ class BasamakeLanguageServerTest extends FunSuite {
   test("initialize: reports workspace indexing progress via workDoneProgress") {
     val root = copyFixture("nopackages", "lsp-progress")
     try {
-      val created = new java.util.concurrent.CopyOnWriteArrayList[WorkDoneProgressCreateParams]()
-      val sent = new java.util.concurrent.CopyOnWriteArrayList[ProgressParams]()
+      val client = new TestLanguageClient
       val server = new BasamakeLanguageServer(root)
-      server.connect(progressClient(created, sent))
+      server.connect(client)
 
       val params = new InitializeParams()
       val caps = new ClientCapabilities()
@@ -395,10 +343,10 @@ class BasamakeLanguageServerTest extends FunSuite {
 
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
-      val tokens = created.asScala.map(_.getToken.getLeft).toSet
+      val tokens = client.progressNotifications.map(_.getToken.getLeft).toSet
       assert(tokens.contains("basamake-workspace"), s"workspace progress token must be created, got $tokens")
 
-      val wsEvents = sent.asScala.toList
+      val wsEvents = client.progressNotifications.toList
         .filter(_.getToken.getLeft == "basamake-workspace")
         .map(progressEvent)
       val kinds = wsEvents.map(_._2)
@@ -420,7 +368,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     val root = copyFixture("sbtbuild", "lsp-sbt-goto")
     try {
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -446,7 +394,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     val root = copyFixture("sbtbuild", "lsp-sbt-watched")
     try {
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 
@@ -465,7 +413,7 @@ class BasamakeLanguageServerTest extends FunSuite {
     val root = copyFixture("sbtbuild", "lsp-sbt-watched-changed")
     try {
       val server = new BasamakeLanguageServer(root)
-      server.connect(fakeClient)
+      server.connect(new TestLanguageClient)
       server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
       assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
 

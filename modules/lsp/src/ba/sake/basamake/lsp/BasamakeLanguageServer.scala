@@ -10,10 +10,9 @@ import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.index.{SymbolDefinition, InMemorySymbolTable, HoverProvider}
 import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedSymbolTable}
-import ba.sake.basamake.bsp.{BspManager, BspTargetData}
+import ba.sake.basamake.bsp.{BspManager, BspWarmStart}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.util.LoggingUtils
-import ba.sake.tupson.{given, *}
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
 
@@ -85,7 +84,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       .getOrElse(false)
     progressReporter.setEnabled(workDoneProgress)
 
-    val (roots, warmDeps) = loadBspDataFromDataJson()
+    val (roots, warmDeps) = BspWarmStart.load(workspacePath)
     Thread.ofVirtual().start(() => {
       try {
         workspaceIndex.initialize(roots)
@@ -307,41 +306,5 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
         new Position(loc.range.endLine, loc.range.endCharacter)
     )
     new Location(uri, range)
-  }
-
-  /** Read .basamake/bsp/.../data.json files and collect (sourceRootDir, semanticdbDir)
-    * pairs plus warm per-target dependency source jars (source root → jars). Speeds
-    * up subsequent startups by indexing BSP-managed output dirs + known dep sources
-    * without walking the entire workspace. Returns empty lists if no data.json files
-    * exist. */
-  private def loadBspDataFromDataJson(): (List[SemanticdbDirs], List[(os.Path, List[os.Path])]) = {
-    val bspDir = workspacePath / ".basamake/bsp"
-    if (!os.exists(bspDir) || !os.isDir(bspDir)) {
-      logger.debug(s"No BSP data.json files found in ${bspDir}")
-      return (Nil, Nil)
-    }
-    try {
-      val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
-      var roots = List.empty[SemanticdbDirs]
-      var warmDeps = List.empty[(os.Path, List[os.Path])]
-      dataFiles.foreach { f =>
-        try {
-          val data = os.read(f).parseJson[BspTargetData]
-          data.targets.foreach { t =>
-            roots = SemanticdbDirs(t.sourceRootDir, t.semanticdbDir) :: roots
-            val deps = t.dependencySources.flatMap(s => try Some(os.Path(s)) catch { case _: Exception => None })
-            if (deps.nonEmpty) warmDeps = (t.sourceRootDir, deps) :: warmDeps
-          }
-        } catch {
-          case e: Exception =>
-            logger.error(s"Skipping ${f.relativeTo(workspacePath)}: ${e.getMessage}")
-        }
-      }
-      (roots, warmDeps.distinct)
-    } catch {
-      case e: Exception =>
-        logger.error(s"Failed to load data.json files: ${e.getMessage}")
-        (Nil, Nil)
-    }
   }
 }
