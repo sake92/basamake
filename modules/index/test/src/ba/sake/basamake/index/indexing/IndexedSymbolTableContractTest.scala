@@ -10,7 +10,7 @@ import java.io.FileOutputStream
   * fallback search. */
 class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
 
-  private def cacheDir(fingerprint: String) = SourceJarIndexer.cacheRoot / os.RelPath(fingerprint)
+  private def cacheDir(fingerprint: String) = testCacheRoot / os.RelPath(fingerprint)
 
   private def cleanCache(fingerprint: String): Unit = {
     if (os.exists(cacheDir(fingerprint))) os.remove.all(cacheDir(fingerprint))
@@ -53,7 +53,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintA)
     cleanCache(fingerprintB)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     // precondition: jarB DOES hold the symbol (warmed via background indexing)
     assert(eventually(deps.get("com/foo/Foo#targetOnly().", List(jarB)).isDefined), "jarB must hold the symbol")
 
@@ -72,7 +72,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintA)
     cleanCache(fingerprintB)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jarA, jarB))
     assert(eventually(
       os.exists(cacheDir(fingerprintA) / "metadata.json") && os.exists(cacheDir(fingerprintB) / "metadata.json")),
@@ -95,7 +95,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     val fingerprintA = Fingerprint.fromJarPath(jarA)
     cleanCache(fingerprintA)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assert(eventually(deps.get("com/foo/Foo#", List(jarA)).isDefined), "jarA must index and resolve")
 
     assertEquals(deps.get("com/foo/DoesNotExist#", List(jarA)), None, "a miss must return None, no fallback")
@@ -110,7 +110,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintA)
     cleanCache(fingerprintB)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assert(eventually(deps.get("com/foo/Foo#fromB().", List(jarA, jarB)).isDefined), "fromB must resolve")
     val inB = deps.get("com/foo/Foo#fromB().", List(jarA, jarB)).map(_.path).get
     assert(inB.startsWith(cacheDir(fingerprintB)), s"expected def from jarB, got $inB")
@@ -128,7 +128,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintA)
     cleanCache(fingerprintB)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     // precondition: jarB DOES hold the symbol (warmed via background indexing)
     assert(eventually(deps.get("com/foo/Foo#onlyHere().", List(jarB)).isDefined), "jarB must hold the symbol")
 
@@ -146,7 +146,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     val irrelevant = (0 until 8).map(i => writeJarPair(tempDir, s"other-$i-sources.jar", s"org.pkg$i")).toList
     val jars = irrelevant ++ List(matchingMiss, matchingHit)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(jars)
     assert(eventually(jars.forall(j => os.exists(cacheDir(Fingerprint.fromJarPath(j)) / "metadata.json"))),
       "registerTarget must sprinkle metadata for every jar")
@@ -178,7 +178,7 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     val fingerprints = jars.map(Fingerprint.fromJarPath)
     fingerprints.foreach(cleanCache)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(jars)
     assert(eventually(jars.forall(j => os.exists(cacheDir(Fingerprint.fromJarPath(j)) / "metadata.json"))),
       "registerTarget must sprinkle metadata for all 100 jars")

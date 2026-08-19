@@ -7,7 +7,9 @@ import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 import com.typesafe.scalalogging.StrictLogging
 
-/** Builds the `~/.cache/basamake/deps/<fingerprint>/` cache for one source jar/zip:
+/** Builds the `<cacheRoot>/<fingerprint>/` cache for one source jar/zip (cacheRoot
+  * is passed by the caller — the LSP server derives it from config, defaulting
+  * to `~/.cache/basamake/deps`):
   * indexes definitions into `index.lmdb` and records staleness metadata in
   * `metadata.json`. Source files are NOT unpacked here — `extractEntry` writes
   * individual files into `src/` lazily, on first lookup hit (the LSP Location
@@ -17,9 +19,6 @@ import com.typesafe.scalalogging.StrictLogging
   * Cache-miss path: wipe any partial dir, (re)build, save atomically (tmp + rename).
   */
 object SourceJarIndexer extends StrictLogging {
-
-  // overridable in tests — they must never write into the real home cache
-  @volatile var cacheRoot: os.Path = defaultCacheRoot
 
   // Serialize index() calls per fingerprint: several servers can race to index
   // the SAME jar/JDK into the same cache dir (each LSP server spawns its own
@@ -49,17 +48,27 @@ object SourceJarIndexer extends StrictLogging {
     * symbol table is ever built (the JDK index alone is 570k symbols; building a
     * table for it cost ~500MB of heap). Lookups go through `LmdbSerializer.get`
     * point queries. */
-  def index(source: os.Path, fingerprint: String, progress: (Long, Long, String) => Unit = (_, _, _) => ()): Unit = {
+  def index(
+      source: os.Path,
+      fingerprint: String,
+      cacheRoot: os.Path,
+      progress: (Long, Long, String) => Unit = (_, _, _) => ()
+  ): Unit = {
     val lock = indexLocks.computeIfAbsent(fingerprint, _ => new java.util.concurrent.locks.ReentrantLock())
     lock.lock()
     try {
-      indexLocked(source, fingerprint, progress)
+      indexLocked(source, fingerprint, cacheRoot, progress)
     } finally {
       lock.unlock()
     }
   }
 
-  private def indexLocked(source: os.Path, fingerprint: String, progress: (Long, Long, String) => Unit): Unit = {
+  private def indexLocked(
+      source: os.Path,
+      fingerprint: String,
+      cacheRoot: os.Path,
+      progress: (Long, Long, String) => Unit
+  ): Unit = {
     val cacheDir = cacheRoot / os.RelPath(fingerprint)
     val indexPath = cacheDir / "index.lmdb"
 
@@ -147,7 +156,7 @@ object SourceJarIndexer extends StrictLogging {
 
   /** Unpack ONE source entry into `<cacheDir>/src/<entryPath>`. Idempotent — no-op
     * when the file already exists. Atomic per-file write (tmp sibling + rename). */
-  def extractEntry(source: os.Path, fingerprint: String, entryPath: String): Unit = {
+  def extractEntry(source: os.Path, fingerprint: String, entryPath: String, cacheRoot: os.Path): Unit = {
     val target = cacheRoot / os.RelPath(fingerprint) / "src" / os.RelPath(entryPath)
     if (os.exists(target)) return
 

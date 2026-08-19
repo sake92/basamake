@@ -20,9 +20,9 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
 
     val fingerprint = "commons-net_3.9.0_bd5a1"
     cleanCache(fingerprint)
-    SourceJarIndexer.index(jar, fingerprint)
+    SourceJarIndexer.index(jar, fingerprint, testCacheRoot)
 
-    val indexPath = SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb"
+    val indexPath = testCacheRoot / fingerprint / "index.lmdb"
     assert(LmdbSerializer.get(indexPath, "org/apache/commons/net/SocketClient#").isDefined,
       "Should have indexed FTPClient")
 
@@ -37,9 +37,9 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
       println(s"Skipping test: $srcZip not found")
     } else {
       val fingerprint = "jdk_21.0.2_bd5a1f"
-      SourceJarIndexer.index(srcZip, fingerprint)
+      SourceJarIndexer.index(srcZip, fingerprint, testCacheRoot)
 
-      val indexPath = SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb"
+      val indexPath = testCacheRoot / fingerprint / "index.lmdb"
       assert(LmdbSerializer.get(indexPath, "java/util/UUID#").isDefined,
         "Should have java.util.UUID")
     }
@@ -52,10 +52,10 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
     val fingerprint = "commons-net_reload_bd5a1"
     cleanCache(fingerprint)
 
-    SourceJarIndexer.index(jar, fingerprint)
-    val first = LmdbSerializer.get(SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb", "org/apache/commons/net/SocketClient#")
-    SourceJarIndexer.index(jar, fingerprint) // should load from cache
-    val second = LmdbSerializer.get(SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb", "org/apache/commons/net/SocketClient#")
+    SourceJarIndexer.index(jar, fingerprint, testCacheRoot)
+    val first = LmdbSerializer.get(testCacheRoot / fingerprint / "index.lmdb", "org/apache/commons/net/SocketClient#")
+    SourceJarIndexer.index(jar, fingerprint, testCacheRoot) // should load from cache
+    val second = LmdbSerializer.get(testCacheRoot / fingerprint / "index.lmdb", "org/apache/commons/net/SocketClient#")
 
     assertEquals(first, second, "cache-hit path must yield the same definitions")
     assert(first.isDefined, "First index should have definitions")
@@ -67,22 +67,22 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
 
     val fingerprint = "test_extract_bd5a1f"
     cleanCache(fingerprint)
-    SourceJarIndexer.index(jarPath, fingerprint)
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
 
     // indexing must NOT unpack sources eagerly
-    val srcRoot = SourceJarIndexer.cacheRoot / fingerprint / "src"
+    val srcRoot = testCacheRoot / fingerprint / "src"
     assert(!os.exists(srcRoot), "no src/ before extraction is requested")
 
-    SourceJarIndexer.extractEntry(jarPath, fingerprint, "Foo.java")
+    SourceJarIndexer.extractEntry(jarPath, fingerprint, "Foo.java", testCacheRoot)
     assert(os.exists(srcRoot / "Foo.java"), "Foo.java should be extracted")
     assert(!os.exists(srcRoot / "Baz.scala"), "only the requested file is extracted")
     assert(os.read(srcRoot / "Foo.java").contains("class Foo"), "extracted content should match")
 
-    SourceJarIndexer.extractEntry(jarPath, fingerprint, "Baz.scala")
+    SourceJarIndexer.extractEntry(jarPath, fingerprint, "Baz.scala", testCacheRoot)
     assert(os.exists(srcRoot / "Baz.scala"), "second file extracts on demand")
 
     // idempotent — a second call must not corrupt or duplicate
-    SourceJarIndexer.extractEntry(jarPath, fingerprint, "Foo.java")
+    SourceJarIndexer.extractEntry(jarPath, fingerprint, "Foo.java", testCacheRoot)
     assert(os.read(srcRoot / "Foo.java").contains("class Foo"), "extraction must be idempotent")
   }
 
@@ -92,9 +92,9 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
 
     val fingerprint = "test_metadata_bd5a1f"
     cleanCache(fingerprint)
-    SourceJarIndexer.index(jarPath, fingerprint)
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
 
-    val cacheDir = SourceJarIndexer.cacheRoot / fingerprint
+    val cacheDir = testCacheRoot / fingerprint
     val meta = CacheMetadata.load(cacheDir)
     assert(meta.isDefined, "metadata.json should exist")
     assertEquals(meta.get.sourcePath, jarPath.toString)
@@ -127,9 +127,9 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
 
     val fingerprint = "test_pair_packages_bd5a1f"
     cleanCache(fingerprint)
-    SourceJarIndexer.index(sourcesJar, fingerprint)
+    SourceJarIndexer.index(sourcesJar, fingerprint, testCacheRoot)
 
-    val meta = CacheMetadata.load(SourceJarIndexer.cacheRoot / fingerprint).get
+    val meta = CacheMetadata.load(testCacheRoot / fingerprint).get
     assert(meta.indexed, "a full index must be marked indexed")
     assertEquals(meta.packages, List("com.example"), "packages must come from the REAL classes jar listing")
   }
@@ -140,17 +140,17 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
 
     val fingerprint = "test_stale_bd5a1f"
     cleanCache(fingerprint)
-    SourceJarIndexer.index(jarPath, fingerprint)
-    val before = CacheMetadata.load(SourceJarIndexer.cacheRoot / fingerprint).get
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
+    val before = CacheMetadata.load(testCacheRoot / fingerprint).get
 
     // change the jar → size/mtime mismatch → next index must rebuild
     os.write.append(jarPath, "trailing junk")
-    SourceJarIndexer.index(jarPath, fingerprint)
-    val after = CacheMetadata.load(SourceJarIndexer.cacheRoot / fingerprint).get
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
+    val after = CacheMetadata.load(testCacheRoot / fingerprint).get
 
     assert(after.sourceSize == os.size(jarPath), "metadata should reflect the new jar")
     assert(after.sourceSize != before.sourceSize, "reindex must have happened")
-    assert(LmdbSerializer.get(SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb", "com/example/Foo#").isDefined,
+    assert(LmdbSerializer.get(testCacheRoot / fingerprint / "index.lmdb", "com/example/Foo#").isDefined,
       "reindexed index should still be queryable")
   }
 
@@ -160,16 +160,16 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
 
     val fingerprint = "test_indexed_flag_bd5a1f"
     cleanCache(fingerprint)
-    SourceJarIndexer.index(jarPath, fingerprint)
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
 
-    val cacheDir = SourceJarIndexer.cacheRoot / fingerprint
+    val cacheDir = testCacheRoot / fingerprint
     val meta = CacheMetadata.load(cacheDir).get
     assert(meta.indexed, "a fresh index must be marked indexed")
 
     // rewrite the metadata as package-only (indexed = false): index() must NOT
     // take the cache-hit path even though everything else (size/mtime/LMDB) is valid
     CacheMetadata.save(cacheDir, meta.copy(indexed = false))
-    SourceJarIndexer.index(jarPath, fingerprint)
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
 
     assertEquals(CacheMetadata.load(cacheDir).map(_.indexed), Some(true),
       "indexed=false metadata must force a reindex")
@@ -184,9 +184,9 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprint)
 
     intercept[Exception] {
-      SourceJarIndexer.index(jarPath, fingerprint)
+      SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
     }
-    assert(!os.exists(SourceJarIndexer.cacheRoot / fingerprint), "partial cache dir must be cleaned up")
+    assert(!os.exists(testCacheRoot / fingerprint), "partial cache dir must be cleaned up")
   }
 
   test("index small test jar") {
@@ -196,8 +196,8 @@ class SourceJarIndexerTest extends FunSuite, TestCacheRoot {
     val fingerprint = "test_com.example_test_1.0.0_bd5a1f"
     cleanCache(fingerprint)
 
-    SourceJarIndexer.index(jarPath, fingerprint)
-    val indexPath = SourceJarIndexer.cacheRoot / fingerprint / "index.lmdb"
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot)
+    val indexPath = testCacheRoot / fingerprint / "index.lmdb"
 
     assert(LmdbSerializer.get(indexPath, "com/example/Foo#").isDefined, "Should have com.example.Foo")
     assert(LmdbSerializer.get(indexPath, "com/example/Baz.").isDefined, "Should have com.example.Baz")
@@ -238,7 +238,7 @@ object Baz {
   }
 
   private def cleanCache(fingerprint: String): Unit = {
-    val cacheDir = SourceJarIndexer.cacheRoot / fingerprint
+    val cacheDir = testCacheRoot / fingerprint
     if (os.exists(cacheDir)) {
       os.remove.all(cacheDir)
     }
@@ -252,7 +252,7 @@ object Baz {
     cleanCache(fingerprint)
 
     val events = scala.collection.mutable.ListBuffer[(Long, Long, String)]()
-    SourceJarIndexer.index(jarPath, fingerprint, (done, total, name) => events += ((done, total, name)))
+    SourceJarIndexer.index(jarPath, fingerprint, testCacheRoot, (done, total, name) => events += ((done, total, name)))
 
     assertEquals(events.last, (2L, 2L, jarPath.last), "total must count source entries only")
     assertEquals(events.map(_._1).toList, List(1L, 2L), "done must increment per source entry")

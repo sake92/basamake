@@ -68,7 +68,7 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
         SymbolOccurrence(symbol = "sttp/client3/SttpApi#basicRequest.", range = Some(SdbRange(0, 57, 0, 69)), role = SymbolOccurrence.Role.REFERENCE)
       ))
 
-      val depsTable = new IndexedSymbolTable
+      val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget(List(sttpClient3Jar, sttpModelJar))
 
       val idx = new WorkspaceIndex(workspace, new InMemorySymbolTable, Some(depsTable))
@@ -107,8 +107,8 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
         s"basicRequest should live in SttpApi.scala, got ${basicRequestLocs.map(_.path.last)}")
     } finally {
       os.remove.all(workspace)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(sttpClient3Jar)))
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(sttpModelJar)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(sttpClient3Jar)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(sttpModelJar)))
     }
   }
 }

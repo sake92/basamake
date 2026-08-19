@@ -5,7 +5,9 @@ import scala.util.control.NonFatal
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.index.{SymbolDefinition, SymbolUtils}
 
-/** Read-only dependency/JDK symbol index over `~/.basamake/deps/<fingerprint>/` caches.
+/** Read-only dependency/JDK symbol index over `<cacheRoot>/<fingerprint>/` caches
+  * (cacheRoot is a constructor parameter — each server owns its cache location;
+  * tests point it at ./tmp/, production derives it from config).
   *
   * Deterministic pipeline — no global routing, no heuristics:
   *   1. The caller passes the candidate source jars of the file's BSP target.
@@ -29,7 +31,10 @@ import ba.sake.basamake.index.{SymbolDefinition, SymbolUtils}
   * empty) package set.
   */
 class IndexedSymbolTable(
-    progressListener: IndexingProgressListener = IndexingProgressListener.noop
+    progressListener: IndexingProgressListener = IndexingProgressListener.noop,
+    /** Root of the dep/JDK cache. Instance-level on purpose: each server owns
+      * its cache location (tests point it at ./tmp/); no global mutation. */
+    cacheRoot: os.Path = SourceJarIndexer.defaultCacheRoot
 ) extends StrictLogging {
 
   // fingerprint → packages (from metadata.json: classes-jar-derived pre-index,
@@ -108,7 +113,7 @@ class IndexedSymbolTable(
     * metadata.json when the jar isn't registered this session. JDK files return
     * nothing — the implicit JDK candidate in `get` covers them. */
   def candidatesForPath(path: os.Path): List[os.Path] = {
-    val root = SourceJarIndexer.cacheRoot
+    val root = cacheRoot
     if (!path.startsWith(root)) return Nil
     val segments = path.relativeTo(root).segments
     val srcIdx = segments.indexOf("src")
@@ -162,10 +167,10 @@ class IndexedSymbolTable(
   // ── internals ─────────────────────────────────────────────────
 
   private def indexPath(fingerprint: String): os.Path =
-    SourceJarIndexer.cacheRoot / os.RelPath(fingerprint) / "index.lmdb"
+    cacheRoot / os.RelPath(fingerprint) / "index.lmdb"
 
   private def cacheDir(fingerprint: String): os.Path =
-    SourceJarIndexer.cacheRoot / os.RelPath(fingerprint)
+    cacheRoot / os.RelPath(fingerprint)
 
   /** Packages of one fingerprint, memory-cached. None = no metadata → the jar
     * can't be filtered and is indexed on demand instead. */
@@ -279,7 +284,7 @@ class IndexedSymbolTable(
           indexPermits.acquireUninterruptibly()
           try {
             activeIndexCount.incrementAndGet()
-            SourceJarIndexer.index(src, fingerprint, (done, total, name) =>
+            SourceJarIndexer.index(src, fingerprint, cacheRoot, (done, total, name) =>
               progressListener.onProgress(phase, done, total, name))
             indexedFingerprints.add(fingerprint)
             accuratePackages(fingerprint).foreach(packagesByFingerprint.put(fingerprint, _))
@@ -309,7 +314,7 @@ class IndexedSymbolTable(
         Option(sourcesByFingerprint.get(fingerprint)) match {
           case Some(src) =>
             val entryPath = defPath.relativeTo(srcRoot).toString
-            try SourceJarIndexer.extractEntry(src, fingerprint, entryPath)
+            try SourceJarIndexer.extractEntry(src, fingerprint, entryPath, cacheRoot)
             catch { case NonFatal(e) => logger.warn(s"Failed to extract $entryPath for $fingerprint: ${e.getMessage}") }
           case None =>
             if (noSourceFingerprints.add(fingerprint)) logger.warn(s"No source known for $fingerprint — cannot extract")

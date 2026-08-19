@@ -23,6 +23,10 @@ class LspTransportTest extends FunSuite {
     val dst = os.pwd / "tmp" / s"${testName}-${System.currentTimeMillis()}"
     os.makeDir.all(dst)
     os.copy(src, dst, mergeFolders = true)
+    // no JDK eager indexing in tests — it would write a minutes-long index into
+    // the REAL XDG cache; config-driven, same mechanism a user would use
+    os.write.over(dst / ".basamake" / "config.json",
+      """{"enableJdkIndexing": false}""", createFolders = true)
     dst
   }
 

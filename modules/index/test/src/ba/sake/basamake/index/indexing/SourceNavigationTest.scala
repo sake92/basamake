@@ -47,7 +47,7 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
       sym: String,
       ws: os.Path
   ): (WorkspaceIndex, IndexedSymbolTable, os.Path) = {
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     assert(eventually(deps.get(sym, List(jar)).isDefined), s"warm-up must index $sym")
     val depFile = deps.get(sym, List(jar)).get.path // lookup extracts the file
@@ -74,7 +74,7 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
       assertEquals(locs.map(_.path.last).toSet, Set("Foo.scala"))
     } finally {
       os.remove.all(jarDir); os.remove.all(ws)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
     }
   }
 
@@ -94,7 +94,7 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
       assertEquals(locs.map(_.path.last).toSet, Set("Foo.java"))
     } finally {
       os.remove.all(jarDir); os.remove.all(ws)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
     }
   }
 
@@ -114,7 +114,7 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
       assertEquals(locs.map(_.path.last).toSet, Set("Foo.java"))
     } finally {
       os.remove.all(jarDir); os.remove.all(ws)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
     }
   }
 
@@ -205,7 +205,7 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
       assertEquals(locs.map(_.symbol).toSet, Set("com/example/package."))
     } finally {
       os.remove.all(jarDir); os.remove.all(ws)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
     }
   }
 
@@ -222,7 +222,7 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
       "com/b/Bar.java" -> "package com.b;\npublic class Bar {}\n"
     ))
     try {
-      val deps = new IndexedSymbolTable
+      val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       deps.registerTarget(List(jarA, jarB))
       assert(eventually(deps.get("com/a/Foo#", List(jarA)).isDefined), "warm jarA")
       assert(eventually(deps.get("com/b/Bar#", List(jarB)).isDefined), "warm jarB")
@@ -248,8 +248,8 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
         "cross-jar body ref must miss with owning-jar candidates")
     } finally {
       os.remove.all(dirA); os.remove.all(dirB); os.remove.all(ws)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jarA)))
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jarB)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarA)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarB)))
     }
   }
 }

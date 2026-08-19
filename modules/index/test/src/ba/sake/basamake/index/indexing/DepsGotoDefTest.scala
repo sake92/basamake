@@ -72,7 +72,7 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
         SymbolOccurrence(symbol = "com/example/Foo#", range = Some(SdbRange(4, 21, 4, 24)), role = SymbolOccurrence.Role.REFERENCE)
       ))
 
-      val depsTable = new IndexedSymbolTable
+      val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget(List(jarPath)) // registers the source for lazy extraction
       assert(eventually(depsTable.get("com/example/Foo#", List(jarPath)).isDefined),
         "warm-up: the background index must resolve")
@@ -87,14 +87,14 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
       assert(locs.nonEmpty, s"expected jar def for Foo, got empty")
       val loc = locs.head
       assertEquals(loc.symbol, "com/example/Foo#")
-      assert(loc.path.startsWith(SourceJarIndexer.cacheRoot), s"expected path under test cache root, got ${loc.path}")
+      assert(loc.path.startsWith(testCacheRoot), s"expected path under test cache root, got ${loc.path}")
       assertEquals(loc.path.last, "Foo.java")
       assert(os.exists(loc.path), s"extracted source must exist on disk: ${loc.path}")
       assert(os.read(loc.path).contains("class Foo"), "extracted content should match the jar entry")
     } finally {
       os.remove.all(workspace)
       os.remove.all(jarDir)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jarPath)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarPath)))
     }
   }
 
@@ -124,7 +124,7 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
         SymbolOccurrence(symbol = "com/example/deep/Foo#", range = Some(SdbRange(4, 21, 4, 24)), role = SymbolOccurrence.Role.REFERENCE)
       ))
 
-      val depsTable = new IndexedSymbolTable
+      val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget(List(jarPath))
       assert(eventually(depsTable.get("com/example/deep/Foo#", List(jarPath)).isDefined),
         "warm-up: nested package statements must produce the full symbol")
@@ -139,13 +139,13 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
       assert(locs.nonEmpty, s"expected jar def for Foo, got empty")
       val loc = locs.head
       assertEquals(loc.symbol, "com/example/deep/Foo#")
-      assert(loc.path.startsWith(SourceJarIndexer.cacheRoot), s"expected path under test cache root, got ${loc.path}")
+      assert(loc.path.startsWith(testCacheRoot), s"expected path under test cache root, got ${loc.path}")
       assertEquals(loc.path.last, "Foo.scala")
       assert(os.exists(loc.path), s"extracted source must exist on disk: ${loc.path}")
     } finally {
       os.remove.all(workspace)
       os.remove.all(jarDir)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(Fingerprint.fromJarPath(jarPath)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarPath)))
     }
   }
 
@@ -164,27 +164,27 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
     val fingerprintB = Fingerprint.fromJarPath(jarB)
 
     try {
-      val depsTable = new IndexedSymbolTable
+      val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget(List(jarA, jarB))
       assert(eventually(depsTable.get("com/example/Foo#", List(jarA)).isDefined), "warm jarA")
       assert(eventually(depsTable.get("com/example/Foo#", List(jarB)).isDefined), "warm jarB")
 
       // the dep file: jar B's extracted Foo.java, opened like the editor opens it.
       // Content references Foo from a SECOND class.
-      val depFile = SourceJarIndexer.cacheRoot / os.RelPath(fingerprintB) / "src" / "com" / "example" / "Foo.java"
+      val depFile = testCacheRoot / os.RelPath(fingerprintB) / "src" / "com" / "example" / "Foo.java"
       os.write.over(depFile, "package com.example;\npublic class Bar { public Foo foo; }\n", createFolders = true)
 
       val cands = depsTable.candidatesForPath(depFile)
       assert(cands.contains(jarB), s"expected owning jar $jarB, got $cands")
 
       val inB = depsTable.get("com/example/Foo#", cands).map(_.path).get
-      assert(inB.startsWith(SourceJarIndexer.cacheRoot / os.RelPath(fingerprintB)), s"expected def from jarB, got $inB")
-      assert(!inB.startsWith(SourceJarIndexer.cacheRoot / os.RelPath(fingerprintA)), "must not resolve from the OTHER jar")
+      assert(inB.startsWith(testCacheRoot / os.RelPath(fingerprintB)), s"expected def from jarB, got $inB")
+      assert(!inB.startsWith(testCacheRoot / os.RelPath(fingerprintA)), "must not resolve from the OTHER jar")
     } finally {
       os.remove.all(jarDirA)
       os.remove.all(jarDirB)
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(fingerprintA))
-      os.remove.all(SourceJarIndexer.cacheRoot / os.RelPath(fingerprintB))
+      os.remove.all(testCacheRoot / os.RelPath(fingerprintA))
+      os.remove.all(testCacheRoot / os.RelPath(fingerprintB))
     }
   }
 }

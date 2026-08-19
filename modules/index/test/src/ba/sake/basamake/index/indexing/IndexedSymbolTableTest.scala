@@ -6,7 +6,7 @@ import java.io.FileOutputStream
 
 class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
-  private def cacheDir(fingerprint: String) = SourceJarIndexer.cacheRoot / os.RelPath(fingerprint)
+  private def cacheDir(fingerprint: String) = testCacheRoot / os.RelPath(fingerprint)
 
   private def cleanCache(fingerprint: String): Unit = {
     if (os.exists(cacheDir(fingerprint))) os.remove.all(cacheDir(fingerprint))
@@ -67,7 +67,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     // cold cache — the lookup must NOT index inline (that was the "goto-def
     // into deps blocks" bug): it misses fast and indexes in the background
     assert(deps.get("com/example/Foo#", List(jar)).isEmpty, "cold lookup must be a fast miss, not a block")
@@ -85,7 +85,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     cleanCache(busyFp)
     cleanCache(targetFp)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.maxConcurrentIndexes = 1 // only one background index may run at a time
     deps.registerTarget(List(busyJar, targetJar))
 
@@ -105,7 +105,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     val threads = (0 until 8).map { _ =>
       Thread.ofVirtual().start(() => deps.get("com/example/Foo#", List(jar)))
@@ -122,7 +122,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fps = jars.map(Fingerprint.fromJarPath)
     fps.foreach(cleanCache)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.maxConcurrentIndexes = 1
     deps.registerTarget(jars)
     jars.zipWithIndex.foreach { case (jar, i) => deps.get(s"com/cap$i/Foo0#", List(jar)) }
@@ -145,7 +145,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprint)
     os.write.over(jar, "this is not a zip file") // SourceJarIndexer.index() will fail
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     assertEquals(deps.get("com/example/Foo#", List(jar)), None, "corrupt source jar must miss")
     // wait for the failed background index to COMPLETE (it unmarks the
@@ -170,7 +170,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     assert(eventually(os.exists(cacheDir(fingerprint) / "metadata.json")), "metadata should be sprinkled by registerTarget")
 
@@ -182,7 +182,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
   }
 
   test("default-package symbols are not resolvable") {
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assertEquals(deps.get("Foo#", Nil), None)
     assertEquals(deps.get("Foo#", Nil), None)
   }
@@ -193,7 +193,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar)) // registers the source for lazy extraction
     assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined), "must resolve after the background index")
 
@@ -210,7 +210,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     assert(eventually(os.exists(cacheDir(fingerprint) / "metadata.json")), "registerTarget must sprinkle metadata.json")
 
@@ -232,7 +232,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     deps.registerTarget(List(jar))
     assert(eventually(os.exists(cacheDir(fingerprint) / "metadata.json")))
@@ -256,7 +256,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
 
     // poll a short deadline: no classes jar → no metadata can ever be derived
@@ -280,7 +280,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     cleanCache(fingerprintA)
     cleanCache(fingerprintB)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assert(eventually(deps.get("com/example/Foo#fromA().", List(jarA)).isDefined), "jarA must resolve")
     assert(eventually(deps.get("com/example/Foo#fromB().", List(jarB)).isDefined), "jarB must resolve")
     val inA = deps.get("com/example/Foo#fromA().", List(jarA)).map(_.path).get
@@ -296,7 +296,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined), "must index before corrupting")
     val indexPath = cacheDir(fingerprint) / "index.lmdb"
     os.remove.all(indexPath)
@@ -313,7 +313,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val missing = os.temp.dir() / "nope-sources.jar"
     assert(!os.exists(missing))
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assertEquals(deps.get("com/example/Foo#", List(missing)), None, "a missing jar must be skipped, not crash")
   }
 
@@ -325,7 +325,7 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     deps.registerTarget(List(jar))
     assert(eventually(deps.get("com/example/Foo#", List(jar)).isDefined))
 
@@ -340,12 +340,12 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val javaHome = os.Path(System.getProperty("java.home"))
     if (os.exists(javaHome / "lib" / "src.zip")) {
       val jdkFp = Fingerprint.fromJdk(javaHome, System.getProperty("java.version"))
-      assertEquals(deps.candidatesForPath(SourceJarIndexer.cacheRoot / os.RelPath(jdkFp) / "src" / "java/lang/Object.java"), Nil)
+      assertEquals(deps.candidatesForPath(testCacheRoot / os.RelPath(jdkFp) / "src" / "java/lang/Object.java"), Nil)
     }
     // a jdk-prefixed path that is NOT the real JDK fingerprint also returns Nil
-    assertEquals(deps.candidatesForPath(SourceJarIndexer.cacheRoot / "jdk-21_x" / "src" / "java/lang/Object.java"), Nil)
+    assertEquals(deps.candidatesForPath(testCacheRoot / "jdk-21_x" / "src" / "java/lang/Object.java"), Nil)
     // cache paths without the fingerprint/src/ layout → no candidates
-    assertEquals(deps.candidatesForPath(SourceJarIndexer.cacheRoot / "metadata.json"), Nil)
+    assertEquals(deps.candidatesForPath(testCacheRoot / "metadata.json"), Nil)
   }
 
   test("candidatesForPath recovers the source from metadata for unregistered jars") {
@@ -354,14 +354,14 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
     val fingerprint = Fingerprint.fromJarPath(jar)
     cleanCache(fingerprint)
 
-    val warmer = new IndexedSymbolTable
+    val warmer = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     warmer.registerTarget(List(jar))
     assert(eventually(warmer.get("com/example/Foo#", List(jar)).isDefined), "warm index must exist")
     val depFile = warmer.get("com/example/Foo#", List(jar)).map(_.path).get
     assert(os.exists(depFile), "extracted source should exist on disk")
 
     // a FRESH instance never registered the jar — the source must come from metadata.json
-    val deps = new IndexedSymbolTable
+    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
     assert(deps.candidatesForPath(depFile).contains(jar),
       s"expected owning jar from metadata, got ${deps.candidatesForPath(depFile)}")
   }

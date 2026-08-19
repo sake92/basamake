@@ -8,7 +8,7 @@ import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.index.{SymbolDefinition, InMemorySymbolTable, HoverProvider}
-import ba.sake.basamake.index.indexing.{WorkspaceIndex, IndexedSymbolTable}
+import ba.sake.basamake.index.indexing.{WorkspaceIndex, IndexedSymbolTable, SourceJarIndexer}
 import ba.sake.basamake.bsp.{BspManager, BspWarmStart}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.util.LoggingUtils
@@ -31,8 +31,14 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   private[lsp] def isWorkspaceIndexingDone: Boolean = workspaceIndexingDone.get()
 
   private val workspaceSymbolTable = new InMemorySymbolTable
-  private val depsSymbolTable = new IndexedSymbolTable(progressReporter)
   private val basamakeConfig = BasamakeConfig.load(workspacePath)
+  /** Dep/JDK cache root: `depsCacheRoot` from .basamake/config.json (relative
+    * paths resolve against the workspace root), else the XDG default. */
+  private val depsCacheRoot: os.Path =
+    basamakeConfig.depsCacheRoot
+      .flatMap(raw => resolveCacheRoot(workspacePath, raw))
+      .getOrElse(SourceJarIndexer.defaultCacheRoot)
+  private val depsSymbolTable = new IndexedSymbolTable(progressReporter, depsCacheRoot)
   LoggingUtils.enableWorkspaceIndexDebugIfRequested(basamakeConfig.debugSlowFallbackMs)
   private val workspaceIndex = new WorkspaceIndex(
     workspacePath,
@@ -99,14 +105,18 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     // bounded). The JDK index runs on its OWN background thread — its first
     // progress event must not fire on the initialize thread (the client's
     // window/workDoneProgress/create handler only exists after the handshake).
-    Thread.ofVirtual().start(() => {
-      try {
-        depsSymbolTable.ensureJdkIndexed()
-      } catch {
-        case e: Exception =>
-          logger.error(s"Failed to start JDK indexing: ${e.getMessage}")
-      }
-    })
+    // `enableJdkIndexing: false` (config) skips it — tests and low-memory
+    // setups; java.* lookups then miss fast.
+    if (basamakeConfig.enableJdkIndexing.getOrElse(true)) {
+      Thread.ofVirtual().start(() => {
+        try {
+          depsSymbolTable.ensureJdkIndexed()
+        } catch {
+          case e: Exception =>
+            logger.error(s"Failed to start JDK indexing: ${e.getMessage}")
+        }
+      })
+    }
     // Wire BSP manager (discovers .bsp configs, lazy spawn on first poke)
     bspManager.initialize(client.get, warmDeps, workDoneProgress)
     CompletableFuture.completedFuture(new InitializeResult(capabilities))
@@ -165,6 +175,18 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val p = os.Path(URI.create(uri))
       if (p.ext == "scala" || p.ext == "java" || p.ext == "sbt") Some(p) else None
     } catch { case _: Exception => None }
+
+  /** Validate at the edge: invalid config paths degrade to the default with a
+    * warning instead of failing startup. */
+  private def resolveCacheRoot(workspaceRoot: os.Path, raw: String): Option[os.Path] =
+    try {
+      val p = os.Path(raw)
+      Some(if (new java.io.File(raw).isAbsolute) p else workspaceRoot / os.RelPath(raw))
+    } catch {
+      case scala.util.control.NonFatal(e) =>
+        logger.warn(s"Ignoring invalid depsCacheRoot '$raw': ${e.getMessage}")
+        None
+    }
 
   /** VS Code sends workspace/didRenameFiles when user renames a file.
     * Clear old diagnostics, re-index new file into WorkspaceIndex,

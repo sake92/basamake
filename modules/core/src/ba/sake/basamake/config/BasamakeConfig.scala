@@ -19,7 +19,16 @@ final case class BasamakeConfig(
       * than this many milliseconds are logged at DEBUG with path, parser kind
       * and elapsed time. Setting it also raises the WorkspaceIndex log category
       * to DEBUG (file log only). Off by default — normal logs stay at INFO. */
-    debugSlowFallbackMs: Option[Long] = None
+    debugSlowFallbackMs: Option[Long] = None,
+    /** Eagerly index the JDK sources in the background at startup. Default true.
+      * Disable for low-memory setups or tests — java.* lookups then miss fast
+      * until re-enabled. Option-wrapped: tupson 0.20.0 ignores local defaults,
+      * so optional fields must be Option to keep old config files parsing. */
+    enableJdkIndexing: Option[Boolean] = None,
+    /** Override the dep/JDK cache root (default: XDG `~/.cache/basamake/deps`).
+      * Relative paths resolve against the workspace root; absolute paths are
+      * used as-is. Invalid paths fall back to the default with a warning. */
+    depsCacheRoot: Option[String] = None
 ) derives JsonRW
 
 object BasamakeConfig {
