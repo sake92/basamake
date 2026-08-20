@@ -19,10 +19,12 @@ object ImportScope {
       emitRef: (Tree, String) => Unit
   ): List[ImportScopeData] = {
     imp.importers.toList.map { importer =>
-      val prefix = resolveImportPrefix(importer.ref, scopeStack, emitRef)
+      val (prefix, altPrefixes) = resolveImportPrefix(importer.ref, scopeStack, emitRef)
+      val candidatePrefixes = List(prefix) ++ altPrefixes
       val explicit = Map.newBuilder[String, String]
       val wildcards = List.newBuilder[String]
       val unimports = Set.newBuilder[String]
+      val candidates = Map.newBuilder[String, List[String]]
 
       importer.importees.foreach { importee =>
         importee match {
@@ -33,7 +35,8 @@ object ImportScope {
                 emitRef(n, sym)
                 explicit += (name -> sym)
               case None =>
-                emitUnresolvedImportee(n, name, prefix, emitRef)
+                val cands = emitUnresolvedImporteeForPrefixes(candidatePrefixes, name, emitRef, n, scopeStack.symbolTable)
+                if (cands.nonEmpty) candidates += (name -> cands)
             }
 
           case Importee.Rename(from, to) =>
@@ -43,7 +46,8 @@ object ImportScope {
                 emitRef(to, sym)
                 explicit += (toName -> sym)
               case None =>
-                emitUnresolvedImportee(to, from.value, prefix, emitRef)
+                val cands = emitUnresolvedImporteeForPrefixes(candidatePrefixes, from.value, emitRef, to, scopeStack.symbolTable)
+                if (cands.nonEmpty) candidates += (toName -> cands)
             }
             // Also emit ref for original name
             resolveImportName(from.value, prefix, scopeStack.symbolTable) match {
@@ -51,15 +55,18 @@ object ImportScope {
                 emitRef(from, sym)
                 explicit += (from.value -> sym)
               case None =>
-                emitUnresolvedImportee(from, from.value, prefix, emitRef)
+                val cands = emitUnresolvedImporteeForPrefixes(candidatePrefixes, from.value, emitRef, from, scopeStack.symbolTable)
+                if (cands.nonEmpty) candidates += (from.value -> cands)
             }
 
           case Importee.Unimport(n) =>
             unimports += n.value
 
           case Importee.Wildcard() =>
-            // Wildcard: no individual refs; prefix resolved above
-            wildcards += prefix
+            // Wildcard: no individual refs; prefix resolved above. ALL candidate
+            // prefixes become wildcard owners (a `cats.syntax.all` may be an
+            // OBJECT, not a package — request-time verification decides).
+            wildcards ++= candidatePrefixes
 
           case Importee.Given(tpe) =>
             // `import a.b.{given Foo}` — resolve like a name import. v1: the
@@ -71,20 +78,22 @@ object ImportScope {
                   emitRef(tpe, sym)
                   explicit += (name -> sym)
                 case None =>
-                  emitUnresolvedImportee(tpe, name, prefix, emitRef)
+                  val cands = emitUnresolvedImporteeForPrefixes(candidatePrefixes, name, emitRef, tpe, scopeStack.symbolTable)
+                  if (cands.nonEmpty) candidates += (name -> cands)
               }
             }
 
           case Importee.GivenAll() =>
             // `import a.b.given` — all givens: same as a wildcard (v1)
-            wildcards += prefix
+            wildcards ++= candidatePrefixes
         }
       }
 
       ImportScopeData(
         explicit = explicit.result(),
         wildcards = wildcards.result(),
-        unimports = unimports.result()
+        unimports = unimports.result(),
+        candidates = candidates.result()
       )
     }
   }
@@ -97,46 +106,66 @@ object ImportScope {
     case _                    => None
   }
 
-  /** Resolve the prefix of an import statement (e.g. `a.b.C` in `import a.b.C._`). */
+  /** Resolve the prefix of an import statement (e.g. `a.b.C` in `import a.b.C._`).
+    * Returns (primary prefix, alternative prefixes): a member under a package
+    * path may be an OBJECT (`cats.syntax.all`), not a sub-package — the term
+    * candidate prefix is returned as an alternative and request-time
+    * verification decides which exists. */
   def resolveImportPrefix(
       ref: Term.Ref,
       scopeStack: ScopeStack,
       emitRef: (Tree, String) => Unit
-  ): String = {
+  ): (String, List[String]) = {
     ref match {
       case t: Term.Name =>
-        val n = t.value
-        scopeStack.lookup(n, isType = false, inCallContext = false)
-          .orElse(PredefSymbols.rawLookup(n))
+        val p = scopeStack.lookup(t.value, isType = false, inCallContext = false)
+          .orElse(PredefSymbols.rawLookup(t.value))
           .map { sym => emitRef(t, sym); sym }
           .getOrElse {
-            // package segment — emit the PACKAGE symbol (resolves to the package
-            // object `<pkg>/package.` at cursor time, when one exists)
-            val pkgSym = SymbolUtils.packageOwner(List(n))
+            val pkgSym = SymbolUtils.packageOwner(List(t.value))
             emitRef(t, pkgSym)
             pkgSym
           }
+        (p, Nil)
 
       case Term.Select(qual: Term.Ref, name) =>
-        val qualOwner = resolveImportPrefix(qual, scopeStack, emitRef)
+        val (qualOwner, qualAlts) = resolveImportPrefix(qual, scopeStack, emitRef)
         val n = name.value
         val memberSym = SymbolUtils.termSymbol(qualOwner, n)
         if (scopeStack.symbolTable.get(memberSym).isDefined) {
           emitRef(name, memberSym)
-          memberSym
+          (memberSym, Nil)
         } else if (qualOwner.endsWith("/")) {
-          // package path: append name as sub-package and emit its package symbol
           val pkgPath = qualOwner + n + "/"
           emitRef(name, pkgPath)
-          pkgPath
+          // `cats.syntax.all` may be an OBJECT, not a package — keep the term
+          // candidate too; request-time verification decides which exists.
+          val termAlt = SymbolUtils.termSymbol(qualOwner, n)
+          emitRef(name, termAlt)
+          (pkgPath, qualAlts ++ List(termAlt))
         } else {
           emitRef(name, "")
-          qualOwner + "/" + n + "/"
+          (qualOwner + "/" + n + "/", qualAlts)
         }
 
       case other: Term.Ref =>
-        other.syntax.stripSuffix("._").stripSuffix(".*")
+        (other.syntax.stripSuffix("._").stripSuffix(".*"), Nil)
     }
+  }
+
+  /** Probe every candidate prefix and accumulate the emitted candidates. */
+  private def emitUnresolvedImporteeForPrefixes(
+      prefixes: List[String],
+      name: String,
+      emitRef: (Tree, String) => Unit,
+      tree: Tree,
+      table: SymbolTable
+  ): List[String] = {
+    val all = List.newBuilder[String]
+    prefixes.foreach { p =>
+      all ++= emitUnresolvedImportee(tree, name, p, emitRef, table)
+    }
+    all.result().distinct
   }
 
   /** Try to resolve an importee name against a prefix owner. */
@@ -151,15 +180,29 @@ object ImportScope {
   /** Source-parse fallback for an importee that misses the WORKSPACE symbol
     * table (resolvers have no dependency access — by design). When the import
     * prefix is a package path, emit BOTH plausible symbols for the importee
-    * range so the dep index can answer the lookup: a compiler would emit one
-    * of them (type for classes, term for objects/traits/companions), and
-    * `getSymbol` resolves whichever the dep jar defines. Importees inherited
-    * through package objects/traits (e.g. `sttp.client3.basicRequest` living
-    * on trait `SttpApi`) stay a compiler-level gap in source-parse mode.
-    * Non-package owners keep the empty-symbol miss. */
-  private def emitUnresolvedImportee(tree: Tree, name: String, prefix: String, emitRef: (Tree, String) => Unit): Unit =
+    * range AND return them as scope candidates so BODY usages resolve at
+    * request time: a compiler would emit one of them (type for classes, term
+    * for objects/traits/companions), and `getSymbol` resolves whichever the
+    * dep jar defines. UNRESOLVED term-owner prefixes (dep companion members,
+    * e.g. `IO.{pure => ioPure}`) emit the index-0 METHOD + term candidates —
+    * the request-time prefix scan resolves the true overload keys; a
+    * TABLE-RESOLVED term owner is a workspace object, so no candidates are
+    * invented there. Importees inherited through package objects/traits (e.g.
+    * `sttp.client3.basicRequest` living on trait `SttpApi`) stay a
+    * compiler-level gap in source-parse mode. Other non-package owners keep
+    * the empty-symbol miss. */
+  private def emitUnresolvedImportee(tree: Tree, name: String, prefix: String, emitRef: (Tree, String) => Unit, table: SymbolTable): List[String] =
     if (prefix.endsWith("/")) {
-      emitRef(tree, SymbolUtils.typeSymbol(prefix, name))
-      emitRef(tree, SymbolUtils.termSymbol(prefix, name))
-    } else emitRef(tree, "")
+      val syms = List(SymbolUtils.typeSymbol(prefix, name), SymbolUtils.termSymbol(prefix, name))
+      syms.foreach(sym => emitRef(tree, sym))
+      syms
+    } else if ((prefix.endsWith(".") || prefix.endsWith("#")) && table.get(prefix).isEmpty) {
+      // member importee under an UNRESOLVED (dep) term owner (`IO.pure`): the
+      // member is a method or a val — emit both plausible shapes; the exact
+      // key or the request-time prefix scan resolves whichever the dep jar
+      // defines
+      val syms = List(SymbolUtils.methodSymbol(prefix, name, 0), SymbolUtils.termSymbol(prefix, name))
+      syms.foreach(sym => emitRef(tree, sym))
+      syms
+    } else { emitRef(tree, ""); Nil }
 }

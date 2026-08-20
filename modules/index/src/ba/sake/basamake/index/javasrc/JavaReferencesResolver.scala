@@ -89,7 +89,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     // imports (file-scoped, never popped); also emit import-line refs
     cu.getImports.asScala.foreach { imp =>
       JavaImports.emitRefs(imp, symbolTable, emitRefRange)
-      scopeStack.push(JavaImports.parse(imp))
+      scopeStack.push(JavaImports.parse(imp, symbolTable))
     }
 
     // top-level types
@@ -178,6 +178,10 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       scopeStack.push(LocalScope(collection.mutable.Map(tp.getNameAsString -> localSym)))
     }
 
+    // extends + implements refs (`class A extends B implements C, D`)
+    c.getExtendedTypes.asScala.foreach(resolveTypeRef)
+    c.getImplementedTypes.asScala.foreach(resolveTypeRef)
+
     // recurse members
     withOwner(typeSym, isType = true, c.getNameAsString) {
       c.getMembers.asScala.foreach(resolveMember(_, typeSym))
@@ -191,6 +195,8 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveEnum(e: EnumDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, e.getNameAsString)
+
+    e.getImplementedTypes.asScala.foreach(resolveTypeRef)
 
     withOwner(typeSym, isType = true, e.getNameAsString) {
       e.getMembers.asScala.foreach(resolveMember(_, typeSym))
@@ -216,6 +222,8 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       val localSym = nextLocalSymbol()
       addLocalRange(tp.getName.getRange, localSym, tp.getNameAsString, isType = false)
     }
+
+    r.getImplementedTypes.asScala.foreach(resolveTypeRef)
 
     withOwner(typeSym, isType = true, r.getNameAsString) {
       r.getMembers.asScala.foreach(resolveMember(_, typeSym))
@@ -491,18 +499,26 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
               if (symbolTable.get(typeSym).isDefined)
                 emitRefRange(cit.getName.getRange, typeSym)
               else
-                emitRefUnresolvedRange(cit.getName.getRange)
+                emitTypeCandidatesOrUnresolved(cit.getName.getRange, name)
             case None =>
-              emitRefUnresolvedRange(cit.getName.getRange)
+              emitTypeCandidatesOrUnresolved(cit.getName.getRange, name)
           }
         case None =>
           lookup(name, isType = true, inCallContext = false) match {
             case Some(sym) => emitRefRange(cit.getName.getRange, sym)
-            case None => emitRefUnresolvedRange(cit.getName.getRange)
+            case None => emitTypeCandidatesOrUnresolved(cit.getName.getRange, name)
           }
       }
       cit.getTypeArguments.toScala.foreach(_.asScala.foreach(resolveTypeRef))
     case _ => ()
+  }
+
+  /** Emit dep candidates for an unresolved type name (import candidates);
+    * empty-symbol ref when none. */
+  private def emitTypeCandidatesOrUnresolved(range: java.util.Optional[JpRange], name: String): Unit = {
+    val cands = scopeStack.lookupCandidates(name, isType = true)
+    if (cands.nonEmpty) cands.foreach(sym => emitRefRange(range, sym))
+    else emitRefUnresolvedRange(range)
   }
 
   // ── resolve type ref to owner prefix ─────────────────────────

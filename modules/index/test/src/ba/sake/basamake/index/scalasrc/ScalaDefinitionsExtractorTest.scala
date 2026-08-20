@@ -487,8 +487,12 @@ implicit class TopLevelHelper(val s: String) {
       sym("sttp/model/UriInterpolator#UriContext#uri()."),
       sym("sttp/model/UriInterpolator#UriContext#uri().(args)"),
       // top-level implicit class: class type (NOT wrapped) + conversion method
+      // (the conversion method IS wrapper-owned — verified against a real
+      // Scala 3.7.4 semanticdb dump: `demo/Dump$package.TopConv().`; the
+      // wrapper object itself is indexed because it is now used)
       sym("sttp/model/TopLevelHelper#", isType = true),
-      sym("sttp/model/TopLevelHelper()."),
+      sym("sttp/model/c22_implicit_class$package."),
+      sym("sttp/model/c22_implicit_class$package.TopLevelHelper()."),
       sym("sttp/model/TopLevelHelper#`<init>`()."),
       sym("sttp/model/TopLevelHelper#`<init>`().(s)"),
       sym("sttp/model/TopLevelHelper#s."),

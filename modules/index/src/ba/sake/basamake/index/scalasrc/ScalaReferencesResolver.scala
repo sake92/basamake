@@ -58,6 +58,13 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private var currentOwnerIsType: Boolean = false
   private var methodDepth: Int = 0
   private var currentPath: os.Path = uninitialized
+  /** name → declared-type candidate symbols (dep types) of a val/var/param —
+    * member calls on typed locals fall back to them (`io.flatMap` → IO#flatMap).
+    * Cleared per resolve; a shadowed name keeps the OUTER type (rare, and the
+    * candidates only fire on a member miss). */
+  private val localTypeCandidates = mutable.Map.empty[String, List[String]]
+  /** type-param name → context-bound candidate symbols (`[F[_]: Monad]` → F → [cats/Monad#]). */
+  private val tparamBounds = mutable.Map.empty[String, List[String]]
 
   // ── main traversal ───────────────────────────────────────────
 
@@ -66,6 +73,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     locals.clear()
     localIdx = 0
     methodDepth = 0
+    localTypeCandidates.clear()
+    tparamBounds.clear()
     topLevelPkgOwner = ExtractorShared.extractPackageOwner(src.stats)
     wrapper = ExtractorShared.computeWrapper(fileName, topLevelPkgOwner)
     // start from the empty package like the extractor — nested `package` statements
@@ -157,6 +166,13 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def emitRefUnresolved(pos: Position): Unit = {
     val range = PositionUtils.toRange(pos)
     occurrences += ReferenceOccurrence("", range)
+  }
+
+  /** Emit dep candidates for an unresolved name; empty-symbol ref when none. */
+  private def emitCandidatesOrUnresolved(pos: Position, name: String, isType: Boolean): Unit = {
+    val cands = scopeStack.lookupCandidates(name, isType)
+    if (cands.nonEmpty) cands.foreach(sym => emitRef(pos, sym))
+    else emitRefUnresolved(pos)
   }
 
   private def addLocal(pos: Position, symbol: String, shortName: String, isType: Boolean): Unit = {
@@ -255,6 +271,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     currentOwnerIsType = false
 
     scopeStack.push(OwnerScope(pkgObjOwner))
+    resolveTypeTpeOpt(po.templ.inits)
     resolveStats(po.templ.stats)
     scopeStack.pop()
 
@@ -297,6 +314,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         val tpLocal = locals(locals.length - c.tparams.length + i).symbol
         scopeStack.push(LocalScope(collection.mutable.Map(tp.name.value -> tpLocal)))
       }
+      resolveTypeTpeOpt(c.templ.inits)
       resolveStats(c.templ.stats)
       // Pop type-param scopes + local scope + owner scope
       (0 until c.tparams.length + 2).foreach(_ => scopeStack.pop())
@@ -379,6 +397,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
       scopeStack.push(OwnerScope(objSym))
       scopeStack.push(LocalScope(collection.mutable.Map(o.name.value -> localSym)))
+      resolveTypeTpeOpt(o.templ.inits)
       resolveStats(o.templ.stats)
       scopeStack.pop()
       scopeStack.pop()
@@ -394,6 +413,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
       scopeStack.push(OwnerScope(objSym))
       scopeStack.push(LocalScope(collection.mutable.Map(o.name.value -> objSym)))
+      resolveTypeTpeOpt(o.templ.inits)
       resolveStats(o.templ.stats)
       scopeStack.pop()
       scopeStack.pop()
@@ -418,6 +438,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     scopeStack.push(OwnerScope(termSym))
     scopeStack.push(LocalScope(collection.mutable.Map(e.name.value -> termSym)))
+    resolveTypeTpeOpt(e.templ.inits)
     resolveStats(e.templ.stats)
     scopeStack.pop()
     scopeStack.pop()
@@ -445,6 +466,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     // Resolve param type annotations
     d.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
+    d.paramss.flatten.foreach(p => recordTypeCandidates(p.name.value, p.decltpe))
     d.decltpe.foreach(resolveType)
 
     // Bind params in local scope for body resolution
@@ -466,6 +488,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     dd.tparams.foreach(tp => resolveTparam(tp))
     val tparamScopeCount = dd.tparams.count(_.name.value.nonEmpty)
     dd.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
+    dd.paramss.flatten.foreach(p => recordTypeCandidates(p.name.value, p.decltpe))
     resolveType(dd.decltpe)
     // Pop type param scopes pushed by resolveTparam
     (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
@@ -475,6 +498,11 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveVal(v: Defn.Val): Unit = {
     v.decltpe.foreach(resolveType)
+    // record the declared type's candidate symbols for member calls on the val
+    v.decltpe.foreach(t => v.pats.foreach {
+      case pv: Pat.Var => recordTypeCandidates(pv.name.value, v.decltpe)
+      case _ => ()
+    })
     if (isInsideMethod) {
       v.pats.foreach {
         case pv: Pat.Var =>
@@ -499,6 +527,10 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveVar(vr: Defn.Var): Unit = {
     vr.decltpe.foreach(resolveType)
+    vr.decltpe.foreach(t => vr.pats.foreach {
+      case pv: Pat.Var => recordTypeCandidates(pv.name.value, vr.decltpe)
+      case _ => ()
+    })
     if (isInsideMethod) {
       vr.pats.foreach {
         case pv: Pat.Var =>
@@ -535,6 +567,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       currentOwner = sym
       currentOwnerIsType = false
       scopeStack.push(OwnerScope(sym))
+      resolveTypeTpeOpt(g.templ.inits)
       resolveStats(g.templ.stats)
       scopeStack.pop()
       currentOwner = oldOwner
@@ -596,7 +629,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case t @ Term.Name(n) =>
         lookup(n, isType = false, inCallContext = inCallContext) match {
           case Some(sym) => emitRef(t.pos, sym)
-          case None => emitRefUnresolved(t.pos)
+          case None      => emitCandidatesOrUnresolved(t.pos, n, isType = false)
         }
 
       case Term.Select(qual, name) =>
@@ -627,6 +660,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case param: Term.Param =>
         // Lambda param — resolve type annotation and default
         param.decltpe.foreach(resolveType)
+        recordTypeCandidates(param.name.value, param.decltpe)
         param.default.foreach(d => resolveTerm(d, inCallContext = false))
 
       case Term.ApplyUsing(fun, args) =>
@@ -648,15 +682,38 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val ownerOpt = resolveTermToOwner(qual)
     ownerOpt match {
       case Some(owner) =>
-        val resolved = resolveMemberOf(owner, n, isType = false, inCallContext)
-        if (resolved.nonEmpty) {
-          emitRef(name.pos, resolved.get)
-        } else {
-          emitRefUnresolved(name.pos)
+        resolveMemberOf(owner, n, isType = false, inCallContext) match {
+          case Some(sym) => emitRef(name.pos, sym)
+          case None =>
+            // member miss: package-path fallback owners (unresolved qual treated
+            // as a package path) and typed locals/params fall through to
+            // candidate owners (`io.flatMap` → IO#flatMap via io's decl type).
+            // Candidates are emitted UNVERIFIED — the resolver's table cannot
+            // see deps; request-time verification + prefix scan resolve the
+            // true keys (`EitherT.leftT` → `cats/data/EitherT.leftT().`).
+            val candOwners =
+              if (owner.endsWith("/")) resolveTermToOwnerCandidates(qual)
+              else typedLocalOwnerCandidates(qual)
+            emitMemberCandidates(name, n, candOwners, inCallContext)
         }
       case None =>
-        emitRefUnresolved(name.pos)
+        // qual is (plausibly) a dep symbol — emit index-0 member candidates
+        // per qual candidate; request-time prefix scan resolves the true
+        // overload keys (`IO.pure` → `cats/effect/IO.pure(+N).`).
+        emitMemberCandidates(name, n, resolveTermToOwnerCandidates(qual), inCallContext)
     }
+  }
+
+  /** Emit index-0 member candidates for `n` under each candidate owner
+    * (plus the term shape for call positions). */
+  private def emitMemberCandidates(name: Term.Name, n: String, owners: List[String], inCallContext: Boolean): Unit = {
+    val cands = owners.flatMap { owner =>
+      val sym = if (inCallContext) SymbolUtils.methodSymbol(owner, n, 0)
+                else SymbolUtils.termSymbol(owner, n)
+      if (sym.endsWith("().") || !inCallContext) List(sym) else List(sym, SymbolUtils.termSymbol(owner, n))
+    }.distinct
+    if (cands.nonEmpty) cands.foreach(sym => emitRef(name.pos, sym))
+    else emitRefUnresolved(name.pos)
   }
 
   // ── term apply ───────────────────────────────────────────────
@@ -738,6 +795,10 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     } else false
     // Resolve context bounds (e.g. `[F: cats.Monad]` → emits ref to cats/Monad#)
     tp.cbounds.foreach(resolveType)
+    // record the bound's candidate TYPE symbols so `fa: F[Int]` member calls
+    // can reach the bound's members (`fa.map` → cats/Monad#map)
+    val boundCands = tp.cbounds.flatMap(b => typeCandidatesOf(Some(b))).distinct
+    if (boundCands.nonEmpty) tparamBounds(tp.name.value) = boundCands
     scopePushed
   }
 
@@ -746,7 +807,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       case t @ Type.Name(n) =>
         lookup(n, isType = true, inCallContext = false) match {
           case Some(sym) => emitRef(t.pos, sym)
-          case None => emitRefUnresolved(t.pos)
+          case None      => emitCandidatesOrUnresolved(t.pos, n, isType = true)
         }
 
       case Type.Select(qual, name) =>
@@ -759,6 +820,11 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
             val typeSym = SymbolUtils.typeSymbol(owner, n)
             if (symbolTable.get(typeSym).isDefined) {
               emitRef(name.pos, typeSym)
+            } else if (owner.endsWith("/")) {
+              // package-prefixed dep type (`extends cats.effect.IO`) — emit
+              // both plausible shapes; request-time verification picks the
+              // one the dep jar defines
+              List(typeSym, SymbolUtils.termSymbol(owner, n)).foreach(sym => emitRef(name.pos, sym))
             } else {
               emitRefUnresolved(name.pos)
             }
@@ -883,23 +949,65 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     }
   }
 
-  /** Resolve a Term.Ref to an owner prefix for type select resolution. */
-  private def resolveImportRefToOwner(ref: Term.Ref): Option[String] = {
-    ref match {
-      case Term.Name(n) =>
-        scopeStack.lookup(n, isType = false, inCallContext = false)
-          .orElse(PredefSymbols.rawLookup(n))
-          .orElse(Some(n))
+  /** Plausible OWNER symbols for an unresolved qualifier (dep chains). */
+  private def resolveTermToOwnerCandidates(term: Term): List[String] = term match {
+    case Term.Name(n) =>
+      scopeStack.lookupCandidates(n, isType = false)
+    case Term.Select(qual, name) =>
+      resolveTermToOwnerCandidates(qual).flatMap { owner =>
+        List(SymbolUtils.termSymbol(owner, name.value),
+             if (owner.endsWith("/")) SymbolUtils.packageOwner((owner.stripSuffix("/").split('/').toList :+ name.value)) else SymbolUtils.termSymbol(owner, name.value))
+      }.distinct
+    case _ => Nil
+  }
 
-      case Term.Select(qual: Term.Ref, name) =>
-        val qualOwner = resolveImportRefToOwner(qual)
-        val n = name.value
-        qualOwner.map { owner =>
-          SymbolUtils.termSymbol(owner, n)
-        }
+  /** Declared-type candidate OWNERS for a typed local/param name
+    * (`io` → `cats/effect/IO#` via `val io: IO[Unit]`). */
+  private def typedLocalOwnerCandidates(qual: Term): List[String] = qual match {
+    case Term.Name(n) => localTypeCandidates.getOrElse(n, Nil)
+    case _            => Nil
+  }
 
-      case _ => None
-    }
+  /** Record a name's declared-type candidates (dep types only — workspace
+    * locals resolve through the normal owner path). */
+  private def recordTypeCandidates(name: String, decltpe: Option[Type]): Unit = {
+    val cands = typeCandidatesOf(decltpe)
+    if (cands.nonEmpty) localTypeCandidates(name) = cands
+  }
+
+  /** Plausible TYPE symbols for a type tree — import candidates plus tparam
+    * context-bound candidates (e.g. `Monad` under `[F[_]: Monad]`). */
+  private def typeCandidatesOf(tpe: Option[Type]): List[String] = tpe match {
+    case None => Nil
+    case Some(t) =>
+      t match {
+        case Type.Name(n) =>
+          scopeStack.lookupCandidates(n, isType = true) ++ tparamBounds.getOrElse(n, Nil)
+        case Type.Select(_, name) =>
+          scopeStack.lookupCandidates(name.value, isType = true) ++ tparamBounds.getOrElse(name.value, Nil)
+        case Type.Apply(head, _) => typeCandidatesOf(Some(head))
+        case _                   => Nil
+      }
+  }
+
+  /** Resolve a Term.Ref to an owner prefix for type select resolution.
+    * Unresolvable first segments are treated as package paths (they accumulate
+    * with trailing `/`), never as raw names — a raw name produced malformed
+    * keys like `cats/effect.IO#` for `extends cats.effect.IO`. */
+  private def resolveImportRefToOwner(ref: Term.Ref): Option[String] = ref match {
+    case Term.Name(n) =>
+      scopeStack.lookup(n, isType = false, inCallContext = false)
+        .orElse(PredefSymbols.rawLookup(n))
+        .orElse(Some(SymbolUtils.packageOwner(List(n))))
+
+    case Term.Select(qual: Term.Ref, name) =>
+      resolveImportRefToOwner(qual).map { owner =>
+        if (owner.endsWith("/"))
+          SymbolUtils.packageOwner(owner.stripSuffix("/").split('/').toList :+ name.value)
+        else SymbolUtils.termSymbol(owner, name.value)
+      }
+
+    case _ => None
   }
 
   /** Emit refs for a Term.Ref prefix (used in Type.Select qual resolution). */

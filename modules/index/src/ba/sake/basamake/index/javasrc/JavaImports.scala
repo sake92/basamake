@@ -22,7 +22,7 @@ import ba.sake.basamake.index.{ImportScopeData, ScopeStack, SymbolTable, SymbolU
   */
 object JavaImports {
 
-  def parse(imp: ImportDeclaration): ImportScopeData = {
+  def parse(imp: ImportDeclaration, table: SymbolTable): ImportScopeData = {
     val nameStr = imp.getNameAsString // e.g. "a.b.C", "a.b.*", "a.b.C.member", "a.b.C.*"
     if (imp.isStatic) {
       val segments = nameStr.split('.').toList.filter(_ != "*")
@@ -39,11 +39,15 @@ object JavaImports {
         // overload probing (methodImports).
         val memberName = segments.last
         val owner = typeOwnerOf(segments.init)
+        val termSym = SymbolUtils.termSymbol(owner, memberName)
+        // dep member: record the candidate too (verified at request time)
+        val cands = if (table.get(termSym).isEmpty) Map(memberName -> List(termSym)) else Map.empty
         ImportScopeData(
-          explicit = Map(memberName -> SymbolUtils.termSymbol(owner, memberName)),
+          explicit = Map(memberName -> termSym),
           wildcards = Nil,
           unimports = Set.empty,
-          methodImports = Map(memberName -> owner)
+          methodImports = Map(memberName -> owner),
+          candidates = cands
         )
       }
     } else if (imp.isAsterisk) {
@@ -58,7 +62,11 @@ object JavaImports {
       val pkgSegs = segments.init
       val prefix = SymbolUtils.packageOwner(pkgSegs)
       val typeSym = SymbolUtils.typeSymbol(prefix, typeName)
-      ImportScopeData(explicit = Map(typeName -> typeSym), wildcards = Nil, unimports = Set.empty)
+      // dep type: the table probe misses at parse time — record the candidate
+      // so body usages (extends/implements/field types/new) emit it and
+      // request-time verification resolves it against the file's dep candidates
+      val cands = if (table.get(typeSym).isEmpty) Map(typeName -> List(typeSym)) else Map.empty
+      ImportScopeData(explicit = Map(typeName -> typeSym), wildcards = Nil, unimports = Set.empty, candidates = cands)
     }
   }
 
