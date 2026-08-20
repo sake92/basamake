@@ -104,4 +104,20 @@ class LmdbSerializerTest extends FunSuite {
     assertEquals(sink.count, 0)
     assertEquals(LmdbSerializer.get(indexDir, "anything"), None)
   }
+
+  test("getPrefix returns all symbols under a prefix (method overloads)") {
+    val tmp = os.temp.dir(prefix = "lmdb-prefix-")
+    try {
+      val indexPath = tmp / "index.lmdb"
+      val defs = Vector(
+        SymbolDefinition("pkg/Foo.pure().", "pure", isType = false, Range(0, 0, 1, 0), tmp / "src" / "Foo.scala"),
+        SymbolDefinition("pkg/Foo.pure(+1).", "pure", isType = false, Range(0, 0, 1, 0), tmp / "src" / "Foo.scala"),
+        SymbolDefinition("pkg/Foo.pureEffect().", "pureEffect", isType = false, Range(0, 0, 1, 0), tmp / "src" / "Foo.scala")
+      )
+      LmdbSerializer.streamingSave(indexPath, tmp)(sink => defs.foreach(sink.add))
+      val hits = LmdbSerializer.getPrefix(indexPath, "pkg/Foo.pure(")
+      assertEquals(hits.map(_.symbol).toSet, Set("pkg/Foo.pure().", "pkg/Foo.pure(+1)."),
+        "prefix scan must return all overloads but NOT other names sharing the name prefix")
+    } finally os.remove.all(tmp)
+  }
 }
