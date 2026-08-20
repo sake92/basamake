@@ -44,7 +44,7 @@
 
 - Layout: `modules/<m>/test/src/...`; module ids `modules-core-test` / `modules-index-test` / `modules-bsp-test` / `modules-lsp-test`; munit
 - `modules-index-test`: extractors + resolvers (Pass 1/Pass 2), import/scope, indexing (`WorkspaceIndexTest`, GitIgnore*, LmdbSerializer, SourceJarIndexer, DepsGotoDef)
-- `modules-lsp-test`: real JSON-RPC transport (`LspTransportTest`), server behavior (`BasamakeLanguageServerTest`); `modules-bsp-test`: BSP lifecycle, config
+- `modules-lsp-test`: `LspIntegrationTest` is THE primary suite — real JSON-RPC transport + real BSP + real compile via `LspTestClient` (scenarios: cold start, warm workflow w/ refs+hover, broken→fixed→broken, watcher file create/delete, BSP kill/respawn, multi-BSP routing); direct-server tests (`BasamakeLanguageServerTest`) keep hover-content, semanticdb-fallback, progress, and .sbt paths; `modules-bsp-test`: BSP lifecycle, config
 - Integration tests copy fixtures to `<repo>/tmp/<test>-<timestamp>/` first; never write into `test/resources`; no `.semanticdb` committed — `SemanticdbFixture` compiles a tmp copy with `scala-cli compile --server=false --semanticdb`
 - No build-tool shell-outs in tests except scala-cli inside tmp copies
 

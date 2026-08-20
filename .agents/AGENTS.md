@@ -16,7 +16,7 @@
 | `modules-bsp` | `modules/bsp/src` | `modules/bsp/test/src` → `modules-bsp-test` |
 | `modules-lsp` (mainClass `ba.sake.basamake.Main`) | `modules/lsp/src` | `modules/lsp/test/src` → `modules-lsp-test` |
 
-Test resources live at `<root>/test/resources` (committed fixtures, incl. binary source jars).
+Test resources live at `<root>/test/resources` (committed fixtures, incl. binary source jars). E2E fixtures live at `test/resources/projects/` (copied to `<root>/tmp/<test>-<ts>/`; `BspProjectFixture` generates a real `.bsp` via `scala-cli setup-ide` and isolates the dep cache via `.basamake/config.json`). **`LspIntegrationTest` is the primary suite** — run `modules-lsp-test` separately (`deder exec -t test -m modules-lsp-test`): it spawns real scala-cli BSPs and takes minutes; munit's sequential runner keeps its kill-tree/process assertions from interfering with other suites.
 
 ## Navigation model
 
