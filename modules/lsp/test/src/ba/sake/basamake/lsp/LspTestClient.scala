@@ -22,7 +22,7 @@ final class LspTestClient private (
     private val clientWrite: java.io.OutputStream
 ) extends AutoCloseable {
 
-  private def uriOf(relPath: String): String = (projectRoot / relPath).toNIO.toUri.toString
+  private def uriOf(relPath: String): String = (projectRoot / os.RelPath(relPath)).toNIO.toUri.toString
 
   // ---- timings: printed, never asserted ----
   private val timings = scala.collection.mutable.ListBuffer.empty[(String, Long)]
@@ -41,21 +41,28 @@ final class LspTestClient private (
   def initialize(): Unit = {
     measure("initialize") {
       val caps = proxy.initialize(new InitializeParams()).get(30, TimeUnit.SECONDS).getCapabilities
+      // Full capability contract — subsumes the deleted LspTransportTest assertions.
+      require(caps.getTextDocumentSync.getLeft == TextDocumentSyncKind.Full, "Full sync expected")
       require(caps.getDefinitionProvider != null && caps.getDefinitionProvider.getLeft.booleanValue(), "definition capability expected")
+      require(caps.getReferencesProvider != null && caps.getReferencesProvider.getLeft.booleanValue(), "references capability expected")
+      require(caps.getHoverProvider != null && caps.getHoverProvider.getLeft.booleanValue(), "hover capability expected")
+      val didRename = caps.getWorkspace.getFileOperations.getDidRename
+      require(didRename != null && didRename.getFilters != null && !didRename.getFilters.isEmpty,
+        "didRename filters must be advertised (vscode-languageclient ignores filter-less registrations)")
     }
     proxy.initialized(new InitializedParams())
   }
 
   /** Open a workspace file (path relative to the project root). */
   def open(relPath: String): Unit = {
-    val p = projectRoot / relPath
+    val p = projectRoot / os.RelPath(relPath)
     proxy.getTextDocumentService.didOpen(new DidOpenTextDocumentParams(
       new TextDocumentItem(p.toNIO.toUri.toString, "scala", 1, os.read(p))))
   }
 
   /** Write new content to disk AND push it through the LSP (Full sync). */
   def replaceAndSave(relPath: String, newContent: String): Unit = {
-    val p = projectRoot / relPath
+    val p = projectRoot / os.RelPath(relPath)
     os.write.over(p, newContent)
     proxy.getTextDocumentService.didChange(new DidChangeTextDocumentParams(
       new VersionedTextDocumentIdentifier(p.toNIO.toUri.toString, 2),
@@ -65,9 +72,18 @@ final class LspTestClient private (
   }
 
   /** Wait (deadline-bounded, event-driven) until diagnostics for `relPath`
-    * satisfy `predicate`. Returns the latest diagnostic list. */
-  def awaitDiagnostics(relPath: String, predicate: List[Diagnostic] => Boolean, timeoutSec: Long): List[Diagnostic] =
-    client.awaitDiagnostics(uriOf(relPath), predicate, timeoutSec)
+    * satisfy `predicate` AND at least `minPublishCount` publish batches were
+    * received. Returns the latest diagnostic list. */
+  def awaitDiagnostics(relPath: String, predicate: List[Diagnostic] => Boolean, timeoutSec: Long,
+                       minPublishCount: Int = 0): List[Diagnostic] =
+    client.awaitDiagnostics(uriOf(relPath), predicate, timeoutSec, minPublishCount)
+
+  /** Wait until a successful compile completed (Info log "Compiled …" from the
+    * BSP taskFinish). Use before further edits that must trigger a FRESH
+    * compile — scala-cli's BSP retry-after-failure can otherwise coalesce the
+    * next edit into the still-running retry and never recompile it. */
+  def awaitCompileSucceeded(timeoutSec: Long = 120): Unit =
+    client.awaitCompileSucceeded(timeoutSec)
 
   /** Go-to-definition at (line, character) — both 0-based. */
   def goToDefinition(relPath: String, line: Int, char: Int): List[Location] =
@@ -81,12 +97,75 @@ final class LspTestClient private (
       locs
     }
 
+  /** Find references at (line, character) — both 0-based. */
+  def findReferences(relPath: String, line: Int, char: Int, includeDeclaration: Boolean): List[Location] =
+    measure("references") {
+      val params = new ReferenceParams()
+      params.setTextDocument(new TextDocumentIdentifier(uriOf(relPath)))
+      params.setPosition(new Position(line, char))
+      val ctx = new ReferenceContext()
+      ctx.setIncludeDeclaration(includeDeclaration)
+      params.setContext(ctx)
+      proxy.getTextDocumentService.references(params).get(60, TimeUnit.SECONDS).asScala.toList
+    }
+
+  /** Hover at (line, character) — both 0-based. Returns None when the server returns null. */
+  def hover(relPath: String, line: Int, char: Int): Option[Hover] =
+    measure("hover") {
+      val params = new HoverParams()
+      params.setTextDocument(new TextDocumentIdentifier(uriOf(relPath)))
+      params.setPosition(new Position(line, char))
+      Option(proxy.getTextDocumentService.hover(params).get(60, TimeUnit.SECONDS))
+    }
+
+  /** Write a file directly on disk — NOT through the LSP. Simulates external
+    * tooling (terminal vim / git checkout / echo >> file); the file watcher
+    * must pick it up. */
+  def writeOnDisk(relPath: String, content: String): Unit =
+    os.write.over(projectRoot / os.RelPath(relPath), content)
+
+  /** Delete a file directly on disk (external tooling again). */
+  def deleteOnDisk(relPath: String): Unit =
+    os.remove(projectRoot / os.RelPath(relPath))
+
+  /** Poll `f` every `pollMs` until `pred` holds or `timeoutSec` elapses.
+    * For eventually-consistent paths (watcher → index update). */
+  def awaitUntil[A](timeoutSec: Long, pollMs: Long = 2000)(f: => A)(pred: A => Boolean): A = {
+    val deadline = System.currentTimeMillis() + timeoutSec * 1000
+    var last: A = f
+    while (!pred(last) && System.currentTimeMillis() < deadline) {
+      Thread.sleep(pollMs)
+      last = f
+    }
+    if (!pred(last)) throw new AssertionError(s"awaitUntil: condition not met within ${timeoutSec}s")
+    last
+  }
+
   def close(): Unit = {
     proxy.shutdown().get(10, TimeUnit.SECONDS)
     clientWrite.close() // stdin EOF -> server launcher future completes
     serverWrite.close()
     serverListening.get(10, TimeUnit.SECONDS)
     server.cleanup() // idempotent — no-op after shutdown, safe on failure
+    assertNoScalaCliDescendants()
+  }
+
+  /** BspManager.shutdown kills the whole process tree of this JVM — after
+    * close(), no scala-cli BSP descendant may remain. Poll briefly: destroy +
+    * OS reaping is asynchronous. Subsumes BspManagerShutdownTest's
+    * "no lingering descendant processes" test. */
+  private def assertNoScalaCliDescendants(): Unit = {
+    def scalaCliDescendants(): Int =
+      java.lang.ProcessHandle.current().descendants().iterator().asScala.count { p =>
+        p.info().commandLine().orElse("").contains("scala-cli")
+      }
+    val deadline = System.currentTimeMillis() + 10_000
+    var remaining = scalaCliDescendants()
+    while (remaining > 0 && System.currentTimeMillis() < deadline) {
+      Thread.sleep(200)
+      remaining = scalaCliDescendants()
+    }
+    require(remaining == 0, s"$remaining scala-cli descendant process(es) survived shutdown")
   }
 }
 
