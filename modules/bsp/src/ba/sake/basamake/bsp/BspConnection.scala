@@ -397,16 +397,6 @@ class BspConnection (
         Nil
     }
   }
-
-  // ---- test hooks (package-private) ----
-  private[bsp] def aliveForTesting: Boolean = alive
-  private[bsp] def simulateProcessExitForTesting(): Unit =
-    process.foreach(_ => alive = false)
-  private[bsp] def setSpawningFlagForTesting(v: Boolean): Unit = { spawning = v }
-  private[bsp] def pendingCompileTargetIdsForTesting: Vector[BuildTargetIdentifier] = {
-    import scala.jdk.CollectionConverters.*
-    pendingCompileTargetIds.asScala.toVector
-  }
 }
 
 object BspConnection {

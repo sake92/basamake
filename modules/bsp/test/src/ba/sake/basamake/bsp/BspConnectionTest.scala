@@ -142,7 +142,6 @@ class BspConnectionTest extends FunSuite {
     conn.poke()  // alive=true, ping times out, but process alive → keep connection
     assert(!killCalled.get(), "no killTree when the process is alive but busy")
     assertEquals(spawnCount.get(), 1, "no respawn when the process is alive but busy")
-    assert(conn.aliveForTesting, "connection stays alive when the process is alive but busy")
   }
 
   test("spawn failure → next poke triggers fresh spawn") {
@@ -165,13 +164,19 @@ class BspConnectionTest extends FunSuite {
     assertEquals(spawnCount.get(), 2, "no cooldown — next poke is a fresh attempt")
   }
 
-  test("successful handshake → alive → exit → respawn → alive") {
+  test("successful handshake → process exit (onExit) → next poke respawns") {
     var spawnCount = new AtomicInteger(0)
+    val exitFuture = new java.util.concurrent.CompletableFuture[java.lang.Process]()
     val conn = new BspConnection(
       spec = fakeSpec,
       spawnFn = () => {
-        spawnCount.incrementAndGet()
-        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        val n = spawnCount.incrementAndGet()
+        val proc = new FakeProcess {
+          override def isAlive = true
+          // spawn #1's process exits (controllable); later spawns stay alive
+          // (a completed/never-completing future would flip alive=false again)
+          override def onExit() = if (n == 1) exitFuture else new java.util.concurrent.CompletableFuture[java.lang.Process]()
+        }
         HandshakeResult(proc, new MockBuildServer,
           new SourcesResult(java.util.Collections.emptyList()),
           new DependencySourcesResult(java.util.Collections.emptyList()),
@@ -183,31 +188,17 @@ class BspConnectionTest extends FunSuite {
     )
     conn.poke()   // spawn #1, success
     assertEquals(spawnCount.get(), 1)
-    conn.simulateProcessExitForTesting()
-    conn.poke()   // !alive → respawn, success
-    assertEquals(spawnCount.get(), 2)
+    exitFuture.complete(null)   // OS-style exit event → alive=false (async thenRun)
+    // Poll: each poke respawns only once alive=false was observed; pokes while
+    // alive-but-not-yet-flagged are cheap pings.
+    val deadline = System.currentTimeMillis() + 5000
+    while (spawnCount.get() < 2 && System.currentTimeMillis() < deadline) {
+      conn.poke()
+      Thread.sleep(50)
+    }
+    assertEquals(spawnCount.get(), 2, "respawn after onExit")
     conn.poke()   // alive → ping OK, no respawn
     assertEquals(spawnCount.get(), 2)
-  }
-
-  test("process.onExit callback flips alive=false") {
-    val conn = new BspConnection(
-      spec = fakeSpec,
-      spawnFn = () => {
-        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
-        HandshakeResult(proc, new MockBuildServer,
-          new SourcesResult(java.util.Collections.emptyList()),
-          new DependencySourcesResult(java.util.Collections.emptyList()),
-          emptyScalacOptions)
-      },
-      killTreeFn = _ => (),
-      events = noopSink,
-      debounceMs = 500
-    )
-    conn.poke()
-    assert(conn.aliveForTesting, "alive should be true after handshake")
-    conn.simulateProcessExitForTesting()
-    assert(!conn.aliveForTesting, "alive should flip false after onExit callback")
   }
 
   test("poke during spawn returns immediately without blocking") {
@@ -242,23 +233,30 @@ class BspConnectionTest extends FunSuite {
     assertEquals(spawnCount.get(), 1, "only one spawn despite concurrent poke")
   }
 
-  test("compile during spawn queues URI and runs after spawn") {
+  test("compile during spawn is queued, deduplicated, and runs after spawn") {
     var compileCount = new AtomicInteger(0)
+    var spawnCount = new AtomicInteger(0)
     val tid = new BuildTargetIdentifier("//test")
     val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
     val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
+    val spawnLatch = new java.util.concurrent.CountDownLatch(1)
+    val exitFuture = new java.util.concurrent.CompletableFuture[java.lang.Process]()
     val conn = new BspConnection(
       spec = fakeSpec,
       spawnFn = () => {
-        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
+        val n = spawnCount.incrementAndGet()
+        if (n == 2) spawnLatch.await()   // hold the respawn open mid-spawn
+        val proc = new FakeProcess {
+          override def isAlive = true
+          override def onExit() = if (n == 1) exitFuture else CompletableFuture.completedFuture(this)
+        }
         val server = new MockBuildServer {
           override def buildTargetCompile(p: CompileParams) = {
             compileCount.incrementAndGet()
             CompletableFuture.completedFuture(new CompileResult(StatusCode.OK))
           }
         }
-        HandshakeResult(proc, server,
-          sourcesResult,
+        HandshakeResult(proc, server, sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
@@ -266,37 +264,57 @@ class BspConnectionTest extends FunSuite {
       events = noopSink,
       debounceMs = 500
     )
-    // First spawn: success (populates sourceDirsByTarget)
+    // Spawn #1: success (populates sourceDirsByTarget → selectTargets works).
     conn.ensureConnected()
-    conn.simulateProcessExitForTesting()
-    // Simulate: spawning in progress + compile queued
-    conn.setSpawningFlagForTesting(true)
+    assertEquals(spawnCount.get(), 1)
+
+    // Exit the first process, then start a respawn and hold it open mid-spawn.
+    exitFuture.complete(null)
+    val t = new Thread(() => conn.poke())
+    t.start()
+    // NOTE: only the background thread may spawn here — a main-thread poke
+    // racing the background spawn would block on the latch and deadlock the
+    // very loop that must release it.
+    val deadline = System.currentTimeMillis() + 5000
+    while (spawnCount.get() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    assertEquals(spawnCount.get(), 2, "respawn must be in progress")
+
+    // Two compile requests while the spawn is held open — must queue, dedup,
+    // and run exactly once after the spawn completes.
     conn.requestCompile("file:///test/Foo.scala")
-    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1)
-    assertEquals(conn.pendingCompileTargetIdsForTesting.head, tid)
-    // Duplicate compile during same spawn — addIfAbsent prevents dup
     conn.requestCompile("file:///test/Foo.scala")
-    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1, "addIfAbsent deduplicates")
-    // Release spawn + drain
-    conn.setSpawningFlagForTesting(false)
-    conn.ensureConnected()
-    // After spawn + drain, compile should have been called
-    assert(compileCount.get() >= 1, "queued compile was executed after spawn")
-    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 0, "queue drained after spawn")
+    assertEquals(compileCount.get(), 0, "queued while spawning, not yet run")
+    spawnLatch.countDown()
+    t.join(5000)
+    val dl = System.currentTimeMillis() + 5000
+    while (compileCount.get() < 1 && System.currentTimeMillis() < dl) Thread.sleep(20)
+    assertEquals(compileCount.get(), 1, "addIfAbsent dedup: exactly one compile despite two requests")
   }
 
-  test("failed spawn clears pending compiles") {
+  test("failed spawn drops queued compiles (stale queue never drains)") {
+    var compileCount = new AtomicInteger(0)
+    var spawnCount = new AtomicInteger(0)
     val tid = new BuildTargetIdentifier("//bar")
     val sourceItem = new SourceItem("file:///test/", SourceItemKind.DIRECTORY, false)
     val sourcesResult = new SourcesResult(java.util.List.of(new SourcesItem(tid, java.util.List.of(sourceItem))))
-    var spawnSucceed = true
+    val failLatch = new java.util.concurrent.CountDownLatch(1)
+    val exitFuture = new java.util.concurrent.CompletableFuture[java.lang.Process]()
     val conn = new BspConnection(
       spec = fakeSpec,
       spawnFn = () => {
-        if (!spawnSucceed) throw new RuntimeException("spawn fail")
-        val proc = new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) }
-        HandshakeResult(proc, new MockBuildServer,
-          sourcesResult,
+        val n = spawnCount.incrementAndGet()
+        if (n == 2) { failLatch.await(); throw new RuntimeException("spawn fail") }
+        val proc = new FakeProcess {
+          override def isAlive = true
+          override def onExit() = if (n == 1) exitFuture else CompletableFuture.completedFuture(this)
+        }
+        val server = new MockBuildServer {
+          override def buildTargetCompile(p: CompileParams) = {
+            compileCount.incrementAndGet()
+            CompletableFuture.completedFuture(new CompileResult(StatusCode.OK))
+          }
+        }
+        HandshakeResult(proc, server, sourcesResult,
           new DependencySourcesResult(java.util.Collections.emptyList()),
           emptyScalacOptions)
       },
@@ -304,18 +322,41 @@ class BspConnectionTest extends FunSuite {
       events = noopSink,
       debounceMs = 500
     )
-    // First spawn: success (populates sourceDirsByTarget)
+    // Spawn #1: success.
     conn.ensureConnected()
-    conn.simulateProcessExitForTesting()
-    // Simulate: spawning in progress + compile queued
-    conn.setSpawningFlagForTesting(true)
+    assertEquals(spawnCount.get(), 1)
+
+    // Exit + start respawn #2, held open mid-spawn; queue a compile.
+    exitFuture.complete(null)
+    val t = new Thread(() => conn.poke())
+    t.start()
+    // Only the background thread may spawn (see sibling test's comment).
+    val deadline = System.currentTimeMillis() + 5000
+    while (spawnCount.get() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    assertEquals(spawnCount.get(), 2)
+    conn.requestCompile("file:///test/Bar.scala")   // queued while spawning
+
+    // Release: spawn #2 fails → the pending queue must be cleared.
+    failLatch.countDown()
+    t.join(5000)
+
+    // Proof of the clear: the NEXT successful spawn must NOT drain the stale
+    // queued compile.
+    conn.poke()
+    val dl2 = System.currentTimeMillis() + 5000
+    while (spawnCount.get() < 3 && System.currentTimeMillis() < dl2) {
+      conn.poke()
+      Thread.sleep(50)
+    }
+    assertEquals(spawnCount.get(), 3, "spawn #3 succeeds")
+    Thread.sleep(500)   // give any (buggy) stale drain a chance to run
+    assertEquals(compileCount.get(), 0, "stale queued compile must have been cleared on spawn failure")
+
+    // A fresh request after a successful spawn works normally.
     conn.requestCompile("file:///test/Bar.scala")
-    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 1)
-    conn.setSpawningFlagForTesting(false)
-    // Second spawn: fail → queue must be cleared
-    spawnSucceed = false
-    try conn.ensureConnected() catch { case _: RuntimeException => () }
-    assertEquals(conn.pendingCompileTargetIdsForTesting.size, 0, "pending compiles cleared on spawn failure")
+    val dl3 = System.currentTimeMillis() + 5000
+    while (compileCount.get() < 1 && System.currentTimeMillis() < dl3) Thread.sleep(20)
+    assertEquals(compileCount.get(), 1, "fresh compile request runs after successful spawn")
   }
 
   // ── debounced, per-target coalesced compiles ─────────────────

@@ -24,7 +24,7 @@ import ba.sake.basamake.index.indexing.{IndexingPhase, IndexingProgressListener}
   * nothing indexes before initialize anyway. */
 class IndexingProgressReporter extends IndexingProgressListener with StrictLogging {
 
-  @volatile private var client: LanguageClient = _
+  @volatile private var client: Option[LanguageClient] = None
   @volatile private var enabled: Boolean = false
 
   private var throttleNanos = 100L * 1000000L // 100ms
@@ -54,7 +54,7 @@ class IndexingProgressReporter extends IndexingProgressListener with StrictLoggi
   }
 
   /** Called from connect() — the client proxy arrives before initialize. */
-  def setClient(c: LanguageClient): Unit = client = c
+  def setClient(c: LanguageClient): Unit = client = Some(c)
 
   /** Called from initialize() with the client's window.workDoneProgress capability. */
   def setEnabled(flag: Boolean): Unit = enabled = flag
@@ -66,7 +66,7 @@ class IndexingProgressReporter extends IndexingProgressListener with StrictLoggi
   private[lsp] def setBeginRetryMillis(ms: Long): Unit = beginRetryNanos = ms * 1000000L
 
   override def onProgress(phase: IndexingPhase, done: Long, total: Long, message: String): Unit = {
-    if (!enabled || client == null) return
+    if (!enabled || client.isEmpty) return
     if (total <= 0) return
     val st = stateOf(phase)
     val now = System.nanoTime()
@@ -86,7 +86,7 @@ class IndexingProgressReporter extends IndexingProgressListener with StrictLoggi
   private def begin(st: PhaseState, done: Long, total: Long, message: String): Unit = {
     st.lastBeginAttemptNanos = System.nanoTime()
     try {
-      client.createProgress(new WorkDoneProgressCreateParams(Either.forLeft(st.token)))
+      client.get.createProgress(new WorkDoneProgressCreateParams(Either.forLeft(st.token)))
         .get(5, TimeUnit.SECONDS)
     } catch {
       case e: Exception =>
@@ -120,7 +120,7 @@ class IndexingProgressReporter extends IndexingProgressListener with StrictLoggi
 
   private def notify(st: PhaseState, value: WorkDoneProgressNotification): Unit = {
     try {
-      client.notifyProgress(new ProgressParams(Either.forLeft(st.token), Either.forLeft(value)))
+      client.get.notifyProgress(new ProgressParams(Either.forLeft(st.token), Either.forLeft(value)))
     } catch {
       case e: Exception =>
         logger.warn(s"Failed to send progress for ${st.token} — disabling progress: ${e.getMessage}")
