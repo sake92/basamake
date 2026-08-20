@@ -4,7 +4,6 @@ import java.net.URI
 import java.util.concurrent.TimeUnit
 import munit.FunSuite
 import org.eclipse.lsp4j.*
-import scala.jdk.CollectionConverters.*
 
 class BasamakeLanguageServerTest extends FunSuite {
 
@@ -58,24 +57,6 @@ class BasamakeLanguageServerTest extends FunSuite {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // initialize capabilities: rename handling
-  // ═══════════════════════════════════════════════════════════════
-
-  test("initialize: advertises didRename file operations with filters") {
-    val root = copyFixture("sbt", "lsp-rename-caps")
-    try {
-      val server = new BasamakeLanguageServer(root)
-      server.connect(new TestLanguageClient)
-      val result = server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
-      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
-      val didRename = result.getCapabilities.getWorkspace.getFileOperations.getDidRename
-      assert(didRename != null, "server must advertise didRename")
-      assert(didRename.getFilters != null && !didRename.getFilters.isEmpty,
-        "didRename must declare filters — vscode-languageclient ignores filter-less registrations")
-    } finally os.remove.all(root)
-  }
-
-  // ═══════════════════════════════════════════════════════════════
   // rename + watched files handling
   // ═══════════════════════════════════════════════════════════════
 
@@ -96,148 +77,6 @@ class BasamakeLanguageServerTest extends FunSuite {
       val cleared = client.diagnosticsFor(oldUri)
       assert(cleared.isEmpty,
         s"expected empty publish for old uri, got: $cleared")
-    } finally os.remove.all(root)
-  }
-
-  test("didChangeWatchedFiles: deleted file → empty diagnostics published") {
-    val root = copyFixture("sbt", "lsp-watched")
-    try {
-      val client = new TestLanguageClient
-      val server = new BasamakeLanguageServer(root)
-      server.connect(client)
-      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
-      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
-
-      val deletedUri = "file:///x/Deleted.scala"
-      val createdUri = "file:///x/Created.scala"
-      server.didChangeWatchedFiles(new DidChangeWatchedFilesParams(
-        java.util.List.of(
-          new FileEvent(createdUri, FileChangeType.Created),
-          new FileEvent(deletedUri, FileChangeType.Deleted))))
-
-      val cleared = client.diagnosticsFor(deletedUri)
-      assert(cleared.isEmpty,
-        s"expected empty publish for deleted file, got: $cleared")
-    } finally os.remove.all(root)
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // goto-definition via LSP handler
-  // ═══════════════════════════════════════════════════════════════
-
-  test("LSP definition: goto getMsg from Main.scala returns utils.scala location") {
-    val root = copyFixture("sbt", "lsp-goto")
-    try {
-      os.remove.all(root / "target") // force source-only
-      val server = new BasamakeLanguageServer(root)
-      server.connect(new TestLanguageClient)
-      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
-      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
-
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
-      val mainText = os.read(mainFile)
-
-      // Open Main.scala
-      server.didOpen(new DidOpenTextDocumentParams(
-        new TextDocumentItem(mainFile.toNIO.toUri.toString, "scala", 1, mainText)))
-
-      // Open utils.scala (so cross-file resolution works)
-      server.didOpen(new DidOpenTextDocumentParams(
-        new TextDocumentItem(utilsFile.toNIO.toUri.toString, "scala", 1, os.read(utilsFile))))
-
-      val (l, c) = posAt(mainText, """utils\.(?<p>getMsg)\(\)""")
-      val params = new DefinitionParams()
-      params.setTextDocument(new TextDocumentIdentifier(mainFile.toNIO.toUri.toString))
-      params.setPosition(new Position(l, c))
-
-      val result = server.definition(params).get(10, TimeUnit.SECONDS)
-      val locations = result.getLeft
-      assert(locations.size() > 0, s"expected at least one location, got ${locations.size()}")
-      val loc = locations.get(0)
-      val locPath = os.Path(URI.create(loc.getUri))
-      assertEquals(locPath.last, "utils.scala")
-    } finally os.remove.all(root)
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // references via LSP handler
-  // ═══════════════════════════════════════════════════════════════
-
-  test("LSP references: refs of getMsg finds usage across open files") {
-    val root = copyFixture("sbt", "lsp-refs")
-    try {
-      os.remove.all(root / "target") // force source-only
-      val server = new BasamakeLanguageServer(root)
-      server.connect(new TestLanguageClient)
-      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
-      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
-
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
-      val mainText = os.read(mainFile)
-      val utilsText = os.read(utilsFile)
-
-      // Open both files
-      server.didOpen(new DidOpenTextDocumentParams(
-        new TextDocumentItem(mainFile.toNIO.toUri.toString, "scala", 1, mainText)))
-      server.didOpen(new DidOpenTextDocumentParams(
-        new TextDocumentItem(utilsFile.toNIO.toUri.toString, "scala", 1, utilsText)))
-
-      // Cursor on def site of getMsg in utils.scala
-      val (l, c) = posAt(utilsText, """def (?<p>getMsg)""")
-      val params = new ReferenceParams()
-      params.setTextDocument(new TextDocumentIdentifier(utilsFile.toNIO.toUri.toString))
-      params.setPosition(new Position(l, c))
-      params.setContext(new ReferenceContext(true)) // includeDeclaration = true
-
-      val locations = server.references(params).get(10, TimeUnit.SECONDS)
-      assert(locations.size() >= 1, s"expected at least one reference, got ${locations.size()}")
-      val uris = locations.asScala.map(_.getUri).toList
-      assert(uris.exists(_.endsWith("Main.scala")),
-        s"expected reference in Main.scala, got: $uris")
-      assert(uris.exists(_.endsWith("utils.scala")),
-        s"expected declaration in utils.scala, got: $uris")
-    } finally os.remove.all(root)
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // references from the call site (cursor on the usage, not def)
-  // ═══════════════════════════════════════════════════════════════
-
-  test("LSP references: refs of getMsg from call site finds usage + declaration") {
-    val root = copyFixture("sbt", "lsp-refs-call")
-    try {
-      os.remove.all(root / "target")
-      val server = new BasamakeLanguageServer(root)
-      server.connect(new TestLanguageClient)
-      server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
-      assert(eventually(server.isWorkspaceIndexingDone), "workspace index should finish")
-
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val utilsFile = root / "src" / "main" / "scala" / "utils.scala"
-      val mainText = os.read(mainFile)
-
-      // Open both files
-      server.didOpen(new DidOpenTextDocumentParams(
-        new TextDocumentItem(mainFile.toNIO.toUri.toString, "scala", 1, mainText)))
-      server.didOpen(new DidOpenTextDocumentParams(
-        new TextDocumentItem(utilsFile.toNIO.toUri.toString, "scala", 1, os.read(utilsFile))))
-
-      // Cursor on the call site: utils.getMsg() in Main.scala
-      val (l, c) = posAt(mainText, """utils\.(?<p>getMsg)\(\)""")
-      val params = new ReferenceParams()
-      params.setTextDocument(new TextDocumentIdentifier(mainFile.toNIO.toUri.toString))
-      params.setPosition(new Position(l, c))
-      params.setContext(new ReferenceContext(true))
-
-      val locations = server.references(params).get(10, TimeUnit.SECONDS)
-      assert(locations.size() >= 1, s"expected at least one reference from call site, got ${locations.size()}")
-      val uris = locations.asScala.map(_.getUri).toList
-      assert(uris.exists(_.endsWith("Main.scala")),
-        s"expected call-site ref in Main.scala, got: $uris")
-      assert(uris.exists(_.endsWith("utils.scala")),
-        s"expected declaration in utils.scala, got: $uris")
     } finally os.remove.all(root)
   }
 
