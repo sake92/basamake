@@ -27,12 +27,18 @@ final case class OwnerScope(ownerKey: String) extends Scope
   * `unimports` holds names excluded from wildcard resolution.
   * `methodImports` maps an imported name → its OWNER (Java static single-type
   * imports, where the member could be a method — probed via overload scan).
+  * `candidates` maps an imported name → plausible FULL dep symbols (unverified
+  * at parse time — the resolver's table has no dependency access). Emitted as
+  * dual type+term pairs for package-prefixed importees; verified at REQUEST
+  * time by `WorkspaceIndex.getSymbol` against the file's real BSP candidates.
   */
 final case class ImportScopeData(
     explicit: Map[String, String],
     wildcards: List[String], // prefix owners, inner-to-outer
     unimports: Set[String],  // names excluded from wildcard resolution
-    methodImports: Map[String, String] = Map.empty // name → owner type symbol
+    methodImports: Map[String, String] = Map.empty, // name → owner type symbol
+    /** name → plausible FULL dep symbols (unverified at parse time). */
+    candidates: Map[String, List[String]] = Map.empty
 ) extends Scope
 
 /** Mutable scope stack wrapping `ArrayStack[Scope]` with a `lookup` method
@@ -83,7 +89,7 @@ class ScopeStack(val symbolTable: SymbolTable) {
             if (symbolTable.get(termSym).isDefined) break(Some(termSym))
           }
 
-        case ImportScopeData(explicit, wildcards, unimports, methodImports) =>
+        case ImportScopeData(explicit, wildcards, unimports, methodImports, _) =>
           // Java static single-type import of a METHOD: the member is stored as
           // name → owner type; probe the owner's overloads first so a call binds
           // to the method symbol (the term symbol is never in the table).
@@ -139,6 +145,49 @@ class ScopeStack(val symbolTable: SymbolTable) {
       }
     }
     None
+  }
+
+  /** Candidate symbols for `name` when `lookup` returned None: plausible dep
+    * symbols the parse-time table cannot verify. Shadowing still wins: any
+    * LocalScope/OwnerScope binding the name (even in the other shape) kills
+    * the candidate list — a local `x: IO` must not resolve `IO` to a dep.
+    * Collects from import scopes (explicit candidates + wildcard prefixes,
+    * incl. package-object members for package prefixes) top-down, deduped. */
+  def lookupCandidates(name: String, isType: Boolean): List[String] = {
+    val out = List.newBuilder[String]
+    val it = stack.iterator
+    while (it.hasNext) {
+      it.next() match {
+        case LocalScope(bindings) =>
+          if (bindings.contains(name)) return Nil
+        case OwnerScope(ownerKey) =>
+          if (symbolTable.get(SymbolUtils.typeSymbol(ownerKey, name)).isDefined ||
+              symbolTable.get(SymbolUtils.termSymbol(ownerKey, name)).isDefined) return Nil
+        case ImportScopeData(_, wildcards, unimports, _, candidates) =>
+          if (!unimports.contains(name)) {
+            candidates.get(name).foreach { syms =>
+              out ++= syms.filter(s => if (isType) s.endsWith("#") else !s.endsWith("#"))
+            }
+            if (isType) {
+              for (prefix <- wildcards) {
+                out += SymbolUtils.typeSymbol(prefix, name)
+                out += SymbolUtils.termSymbol(prefix, name)
+                if (prefix.endsWith("/")) {
+                  out += SymbolUtils.typeSymbol(prefix + "package.", name)
+                  out += SymbolUtils.termSymbol(prefix + "package.", name)
+                }
+              }
+            } else {
+              for (prefix <- wildcards) {
+                out += SymbolUtils.termSymbol(prefix, name)
+                if (prefix.endsWith("/"))
+                  out += SymbolUtils.termSymbol(prefix + "package.", name)
+              }
+            }
+          }
+      }
+    }
+    out.result().distinct
   }
 
   /** Add a binding to the topmost LocalScope on the stack.

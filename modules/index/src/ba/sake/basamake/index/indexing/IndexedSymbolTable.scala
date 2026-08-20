@@ -11,6 +11,10 @@ import ba.sake.basamake.index.{SymbolDefinition, SymbolUtils}
   *
   * Deterministic pipeline — no global routing, no heuristics:
   *   1. The caller passes the candidate source jars of the file's BSP target.
+  *      Dep files get TARGET-SCOPED candidate sets instead: the owning jar
+  *      first, then the union of the dep lists of every target that registered
+  *      it (a target's list is its fully resolved classpath — see
+  *      `candidatesForPath`).
   *   2. Each candidate is package-filtered via metadata.json: package-only
   *      metadata (from the classes jar) is sprinkled eagerly by `registerTarget`;
   *      a full index replaces it with parse-accurate packages.
@@ -18,9 +22,11 @@ import ba.sake.basamake.index.{SymbolDefinition, SymbolUtils}
   *      matching jar without an index is indexed IN THE BACKGROUND (single-flight
   *      per jar, globally bounded, progress events) while the lookup misses fast;
   *      its source files stay unpacked until a lookup hits them.
-  *   4. `LmdbSerializer.get` does one exact LMDB point query per matching jar.
+  *   4. `LmdbSerializer.get` does one exact LMDB point query per matching jar;
+  *      a method-shaped miss falls back to a bounded prefix scan (overloads
+  *      are indexed under `(+N)` keys).
   *   5. The first hit wins; if no candidate jar hits, the lookup ends with
-  *      `None` — there is NO fallback search.
+  *      `None` — there is no other fallback search.
   *
   * The JDK `src.zip` is an implicit candidate (a dependency of every target that
   * BSP never lists); the package filter keeps it out of non-`java.*` lookups. It
@@ -42,6 +48,10 @@ class IndexedSymbolTable(
   private val packagesByFingerprint = new ConcurrentHashMap[String, Set[String]]()
   // fingerprint → source jar path (ownership for dep-file lookups, extraction, reindex)
   private val sourcesByFingerprint = new ConcurrentHashMap[String, os.Path]()
+  // fingerprint → target ids that registered it (a jar can serve multiple targets)
+  private val targetsByFingerprint = new ConcurrentHashMap[String, Set[String]]()
+  // target id → source jars of that target (the FULL resolved classpath from BSP)
+  private val sourcesByTarget = new ConcurrentHashMap[String, List[os.Path]]()
   // fingerprints with a fully built index — lookups skip the metadata read + lock
   private val indexedFingerprints = ConcurrentHashMap.newKeySet[String]()
   // metadata generation in flight (single-flight per fingerprint)
@@ -83,13 +93,28 @@ class IndexedSymbolTable(
     * metadata.json for each (classes-jar directory scan — cheap, background,
     * single-flight, persisted). Nothing is INDEXED here; full indexing happens
     * on demand inside `get`. Idempotent — safe from the data.json warm start
-    * AND every BSP handshake. */
-  def registerTarget(sources: List[os.Path]): Unit = {
-    sources.foreach { src =>
+    * AND every BSP handshake. `targetId` scopes the jar set for cross-jar
+    * candidate derivation (dep files resolve against the union of classpaths of
+    * the targets that contain their owning jar). */
+  def registerTarget(sources: List[os.Path]): Unit = registerTarget(None, sources)
+
+  /** Register with an explicit target id (BSP tid or warm-start source root). */
+  def registerTarget(targetId: String, sources: List[os.Path]): Unit =
+    registerTarget(Some(targetId), sources)
+
+  private def registerTarget(targetId: Option[String], sources: List[os.Path]): Unit = {
+    val fingerprints = sources.flatMap { src =>
       if os.exists(src) then {
         val fingerprint = Fingerprint.fromJarPath(src)
         sourcesByFingerprint.put(fingerprint, src)
         ensureMetadata(fingerprint, src)
+        Some(fingerprint)
+      } else None
+    }
+    targetId.foreach { tid =>
+      sourcesByTarget.put(tid, sources)
+      fingerprints.foreach { fp =>
+        targetsByFingerprint.compute(fp, (_, old) => Option(old).getOrElse(Set.empty) + tid)
       }
     }
   }
@@ -108,10 +133,13 @@ class IndexedSymbolTable(
   }
 
   /** Candidate jars relevant to a file that lives INSIDE the deps cache (an
-    * extracted dep source opened via goto-def): the jar owning the file, derived
-    * from the cache path `<cacheRoot>/<fingerprint>/src/<entry>`; recovered from
-    * metadata.json when the jar isn't registered this session. JDK files return
-    * nothing — the implicit JDK candidate in `get` covers them. */
+    * extracted dep source opened via goto-def): the jar owning the file FIRST
+    * (deterministic precedence), then the union of the dep lists of every
+    * target that registered the owning jar — a target's list is its fully
+    * resolved classpath, so refs inside the file see exactly what the compiler
+    * saw. Owning jar recovered from metadata.json when not registered this
+    * session. JDK files return nothing — the implicit JDK candidate in `get`
+    * covers them. */
   def candidatesForPath(path: os.Path): List[os.Path] = {
     val root = cacheRoot
     if (!path.startsWith(root)) return Nil
@@ -128,7 +156,13 @@ class IndexedSymbolTable(
         .map(os.Path(_))
         .toList
     } else Nil
-    (own ++ fromMeta).distinct
+    val owning = (own ++ fromMeta).distinct
+    if (owning.isEmpty) Nil
+    else {
+      val tids = Option(targetsByFingerprint.get(fingerprint)).getOrElse(Set.empty)
+      val union = tids.toList.flatMap(tid => Option(sourcesByTarget.get(tid)).getOrElse(Nil))
+      (owning ++ union).distinct
+    }
   }
 
   /** The ONLY dependency lookup. See the class docs for the pipeline. */
@@ -150,7 +184,19 @@ class IndexedSymbolTable(
                 case Some(d) =>
                   ensureEntryExtracted(fingerprint, d.path)
                   found = Some(d)
-                case None => ()
+                case None =>
+                  // Method-shaped miss → prefix scan for the true overloads
+                  // (exact key carried a wrong/unknown overload index — e.g.
+                  // parse-time member candidates are always index-0). The scan
+                  // is bounded and package-filtered; it replaces the exact miss
+                  // ONLY for this shape — type/term misses stay hard misses.
+                  if (isMethodShaped(symbol)) {
+                    val prefix = symbol.takeWhile(_ != '(') + "("
+                    LmdbSerializer.getPrefix(indexPath(fingerprint), prefix).headOption.foreach { d =>
+                      ensureEntryExtracted(fingerprint, d.path)
+                      found = Some(d)
+                    }
+                  }
               }
             } catch {
               case NonFatal(e) =>
@@ -165,6 +211,10 @@ class IndexedSymbolTable(
   }
 
   // ── internals ─────────────────────────────────────────────────
+
+  /** True for method/constructor-shaped symbols: `name().`, `name(+N).`. */
+  private def isMethodShaped(symbol: String): Boolean =
+    symbol.matches(".*\\(\\+\\d*\\)\\.")
 
   private def indexPath(fingerprint: String): os.Path =
     cacheRoot / os.RelPath(fingerprint) / "index.lmdb"

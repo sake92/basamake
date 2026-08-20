@@ -206,6 +206,45 @@ object LmdbSerializer extends StrictLogging {
     } finally txn.close()
   }
 
+  /** Prefix scan: every symbol key starting with `prefix`, in key order.
+    * Used when a member-call candidate misses exactly (the compiler's overload
+    * index is unknowable at parse time): `pkg/Foo.pure(` matches `pure().`,
+    * `pure(+1).`, … but NOT other names sharing the name prefix (`pureEffect`).
+    * Bounded by `maxResults`. Reuses the shared read-only env like [[get]]. */
+  def getPrefix(path: os.Path, prefix: String, maxResults: Int = 32): Vector[SymbolDefinition] = {
+    val se = sharedEnvFor(path)
+    val txn = se.env.txnRead()
+    try {
+      val prefixBytes = prefix.getBytes("UTF-8")
+      val keyBuf = keyBufferFor(prefixBytes)
+      val cursor = se.db.openCursor(txn)
+      try {
+        val results = Vector.newBuilder[SymbolDefinition]
+        var count = 0
+        // MDB_SET_RANGE: position at the first key >= the prefix
+        if (cursor.get(keyBuf, GetOp.MDB_SET_RANGE)) {
+          var done = false
+          while (!done && count < maxResults) {
+            val key = cursor.key()
+            val keyArr = new Array[Byte](key.remaining())
+            key.get(keyArr)
+            val symbol = new String(keyArr, "UTF-8")
+            if (!symbol.startsWith(prefix)) done = true
+            else {
+              val valBuf = cursor.`val`()
+              val valArr = new Array[Byte](valBuf.remaining())
+              valBuf.get(valArr)
+              results += deserialize(valArr, symbol, path)
+              count += 1
+              done = !cursor.next()
+            }
+          }
+        }
+        results.result()
+      } finally cursor.close()
+    } finally txn.close()
+  }
+
   /** Per-thread reusable key buffer (grows on demand). Safe: the value buffer
     * returned by `db.get` aliases THIS buffer's memory, but callers copy the
     * bytes out before the next get on the same thread. */

@@ -72,7 +72,7 @@ class BspManager (
     // Register warm-start dependency sources: cached jars become routable NOW,
     // uncached jars stay unindexed until a file of that target is opened.
     warmDeps.foreach { case (srcRoot, deps) =>
-      try depsSymbolTable.registerTarget(deps)
+      try depsSymbolTable.registerTarget(srcRoot.toString, deps)
       catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
     }
     val discovered = BspDiscovery.discover(workspaceRoot, watchFilter.engine)
@@ -185,12 +185,14 @@ class BspManager (
     try workspaceIndex.invalidate(roots)
     catch { case e: Exception => logger.warn(s"WorkspaceIndex.invalidate failed: ${e.getMessage}", e) }
 
-  // ---- BspEvents: dependency sources — register target deps, paths only ----
+  // ---- BspEvents: dependency sources — register target deps, target-scoped ----
   override def onDependencySources(depsByTarget: Map[BuildTargetIdentifier, List[os.Path]]): Unit = {
-    // Register per target — paths only. Nothing is indexed here; lookups index
-    // exactly the jars they need, inline (see IndexedSymbolTable).
+    // Register per target — the target id scopes the jar set for cross-jar
+    // candidate derivation (a target's list IS its resolved classpath).
+    // Nothing is indexed here; lookups index exactly the jars they need, inline
+    // (see IndexedSymbolTable).
     depsByTarget.foreach { case (tid, paths) =>
-      try depsSymbolTable.registerTarget(paths)
+      try depsSymbolTable.registerTarget(tid.getUri, paths)
       catch { case e: Exception => logger.warn(s"registerTarget failed for $tid: ${e.getMessage}", e) }
     }
   }

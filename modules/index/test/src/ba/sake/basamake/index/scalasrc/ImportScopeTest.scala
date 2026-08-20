@@ -194,7 +194,8 @@ class ImportScopeTest extends FunSuite {
 
   test("unresolved importee with a TERM (non-package) prefix stays unresolved") {
     // `import a.b.C` where `a/b.` is a workspace object — the prefix is a term
-    // owner, NOT a package path, so no dep candidates are invented
+    // owner, NOT a package path and NOT a dep candidate, so no dep candidates
+    // are invented (a TABLE-RESOLVED term owner is a workspace object)
     val code = "import a.b.C"
     val input = Input.String(code)
     val tree = { given Dialect = Scala3Future; input.parse[Stat] }

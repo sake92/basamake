@@ -125,11 +125,14 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
             ovl, c.name.pos)
         // `implicit class Foo(...)` desugars to class Foo + an implicit conversion
         // method `Foo(...)` — semanticdb records the IMPORTEE of an implicit class
-        // as that METHOD symbol (`pkg/Outer#Foo().`, `pkg/Foo().`), so the index
-        // must hold it too (Scala 2 and Scala 3 compilers both emit this shape).
+        // as that METHOD symbol (`pkg/Outer#Foo().`, `pkg/Foo$package.Foo().`), so
+        // the index must hold it too (Scala 2 and Scala 3 compilers both emit this
+        // shape). A top-level implicit class's conversion method is owned by the
+        // file's `X$package.` wrapper, exactly like any other top-level def.
         if (c.mods.exists(_.isInstanceOf[Mod.Implicit])) {
-          val convIdx = bumpOvl(ovl, owner, c.name.value)
-          addSymbol(SymbolUtils.methodSymbol(owner, c.name.value, convIdx), c.name.value, isType = false, c.name.pos)
+          val effectiveOwner = ifWrapperOwner(owner, wrapper)
+          val convIdx = bumpOvl(ovl, effectiveOwner, c.name.value)
+          addSymbol(SymbolUtils.methodSymbol(effectiveOwner, c.name.value, convIdx), c.name.value, isType = false, c.name.pos)
         }
         extractStats(c.templ.stats, sym, ovl, None)
 

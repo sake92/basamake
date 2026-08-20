@@ -141,12 +141,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   @volatile private var ignoreEngine = new GitIgnoreEngine(workspacePath, ignorePatterns)
 
   /** Table the resolvers see for ONE file: workspace symbols + dep symbols
-    * scoped to the file's OWNING jar when the file lives in the dep cache
-    * (a goto-def chain INTO dep sources must keep resolving same-jar refs),
-    * JDK-scoped otherwise (`candidatesForPath` returns Nil for workspace and
-    * JDK files — the JDK is the implicit candidate in `IndexedSymbolTable.get`).
-    * Cross-jar dep→dep stays out of scope: `candidatesForPath` only ever
-    * returns the owning jar. */
+    * scoped to the file's candidates. Workspace files get JDK-scoped candidates
+    * (`candidatesForPath` returns Nil for workspace files — the JDK is the
+    * implicit candidate in `IndexedSymbolTable.get`). Dep files get
+    * target-scoped candidates (owning jar first, then the union of containing
+    * targets' classpaths — see IndexedSymbolTable.candidatesForPath). */
   private def resolverTableFor(path: os.Path): SymbolTable = depsTable match {
     case Some(deps) =>
       val candidates = deps.candidatesForPath(path)
@@ -755,7 +754,15 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           case Some(semPath) =>
             val res = SemanticdbIndexing.parseOccurrences(semPath, path)
             if (res.complete) {
-              (res.occurrences, res.locals)
+              // Gap-merge: semanticdb refs are authoritative where present, but
+              // the compiler DROPS occurrences it can't resolve (empty-symbol
+              // cross-document SUID refs). Fill positions with NO semanticdb
+              // ref from source-parse so goto-def has a fallback everywhere.
+              val sp = sourceParseCached(path, is)
+              val extra = sp.occurrences.filterNot { o =>
+                res.occurrences.exists(r => sameStart(r.range, o.range))
+              }
+              (res.occurrences ++ extra, res.locals)
             } else {
               // Partial -Ybest-effort ref symbols (e.g. `utils.` not `_empty_/utils.`)
               // — fall back to source parsing for occurrences. Defs in SymbolTable
@@ -766,18 +773,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             }
           case None =>
             logger.debug(s"Resolving references from source for $path")
-            val stamp = diskStampOf(path)
-            val cached = sourceParseCache.get(path)
-            if (cached != null && cached.stamp == stamp) {
-              (cached.occurrences, cached.locals)
-            } else {
-              val rf = sourceResolve(path, is)
-              // bounded recent-files cache: tab close/reopen of a source-parsed
-              // file (deps, JDK, unpaired workspace files) skips the re-parse
-              if (sourceParseCache.size() >= MaxSourceParseCacheEntries) sourceParseCache.clear()
-              sourceParseCache.put(path, SourceParseCacheEntry(stamp, rf.occurrences, rf.locals))
-              (rf.occurrences, rf.locals)
-            }
+            val rf = sourceParseCached(path, is)
+            (rf.occurrences, rf.locals)
         }
         sourcesMap.compute(path, (_, old) => {
           val base = if (old == null) SourceData.empty else old
@@ -792,6 +789,26 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
   private def diskStampOf(p: os.Path): (Long, Long) =
     try (os.mtime(p), os.size(p)) catch { case _: Exception => (-1L, -1L) }
+
+  /** True when two ranges start at the same position (position-level merge key:
+    * a semanticdb ref covers the position — the source-parse ref is redundant). */
+  private def sameStart(a: Range, b: Range): Boolean =
+    a.startLine == b.startLine && a.startCharacter == b.startCharacter
+
+  /** Stamp-cached source parse (shared by the no-semanticdb path and gap-merge). */
+  private def sourceParseCached(path: os.Path, is: java.io.InputStream): ResolvedFile = {
+    val stamp = diskStampOf(path)
+    val cached = sourceParseCache.get(path)
+    if (cached != null && cached.stamp == stamp) ResolvedFile(cached.occurrences, cached.locals)
+    else {
+      val rf = sourceResolve(path, is)
+      // bounded recent-files cache: tab close/reopen of a source-parsed
+      // file (deps, JDK, unpaired workspace files) skips the re-parse
+      if (sourceParseCache.size() >= MaxSourceParseCacheEntries) sourceParseCache.clear()
+      sourceParseCache.put(path, SourceParseCacheEntry(stamp, rf.occurrences, rf.locals))
+      rf
+    }
+  }
 
   /** Open `path` as a stream and pass it to `f` (parse from the stream — no
     * intermediate String). None when the file can't be opened (deleted race). */

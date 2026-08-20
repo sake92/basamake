@@ -108,10 +108,15 @@ object SourceJarIndexer extends StrictLogging {
                 // the recorded def path is where the file WILL live once extracted
                 val extractedPath = srcRoot / os.RelPath(entryPath)
                 val entryIs = zip.getInputStream(entry)
+                // extractors derive the top-level `X$package.` wrapper from the
+                // FILE NAME — pass the basename, not the jar entry path (the full
+                // path would build a double-package wrapper like
+                // `demo/demo/TopConv$package.`)
+                val baseName = entryPath.split('/').last
                 if (entryPath.endsWith(".java"))
-                  javaExtractor.extract(entryPath, entryIs, extractedPath)
+                  javaExtractor.extract(baseName, entryIs, extractedPath)
                 else
-                  scalaExtractor.extract(entryPath, entryIs, extractedPath)
+                  scalaExtractor.extract(baseName, entryIs, extractedPath)
               } catch {
                 case NonFatal(e) =>
                   logger.warn(s"Skipping unindexable entry ${entry.getName} in $source: ${e.getMessage}")

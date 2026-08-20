@@ -209,9 +209,9 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
     }
   }
 
-  // ── cross-jar dep→dep stays out of scope ──────────────────────
+  // ── cross-jar dep→dep resolves via target-scoped candidates ────
 
-  test("cross-jar dep→dep stays out of scope: owning-jar candidates miss cleanly") {
+  test("cross-jar dep→dep resolves when jars share a target") {
     val dirA = os.temp.dir(prefix = "dep-nav-jarA-")
     val dirB = os.temp.dir(prefix = "dep-nav-jarB-")
     val ws = os.temp.dir(prefix = "dep-nav-ws-")
@@ -223,29 +223,57 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
     ))
     try {
       val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
-      deps.registerTarget(List(jarA, jarB))
+      deps.registerTarget("target-1", List(jarA, jarB)) // one target owns both
       assert(eventually(deps.get("com/a/Foo#", List(jarA)).isDefined), "warm jarA")
       assert(eventually(deps.get("com/b/Bar#", List(jarB)).isDefined), "warm jarB")
       val fooFile = deps.get("com/a/Foo#", List(jarA)).get.path
+      val candidates = deps.candidatesForPath(fooFile)
+      assertEquals(candidates, List(jarA, jarB), "owning jar first, then the target's full classpath")
+
       val idx = new WorkspaceIndex(ws, new InMemorySymbolTable, Some(deps))
       idx.onDidOpen(fooFile)
       val text = os.read(fooFile)
-      val owningOnly = deps.candidatesForPath(fooFile)
-      assertEquals(owningOnly, List(jarA), "dep file candidates must be the owning jar only")
 
-      // sanity: with jarB explicitly in the candidate set, the IMPORT ref resolves
-      // (import symbols are deterministic from the statement; the body ref is
-      // dropped at parse time — the resolver only sees the owning jar)
       val (lImp, cImp) = TestPositions.at(text, "import com.b.(?<p>Bar);")
-      assert(idx.gotoDefinitions(fooFile, lImp, cImp, depCandidates = List(jarA, jarB)).nonEmpty,
-        "fixture sanity: import Bar resolves when jarB is a candidate")
+      val importLocs = idx.gotoDefinitions(fooFile, lImp, cImp, depCandidates = candidates)
+      assert(importLocs.nonEmpty, "cross-jar import ref must resolve")
+      assert(importLocs.map(_.symbol).contains("com/b/Bar#"))
 
-      // pin: owning-jar-only candidates must NOT reach jarB — clean miss
-      assertEquals(idx.gotoDefinitions(fooFile, lImp, cImp, depCandidates = owningOnly), Vector.empty,
-        "cross-jar import ref must miss with owning-jar candidates")
       val (lBody, cBody) = TestPositions.at(text, "new (?<p>Bar)()")
-      assertEquals(idx.gotoDefinitions(fooFile, lBody, cBody, depCandidates = owningOnly), Vector.empty,
-        "cross-jar body ref must miss with owning-jar candidates")
+      val bodyLocs = idx.gotoDefinitions(fooFile, lBody, cBody, depCandidates = candidates)
+      assert(bodyLocs.nonEmpty, "cross-jar body ref must resolve (parse-time table now sees jarB)")
+      assert(bodyLocs.map(_.symbol).contains("com/b/Bar#"))
+    } finally {
+      os.remove.all(dirA); os.remove.all(dirB); os.remove.all(ws)
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarA)))
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarB)))
+    }
+  }
+
+  test("cross-jar dep→dep misses cleanly when the other jar is in NO target") {
+    val dirA = os.temp.dir(prefix = "dep-nav-jarA-")
+    val dirB = os.temp.dir(prefix = "dep-nav-jarB-")
+    val ws = os.temp.dir(prefix = "dep-nav-ws-")
+    val jarA = writeJar(dirA, "a-sources.jar", List(
+      "com/a/Foo.java" -> "package com.a;\nimport com.b.Bar;\npublic class Foo {}\n"
+    ))
+    val jarB = writeJar(dirB, "b-sources.jar", List(
+      "com/b/Bar.java" -> "package com.b;\npublic class Bar {}\n"
+    ))
+    try {
+      val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
+      deps.registerTarget("target-1", List(jarA)) // jarB is NOT in any target
+      assert(eventually(deps.get("com/a/Foo#", List(jarA)).isDefined), "warm jarA")
+      val fooFile = deps.get("com/a/Foo#", List(jarA)).get.path
+      val candidates = deps.candidatesForPath(fooFile)
+      assertEquals(candidates, List(jarA))
+
+      val idx = new WorkspaceIndex(ws, new InMemorySymbolTable, Some(deps))
+      idx.onDidOpen(fooFile)
+      val text = os.read(fooFile)
+      val (lImp, cImp) = TestPositions.at(text, "import com.b.(?<p>Bar);")
+      assertEquals(idx.gotoDefinitions(fooFile, lImp, cImp, depCandidates = candidates), Vector.empty,
+        "jar outside every target must stay a clean miss")
     } finally {
       os.remove.all(dirA); os.remove.all(dirB); os.remove.all(ws)
       os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jarA)))

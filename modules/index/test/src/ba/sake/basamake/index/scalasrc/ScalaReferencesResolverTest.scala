@@ -401,7 +401,7 @@ class ScalaReferencesResolverTest extends FunSuite {
     val code = "package x\nimport a.b.C\nclass D { val c: C = null }\n"
     val rf = new ScalaReferencesResolver(st).resolveFromContent("D.scala", code, os.pwd / "D.scala")
     val segRefs = rf.occurrences.filter(_.range.startLine == 1)
-    assertEquals(segRefs.map(_.symbol).toSet, Set("a/", "a/b/", "a/b/C#"),
-      "package segments emit package symbols (resolvable to the package object), not empty")
+    assertEquals(segRefs.map(_.symbol).toSet, Set("a/", "a/b/", "a/b.", "a/b/C#"),
+      "package segments emit package symbols (resolvable to the package object) + the object-candidate term alt; not empty")
   }
 }
