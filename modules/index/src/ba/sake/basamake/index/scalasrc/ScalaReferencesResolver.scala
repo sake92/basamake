@@ -672,8 +672,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     }
   }
 
-  /** Emit index-0 member candidates for `n` under each candidate owner
-    * (plus the term shape for call positions). */
+  /** Emit index-0 member candidates for `n` under each candidate owner. */
   private def emitMemberCandidates(name: Term.Name, n: String, owners: List[String], inCallContext: Boolean): Unit = {
     val cands = owners.flatMap { owner =>
       val sym = if (inCallContext) SymbolUtils.methodSymbol(owner, n, 0)
