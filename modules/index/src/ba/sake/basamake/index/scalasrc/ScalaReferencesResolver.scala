@@ -496,10 +496,13 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       val effOwner = effectiveOwner
       val sym = SymbolUtils.termSymbol(effOwner, g.name.value)
 
-      withOwner(sym, g.name.value) {
-        resolveTypeTpeOpt(g.templ.inits)
-        resolveStats(g.templ.stats)
-      }
+      val oldOwner = currentOwner
+      currentOwner = sym
+      scopeStack.push(OwnerScope(sym))
+      resolveTypeTpeOpt(g.templ.inits)
+      resolveStats(g.templ.stats)
+      scopeStack.pop()
+      currentOwner = oldOwner
     }
   }
 
