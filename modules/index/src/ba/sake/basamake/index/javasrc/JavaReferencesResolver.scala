@@ -123,15 +123,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def lookup(name: String, isType: Boolean, inCallContext: Boolean): Option[String] =
     scopeStack.lookup(name, isType, inCallContext)
       .orElse(JavaLangSymbols.lookup(name, isType))
-      .orElse {
-        if (isType) {
-          val sym = SymbolUtils.typeSymbol("_empty_/", name)
-          if (symbolTable.get(sym).isDefined) Some(sym) else None
-        } else {
-          val sym = SymbolUtils.termSymbol("_empty_/", name)
-          if (symbolTable.get(sym).isDefined) Some(sym) else None
-        }
-      }
+      .orElse(scopeStack.probeEmptyPackage(name, isType))
 
   // ── withOwner helper ─────────────────────────────────────────
 
@@ -395,7 +387,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       if (name != "new" && name.nonEmpty) {
         resolveTermToOwner(mre.getScope) match {
           case Some(owner) =>
-            resolveMemberOf(owner, name, isType = false, inCallContext = true) match {
+            scopeStack.resolveMemberOf(owner, name, inCallContext = true) match {
               case Some(sym) => emitRefRange(mre.getRange, sym)
               case None => emitRefUnresolvedRange(mre.getRange)
             }
@@ -423,7 +415,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val name = fa.getNameAsString
     ownerOpt match {
       case Some(owner) =>
-        resolveMemberOf(owner, name, isType = false, inCallContext = false) match {
+        scopeStack.resolveMemberOf(owner, name, inCallContext = false) match {
           case Some(sym) => emitRefRange(fa.getName.getRange, sym)
           case None => emitRefUnresolvedRange(fa.getName.getRange)
         }
@@ -442,7 +434,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         val ownerOpt = resolveTermToOwner(scope)
         ownerOpt match {
           case Some(owner) =>
-            resolveMemberOf(owner, methodName, isType = false, inCallContext = true) match {
+            scopeStack.resolveMemberOf(owner, methodName, inCallContext = true) match {
               case Some(sym) => emitRefRange(mc.getName.getRange, sym)
               case None => emitRefUnresolvedRange(mc.getName.getRange)
             }
@@ -547,21 +539,5 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     case fa: FieldAccessExpr =>
       resolveTermToOwner(fa.getScope).map(o => SymbolUtils.termSymbol(o, fa.getNameAsString))
     case _ => None
-  }
-
-  // ── resolve member of owner ──────────────────────────────────
-
-  private def resolveMemberOf(owner: String, name: String, isType: Boolean, inCallContext: Boolean): Option[String] = {
-    if (isType) {
-      val sym = SymbolUtils.typeSymbol(owner, name)
-      if (symbolTable.get(sym).isDefined) Some(sym) else None
-    } else {
-      if (inCallContext) {
-        val methodSym = ScopeStack.findMethodOverload(owner, name, symbolTable)
-        if (methodSym.isDefined) return methodSym
-      }
-      val termSym = SymbolUtils.termSymbol(owner, name)
-      if (symbolTable.get(termSym).isDefined) Some(termSym) else None
-    }
   }
 }

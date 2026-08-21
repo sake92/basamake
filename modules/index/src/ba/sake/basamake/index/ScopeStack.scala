@@ -203,6 +203,28 @@ class ScopeStack(val symbolTable: SymbolTable) {
       case _ => ()
     }
   }
+
+  /** Resolve a member name against an owner symbol: in call position the
+    * overload scan runs first, then the plain term probe. */
+  def resolveMemberOf(owner: String, name: String, inCallContext: Boolean): Option[String] = {
+    if (inCallContext) {
+      val methodSym = ScopeStack.findMethodOverload(owner, name, symbolTable)
+      if (methodSym.isDefined) return methodSym
+    }
+    val termSym = SymbolUtils.termSymbol(owner, name)
+    if (symbolTable.get(termSym).isDefined) Some(termSym) else None
+  }
+
+  /** Last-resort probe of the empty package (`_empty_/Name#` / `_empty_/Name.`). */
+  def probeEmptyPackage(name: String, isType: Boolean): Option[String] = {
+    if (isType) {
+      val sym = SymbolUtils.typeSymbol("_empty_/", name)
+      if (symbolTable.get(sym).isDefined) Some(sym) else None
+    } else {
+      val sym = SymbolUtils.termSymbol("_empty_/", name)
+      if (symbolTable.get(sym).isDefined) Some(sym) else None
+    }
+  }
 }
 
 object ScopeStack {
