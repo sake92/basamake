@@ -51,7 +51,6 @@ class ScopeStack(val symbolTable: SymbolTable) {
   def push(scope: Scope): Unit = stack.push(scope)
   def pop(): Unit = if (stack.nonEmpty) stack.pop()
   def size: Int = stack.size
-  def isEmpty: Boolean = stack.isEmpty
 
   /** Empty the stack — the Java resolver never pops file-level scopes, so
     * reuse requires an explicit reset. */
