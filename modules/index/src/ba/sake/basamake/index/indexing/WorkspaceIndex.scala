@@ -725,47 +725,45 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
   private def refreshOpenBuffer(path: os.Path): Unit = withPathLock(path) {
     if (openFiles.contains(path)) {
-      val streamOpt = try Some(os.read.inputStream(path)) catch { case _: Exception => None }
-      streamOpt match {
-        case None => ()
-        case Some(is) =>
-        try {
-        val current = sourcesMap.get(path)
-        val semPathOpt = if (current == null) None else current.semanticdbPath
-        val (occs, locals) = semPathOpt match {
-          case Some(semPath) =>
-            val res = SemanticdbIndexing.parseOccurrences(semPath, path)
-            if (res.complete) {
-              // Gap-merge: semanticdb refs are authoritative where present, but
-              // the compiler DROPS occurrences it can't resolve (empty-symbol
-              // cross-document SUID refs). Fill positions with NO semanticdb
-              // ref from source-parse so goto-def has a fallback everywhere.
-              val sp = sourceParseCached(path, is)
-              val extra = sp.occurrences.filterNot { o =>
-                res.occurrences.exists(r => sameStart(r.range, o.range))
-              }
-              (res.occurrences ++ extra, res.locals)
-            } else {
-              // Partial -Ybest-effort ref symbols (e.g. `utils.` not `_empty_/utils.`)
-              // — fall back to source parsing for occurrences. Defs in SymbolTable
-              // are full symbols and stay authoritative.
-              logger.debug(s"Semanticdb for $path has short ref symbols — falling back to source parse")
-              val rf = sourceResolve(path, is)
-              (rf.occurrences, rf.locals)
-            }
-          case None =>
-            logger.debug(s"Resolving references from source for $path")
-            val rf = sourceParseCached(path, is)
-            (rf.occurrences, rf.locals)
-        }
+      withSourceStream(path) { is =>
+        val (occs, locals) = occurrencesFor(path, is)
         sourcesMap.compute(path, (_, old) => {
           val base = if (old == null) SourceData.empty else old
           base.copy(occurrences = occs, locals = locals)
         })
         diskStamps.put(path, diskStampOf(path))
         bufferRefreshCount.incrementAndGet()
-        } finally is.close()
       }
+    }
+  }
+
+  /** Compute open-file occurrences + locals for `path`: semanticdb when
+    * available (gap-merged with source-parse at uncovered positions), full
+    * source-parse on partial semanticdb or no pairing. */
+  private def occurrencesFor(path: os.Path, is: java.io.InputStream): (Vector[ReferenceOccurrence], Vector[SymbolDefinition]) = {
+    val current = sourcesMap.get(path)
+    val semPathOpt = if (current == null) None else current.semanticdbPath
+    semPathOpt match {
+      case Some(semPath) =>
+        val res = SemanticdbIndexing.parseOccurrences(semPath, path)
+        if (res.complete) {
+          // Gap-merge: semanticdb refs are authoritative where present; the
+          // compiler drops occurrences it can't resolve. Fill positions with NO
+          // semanticdb ref from source-parse so goto-def has a fallback everywhere.
+          val sp = sourceParseCached(path, is)
+          val extra = sp.occurrences.filterNot { o =>
+            res.occurrences.exists(r => sameStart(r.range, o.range))
+          }
+          (res.occurrences ++ extra, res.locals)
+        } else {
+          logger.debug(s"Semanticdb for $path has short ref symbols — falling back to source parse")
+          val rf = sourceResolve(path, is)
+          (rf.occurrences, rf.locals)
+        }
+      case None =>
+        logger.debug(s"Resolving references from source for $path")
+        val rf = sourceParseCached(path, is)
+        (rf.occurrences, rf.locals)
     }
   }
 
