@@ -556,7 +556,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         for (semPath <- semFiles) {
           // skip files unchanged since their last successful index — a compile
           // rewrites ALL semanticdb files, but only the changed ones matter
-          if (semanticdbStamps.get(semPath) != stampOf(semPath)) {
+          if (semanticdbStamps.get(semPath) != diskStampOf(semPath)) {
             if (indexSemanticdbFile(semPath, srcRoot)) paired += 1
           }
         }
@@ -591,16 +591,13 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       }
       // only record the stamp after a successful parse — a transient failure
       // stays un-stamped and is retried on the next invalidate
-      semanticdbStamps.put(semPath, stampOf(semPath))
+      semanticdbStamps.put(semPath, diskStampOf(semPath))
       semanticdbIndexCount.incrementAndGet()
       paired
     } catch {
       case e: Exception => logger.warn(s"Failed to index $semPath: ${e.getMessage}"); false
     }
   }
-
-  private def stampOf(p: os.Path): (Long, Long) =
-    try (os.mtime(p), os.size(p)) catch { case _: Exception => (-1L, -1L) }
 
   private def setSemanticdbPath(src: os.Path, semPath: os.Path): Unit =
     sourcesMap.compute(src, (_, old) => {
