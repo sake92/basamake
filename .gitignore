@@ -8,6 +8,7 @@
 *.DS_Store
 
 target/
+out/
 .bloop/
 .bsp/
 .metals/

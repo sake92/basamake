@@ -267,7 +267,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           val res = SemanticdbIndexing.indexSemanticdbDir(semDir, srcRoot, workspacePath, symbolTable)
           val (accepted, rejected) = res.pairs.partition((src, _) => !ignoreEngine.isInsideNestedRepo(src))
           rejected.keySet.foreach { src =>
-            logger.warn(s"Source inside nested git repo, skipping semanticdb pair: $src")
+            logger.debug(s"Source inside nested git repo, skipping semanticdb pair: $src")
             symbolTable.removeByPath(src)
           }
           accepted.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
@@ -584,7 +584,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             if (openFiles.contains(src)) refreshOpenBuffer(src)
             paired = true
           case Some(src) =>
-            logger.warn(s"Source inside nested git repo, skipping semanticdb pair: $src")
+            logger.debug(s"Source inside nested git repo, skipping semanticdb pair: $src")
           case None =>
             logger.warn(s"No source match for $semPath (uri=${doc.uri}, sourceRoot=$sourceRoot)")
         }
