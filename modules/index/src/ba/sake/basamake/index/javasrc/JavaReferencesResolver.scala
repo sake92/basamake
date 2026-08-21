@@ -133,12 +133,12 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     scopeStack.push(OwnerScope(typeSym))
     scopeStack.push(LocalScope(collection.mutable.Map(name -> typeSym)))
-    val result = body
-    scopeStack.pop()
-    scopeStack.pop()
-
-    currentOwner = oldOwner
-    result
+    try body
+    finally {
+      scopeStack.pop()
+      scopeStack.pop()
+      currentOwner = oldOwner
+    }
   }
 
   // ── type declaration dispatch ────────────────────────────────

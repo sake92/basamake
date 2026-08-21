@@ -196,20 +196,22 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     currentOwner = ownerKey
     scopeStack.push(OwnerScope(ownerKey))
     scopeStack.push(LocalScope(collection.mutable.Map(name -> ownerKey)))
-    val result = body
-    scopeStack.pop()
-    scopeStack.pop()
-    currentOwner = oldOwner
-    result
+    try body
+    finally {
+      scopeStack.pop()
+      scopeStack.pop()
+      currentOwner = oldOwner
+    }
   }
 
   /** Emit a local + push a LocalScope per non-wildcard type param, run `body`,
     * pop exactly those scopes. Replaces the hand-counted
     * `tparams.foreach(resolveTparam)` + pop-N blocks. */
   private def withTparamScopes(tparams: List[Type.Param])(body: => Unit): Unit = {
+    val scopesBefore = scopeStack.size
     tparams.foreach(resolveTparam)
     try body
-    finally (0 until tparams.count(_.name.value.nonEmpty)).foreach(_ => scopeStack.pop())
+    finally (0 until (scopeStack.size - scopesBefore)).foreach(_ => scopeStack.pop())
   }
 
   private def isInsideMethod: Boolean = methodDepth > 0
@@ -277,6 +279,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val oldOwner = currentOwner
     currentOwner = pkgObjOwner
 
+    // no withOwner here: must NOT add a self-name LocalScope (would shadow inside the package object body)
     scopeStack.push(OwnerScope(pkgObjOwner))
     resolveTypeTpeOpt(po.templ.inits)
     resolveStats(po.templ.stats)
@@ -361,6 +364,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       val oldOwner = currentOwner
       currentOwner = objSym
 
+      // hand-rolled: withOwner would bind the GLOBAL objSym; locals must bind the local<N> symbol
       scopeStack.push(OwnerScope(objSym))
       scopeStack.push(LocalScope(collection.mutable.Map(o.name.value -> localSym)))
       resolveTypeTpeOpt(o.templ.inits)
@@ -498,6 +502,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
       val oldOwner = currentOwner
       currentOwner = sym
+      // no withOwner here: must NOT add a self-name LocalScope (would shadow inside the given body)
       scopeStack.push(OwnerScope(sym))
       resolveTypeTpeOpt(g.templ.inits)
       resolveStats(g.templ.stats)
