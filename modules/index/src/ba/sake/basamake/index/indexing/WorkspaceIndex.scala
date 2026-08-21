@@ -316,15 +316,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             val tJobStart = System.nanoTime()
             logger.debug(s"Extracting definitions from $path")
             val is = os.read.inputStream(path)
-            try {
-              if (path.ext == "java") {
-                val extractor = JavaDefinitionsExtractor(symbolTable)
-                extractor.extract(path.last, is, path)
-              } else {
-                val extractor = ScalaDefinitionsExtractor(symbolTable)
-                extractor.extract(path.last, is, path)
-              }
-            } finally is.close()
+            try extractDefinitions(path, is)
+            finally is.close()
             passBOk.incrementAndGet()
             // opt-in DEBUG diagnostics: only when the user sets a threshold in
             // config (never on the default INFO path, never per-file at INFO)
@@ -491,16 +484,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           val defs = SemanticdbIndexing.parseDefinitions(data.semanticdbPath.get, path)
           defs.foreach(symbolTable.add)
         } catch { case _: Exception => () }
-      } else if (path.ext == "scala" || path.ext == "sbt") {
-        withSourceStream(path) { is =>
-          val extractor = ScalaDefinitionsExtractor(symbolTable)
-          extractor.extract(path.last, is, path)
-        }
-      } else if (path.ext == "java") {
-        withSourceStream(path) { is =>
-          val extractor = JavaDefinitionsExtractor(symbolTable)
-          extractor.extract(path.last, is, path)
-        }
+      } else if (path.ext == "scala" || path.ext == "sbt" || path.ext == "java") {
+        withSourceStream(path)(is => extractDefinitions(path, is))
       }
       refreshOpenBuffer(path)
     }
@@ -825,6 +810,18 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       val resolver = new ScalaReferencesResolver(resolverTableFor(path))
       resolver.resolve(path.last, is, path)
     }
+
+  /** Pass 1 extraction for `path` from `is` — shared by the startup fallback
+    * pass (Pass B) and onDidSave re-extraction. */
+  private def extractDefinitions(path: os.Path, is: java.io.InputStream): Unit = {
+    if (path.ext == "java") {
+      val extractor = JavaDefinitionsExtractor(symbolTable)
+      extractor.extract(path.last, is, path)
+    } else {
+      val extractor = ScalaDefinitionsExtractor(symbolTable)
+      extractor.extract(path.last, is, path)
+    }
+  }
 
   // ── range helpers ────────────────────────────────────────────
 
