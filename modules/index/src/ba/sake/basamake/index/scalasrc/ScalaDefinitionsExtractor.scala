@@ -117,11 +117,6 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
               case d: Decl.Def => d.name.value == "copy"
               case _ => false
             },
-            hasUserApply = c.templ.stats.exists {
-              case d: Defn.Def => d.name.value == "apply"
-              case d: Decl.Def => d.name.value == "apply"
-              case _ => false
-            },
             ovl, c.name.pos)
         // `implicit class Foo(...)` desugars to class Foo + an implicit conversion
         // method `Foo(...)` — semanticdb records the IMPORTEE of an implicit class
@@ -178,39 +173,19 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
       // ── def ───────────────────────────────────────────────────
       case d: Defn.Def =>
-        val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        val idx = bumpOvl(ovl, effectiveOwner, d.name.value)
-        val methodSym = SymbolUtils.methodSymbol(effectiveOwner, d.name.value, idx)
-        addSymbol(methodSym, d.name.value, isType = false, d.name.pos)
-        emitParams(methodSym, d.paramss)
+        emitMethod(owner, wrapper, d.name.value, d.paramss, ovl, d.name.pos)
 
       // ── abstract decl def ─────────────────────────────────────
       case dd: Decl.Def =>
-        val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        val idx = bumpOvl(ovl, effectiveOwner, dd.name.value)
-        val methodSym = SymbolUtils.methodSymbol(effectiveOwner, dd.name.value, idx)
-        addSymbol(methodSym, dd.name.value, isType = false, dd.name.pos)
-        emitParams(methodSym, dd.paramss)
+        emitMethod(owner, wrapper, dd.name.value, dd.paramss, ovl, dd.name.pos)
 
       // ── abstract decl val ─────────────────────────────────────
       case dv: Decl.Val =>
-        val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        if (!effectiveOwner.endsWith(")."))
-          dv.pats.foreach {
-            case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
-            case _ => ()
-          }
+        emitPatVarTerms(ifWrapperOwner(owner, wrapper), dv.pats)
 
       // ── abstract decl var ─────────────────────────────────────
       case dvr: Decl.Var =>
-        val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        if (!effectiveOwner.endsWith(")."))
-          dvr.pats.foreach {
-            case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
-            case _ => ()
-          }
+        emitPatVarTerms(ifWrapperOwner(owner, wrapper), dvr.pats)
 
       // ── secondary constructor ─────────────────────────────────
       case cs: Ctor.Secondary =>
@@ -221,23 +196,11 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
 
       // ── val ───────────────────────────────────────────────────
       case v: Defn.Val =>
-        val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        if (!effectiveOwner.endsWith(")."))
-          v.pats.foreach {
-            case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
-            case _ => ()
-          }
+        emitPatVarTerms(ifWrapperOwner(owner, wrapper), v.pats)
 
       // ── var ───────────────────────────────────────────────────
       case vr: Defn.Var =>
-        val effectiveOwner = ifWrapperOwner(owner, wrapper)
-        if (!effectiveOwner.endsWith(")."))
-          vr.pats.foreach {
-            case pv: Pat.Var =>
-              addSymbol(SymbolUtils.termSymbol(effectiveOwner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
-            case _ => ()
-          }
+        emitPatVarTerms(ifWrapperOwner(owner, wrapper), vr.pats)
 
       // ── type alias (includes opaque type) ─────────────────────
       case dt: Defn.Type =>
@@ -346,6 +309,28 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       if (n.nonEmpty) addSymbol(SymbolUtils.parameterSymbol(methodSym, n), n, isType = false, p.name.pos)
     }}
 
+  /** Emits the method symbol (with overload index) and its params. */
+  private def emitMethod(owner: String, wrapper: Option[String], name: String,
+      paramss: List[List[Term.Param]], ovl: mutable.Map[(String, String), Int], pos: Position): Unit = {
+    val effectiveOwner = ifWrapperOwner(owner, wrapper)
+    val idx = bumpOvl(ovl, effectiveOwner, name)
+    val methodSym = SymbolUtils.methodSymbol(effectiveOwner, name, idx)
+    addSymbol(methodSym, name, isType = false, pos)
+    emitParams(methodSym, paramss)
+  }
+
+  /** Emit term symbols for Pat.Var bindings under `owner` (skipped when the
+    * owner is a method — parameters are emitted via emitParams). */
+  private def emitPatVarTerms(owner: String, pats: List[Pat]): Unit = {
+    if (!owner.endsWith(").")) {
+      pats.foreach {
+        case pv: Pat.Var =>
+          addSymbol(SymbolUtils.termSymbol(owner, pv.name.value), pv.name.value, isType = false, pv.name.pos)
+        case _ => ()
+      }
+    }
+  }
+
   /** Primary-constructor params double as init parameters. Ranges are the
     * params' own name positions (same as emitParams). */
   private def emitCtorParams(ctorSym: String, paramss: List[List[Term.Param]]): Unit =
@@ -376,7 +361,6 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
       className: String,
       primaryCtorParamss: List[List[Term.Param]],
       hasUserCopy: Boolean,
-      hasUserApply: Boolean,
       ovl: mutable.Map[(String, String), Int],
       classPos: Position
   ): Unit = {
