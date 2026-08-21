@@ -320,7 +320,8 @@ class ScalaDefinitionsExtractor(symbolTable: SymbolTable) extends StrictLogging 
   }
 
   /** Emit term symbols for Pat.Var bindings under `owner` (skipped when the
-    * owner is a method — parameters are emitted via emitParams). */
+    * owner is a method — semanticdb encodes method-body locals as `localN`,
+    * so `owner().name.` would never match). */
   private def emitPatVarTerms(owner: String, pats: List[Pat]): Unit = {
     if (!owner.endsWith(").")) {
       pats.foreach {
