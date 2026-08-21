@@ -397,4 +397,18 @@ class JavaReferencesResolverTest extends FunSuite {
     assertEquals(rf.occurrences.count(_.range.startLine == 0), 0,
       "Java has no package objects — package segments must not emit refs")
   }
+
+  // ── R.REUSE one resolver, multiple files ─────────────────────
+
+  test("reusing one resolver instance does not leak scopes between files") {
+    val st = new InMemorySymbolTable
+    st.add(defn("com/foo/Bar#", "Bar", isType = true))
+    val resolver = new JavaReferencesResolver(st)
+    // file A: Bar resolves via its explicit import
+    val fileA = resolver.resolveFromContent("A.java", """package com.a; import com.foo.Bar; public class A { Bar b; }""", os.pwd)
+    assertHasOccurrence(fileA, "com/foo/Bar#")
+    // file B: no import of Bar — it must NOT resolve via A's leftover import scope
+    val fileB = resolver.resolveFromContent("B.java", """package com.b; public class B { Bar b; }""", os.pwd)
+    assertOccurrences(fileB, Set(""))
+  }
 }
