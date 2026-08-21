@@ -756,6 +756,9 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           }
           (res.occurrences ++ extra, res.locals)
         } else {
+          // Partial -Ybest-effort ref symbols (e.g. `utils.` not `_empty_/utils.`) —
+          // fall back to source parsing for occurrences. Defs in SymbolTable are
+          // full symbols and stay authoritative.
           logger.debug(s"Semanticdb for $path has short ref symbols — falling back to source parse")
           val rf = sourceResolve(path, is)
           (rf.occurrences, rf.locals)
