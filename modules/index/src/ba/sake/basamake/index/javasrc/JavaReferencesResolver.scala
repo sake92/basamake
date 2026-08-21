@@ -67,8 +67,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private val locals = mutable.ArrayBuffer.empty[SymbolDefinition]
   private var localIdx: Int = 0
   private var currentOwner: String = "_empty_/"
-  private var currentOwnerIsType: Boolean = false
-  private var methodDepth: Int = 0
 
   // ── main traversal ───────────────────────────────────────────
 
@@ -76,14 +74,13 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     occurrences.clear()
     locals.clear()
     localIdx = 0
-    methodDepth = 0
 
     val pkgOwner = cu.getPackageDeclaration.toScala
       .map(pd => SymbolUtils.packageOwner(pd.getNameAsString.split('.').toList))
       .getOrElse(SymbolUtils.packageOwner(Nil))
     currentOwner = pkgOwner
-    currentOwnerIsType = false
 
+    scopeStack.clear()
     scopeStack.push(OwnerScope(pkgOwner))
 
     // imports (file-scoped, never popped); also emit import-line refs
@@ -138,11 +135,9 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── withOwner helper ─────────────────────────────────────────
 
-  private def withOwner[T](typeSym: String, isType: Boolean, name: String)(body: => T): T = {
+  private def withOwner[T](typeSym: String, name: String)(body: => T): T = {
     val oldOwner = currentOwner
-    val oldIsType = currentOwnerIsType
     currentOwner = typeSym
-    currentOwnerIsType = isType
 
     scopeStack.push(OwnerScope(typeSym))
     scopeStack.push(LocalScope(collection.mutable.Map(name -> typeSym)))
@@ -151,7 +146,6 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     scopeStack.pop()
 
     currentOwner = oldOwner
-    currentOwnerIsType = oldIsType
     result
   }
 
@@ -183,7 +177,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     c.getImplementedTypes.asScala.foreach(resolveTypeRef)
 
     // recurse members
-    withOwner(typeSym, isType = true, c.getNameAsString) {
+    withOwner(typeSym, c.getNameAsString) {
       c.getMembers.asScala.foreach(resolveMember(_, typeSym))
     }
 
@@ -198,7 +192,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     e.getImplementedTypes.asScala.foreach(resolveTypeRef)
 
-    withOwner(typeSym, isType = true, e.getNameAsString) {
+    withOwner(typeSym, e.getNameAsString) {
       e.getMembers.asScala.foreach(resolveMember(_, typeSym))
     }
   }
@@ -207,7 +201,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveAnnotation(a: AnnotationDeclaration, owner: String): Unit = {
     val typeSym = SymbolUtils.typeSymbol(owner, a.getNameAsString)
-    withOwner(typeSym, isType = true, a.getNameAsString) {
+    withOwner(typeSym, a.getNameAsString) {
       a.getMembers.asScala.foreach(resolveMember(_, typeSym))
     }
   }
@@ -225,7 +219,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
     r.getImplementedTypes.asScala.foreach(resolveTypeRef)
 
-    withOwner(typeSym, isType = true, r.getNameAsString) {
+    withOwner(typeSym, r.getNameAsString) {
       r.getMembers.asScala.foreach(resolveMember(_, typeSym))
     }
 
@@ -271,9 +265,7 @@ class JavaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         md.getParameters.asScala.foreach { p =>
           scopeStack.addLocalBinding(p.getNameAsString, SymbolUtils.parameterSymbol(methodSym, p.getNameAsString))
         }
-        methodDepth += 1
         body.getStatements.asScala.foreach(resolveStmt)
-        methodDepth -= 1
       }
     }
   }

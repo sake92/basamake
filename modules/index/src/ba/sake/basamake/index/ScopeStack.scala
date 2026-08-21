@@ -52,6 +52,10 @@ class ScopeStack(val symbolTable: SymbolTable) {
   def pop(): Unit = if (stack.nonEmpty) stack.pop()
   def isEmpty: Boolean = stack.isEmpty
 
+  /** Empty the stack — the Java resolver never pops file-level scopes, so
+    * reuse requires an explicit reset. */
+  def clear(): Unit = stack.clear()
+
   /** Walk the stack top-down (last-pushed first). Resolution order:
     *   1. LocalScope: exact name match, with optional `isType` shape filter.
     *   2. OwnerScope: probe SymbolTable for type/term/method members.
