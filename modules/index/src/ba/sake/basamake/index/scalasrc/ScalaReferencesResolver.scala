@@ -55,7 +55,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private var topLevelPkgOwner: String = "_empty_/"
   private var wrapper: Option[String] = None
   private var currentOwner: String = "_empty_/"
-  private var currentOwnerIsType: Boolean = false
   private var methodDepth: Int = 0
   private var currentPath: os.Path = uninitialized
   /** name → declared-type candidate symbols (dep types) of a val/var/param —
@@ -81,7 +80,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     // accumulate onto the ENCLOSING owner in resolvePkg, so the initial owner must
     // be neutral (_empty_/), not the top-level package (which would double it)
     currentOwner = "_empty_/"
-    currentOwnerIsType = false
 
     val topLevelOwner = wrapper.getOrElse(topLevelPkgOwner)
     // sbt's implicit imports (`import sbt._` + `import Keys._`, Keys shadowing
@@ -241,9 +239,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val pkgOwner = mkPackageOwner(currentOwner, segs)
 
     val oldOwner = currentOwner
-    val oldIsType = currentOwnerIsType
     currentOwner = pkgOwner
-    currentOwnerIsType = false
 
     val isFilesTopPackage = pkgOwner == topLevelPkgOwner
     val pushedWrapper = isFilesTopPackage && wrapper.isDefined
@@ -256,7 +252,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     }
 
     currentOwner = oldOwner
-    currentOwnerIsType = oldIsType
   }
 
   // ── package object ───────────────────────────────────────────
@@ -266,9 +261,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val pkgObjOwner = SymbolUtils.termSymbol(pkgOwner, "package")
 
     val oldOwner = currentOwner
-    val oldIsType = currentOwnerIsType
     currentOwner = pkgObjOwner
-    currentOwnerIsType = false
 
     scopeStack.push(OwnerScope(pkgObjOwner))
     resolveTypeTpeOpt(po.templ.inits)
@@ -276,7 +269,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     scopeStack.pop()
 
     currentOwner = oldOwner
-    currentOwnerIsType = oldIsType
   }
 
   // ── class ────────────────────────────────────────────────────
@@ -290,11 +282,8 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       val localSym = nextLocalSymbol()
       addLocal(c.name.pos, localSym, c.name.value, isType = true)
 
-      // Also emit extractor-style key for parity (pragmatic compromise)
-      val globalSym = classSym
-      // emit type params for the global key too
+      // emit type params as locals (bound in per-tparam scopes below)
       c.tparams.foreach { tp =>
-        val tpSym = SymbolUtils.typeParamSymbol(globalSym, tp.name.value)
         val localTpSym = nextLocalSymbol()
         addLocal(tp.name.pos, localTpSym, tp.name.value, isType = false)
       }
@@ -303,11 +292,9 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
       // Push owner scope and local scope
       val oldOwner = currentOwner
-      val oldIsType = currentOwnerIsType
-      currentOwner = globalSym
-      currentOwnerIsType = true
+      currentOwner = classSym
 
-      scopeStack.push(OwnerScope(globalSym))
+      scopeStack.push(OwnerScope(classSym))
       scopeStack.push(LocalScope(collection.mutable.Map(c.name.value -> localSym)))
       // Bind type params in local scope
       c.tparams.zipWithIndex.foreach { (tp, i) =>
@@ -320,15 +307,12 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       (0 until c.tparams.length + 2).foreach(_ => scopeStack.pop())
 
       currentOwner = oldOwner
-      currentOwnerIsType = oldIsType
     } else {
       // Global class
       c.ctor.paramss.flatten.foreach(p => p.decltpe.foreach(resolveType))
 
       val oldOwner = currentOwner
-      val oldIsType = currentOwnerIsType
       currentOwner = classSym
-      currentOwnerIsType = true
 
       // Emit type param locals and resolve context/view bounds (cbounds).
       // Each resolveTparam pushes a LocalScope; pop them after the body.
@@ -346,7 +330,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
 
       currentOwner = oldOwner
-      currentOwnerIsType = oldIsType
     }
   }
 
@@ -357,9 +340,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val traitSym = SymbolUtils.typeSymbol(effOwner, t.name.value)
 
     val oldOwner = currentOwner
-    val oldIsType = currentOwnerIsType
     currentOwner = traitSym
-    currentOwnerIsType = true
     // NOTE: local traits inside methods are not yet emitted as local<N> — v1 limitation
 
     // Emit type param locals and resolve context/view bounds (cbounds).
@@ -377,7 +358,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     (0 until tparamScopeCount).foreach(_ => scopeStack.pop())
 
     currentOwner = oldOwner
-    currentOwnerIsType = oldIsType
   }
 
   // ── object ───────────────────────────────────────────────────
@@ -391,9 +371,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       addLocal(o.name.pos, localSym, o.name.value, isType = false)
 
       val oldOwner = currentOwner
-      val oldIsType = currentOwnerIsType
       currentOwner = objSym
-      currentOwnerIsType = false
 
       scopeStack.push(OwnerScope(objSym))
       scopeStack.push(LocalScope(collection.mutable.Map(o.name.value -> localSym)))
@@ -403,13 +381,10 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       scopeStack.pop()
 
       currentOwner = oldOwner
-      currentOwnerIsType = oldIsType
     } else {
 
       val oldOwner = currentOwner
-      val oldIsType = currentOwnerIsType
       currentOwner = objSym
-      currentOwnerIsType = false
 
       scopeStack.push(OwnerScope(objSym))
       scopeStack.push(LocalScope(collection.mutable.Map(o.name.value -> objSym)))
@@ -419,7 +394,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       scopeStack.pop()
 
       currentOwner = oldOwner
-      currentOwnerIsType = oldIsType
     }
   }
 
@@ -431,9 +405,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val termSym = SymbolUtils.termSymbol(effOwner, e.name.value)
 
     val oldOwner = currentOwner
-    val oldIsType = currentOwnerIsType
     currentOwner = termSym
-    currentOwnerIsType = false
     // NOTE: local enums inside methods are not yet emitted as local<N> — v1 limitation
 
     scopeStack.push(OwnerScope(termSym))
@@ -444,7 +416,6 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     scopeStack.pop()
 
     currentOwner = oldOwner
-    currentOwnerIsType = oldIsType
   }
 
   // ── def ──────────────────────────────────────────────────────
@@ -499,7 +470,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
   private def resolveVal(v: Defn.Val): Unit = {
     v.decltpe.foreach(resolveType)
     // record the declared type's candidate symbols for member calls on the val
-    v.decltpe.foreach(t => v.pats.foreach {
+    v.decltpe.foreach(_ => v.pats.foreach {
       case pv: Pat.Var => recordTypeCandidates(pv.name.value, v.decltpe)
       case _ => ()
     })
@@ -527,7 +498,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   private def resolveVar(vr: Defn.Var): Unit = {
     vr.decltpe.foreach(resolveType)
-    vr.decltpe.foreach(t => vr.pats.foreach {
+    vr.decltpe.foreach(_ => vr.pats.foreach {
       case pv: Pat.Var => recordTypeCandidates(pv.name.value, vr.decltpe)
       case _ => ()
     })
@@ -563,15 +534,12 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
       val sym = SymbolUtils.termSymbol(effOwner, g.name.value)
 
       val oldOwner = currentOwner
-      val oldIsType = currentOwnerIsType
       currentOwner = sym
-      currentOwnerIsType = false
       scopeStack.push(OwnerScope(sym))
       resolveTypeTpeOpt(g.templ.inits)
       resolveStats(g.templ.stats)
       scopeStack.pop()
       currentOwner = oldOwner
-      currentOwnerIsType = oldIsType
     }
   }
 
@@ -648,7 +616,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
         args.foreach(a => resolveTerm(a, inCallContext = false))
 
       case Term.New(init) =>
-        resolveInit(init, isNew = true)
+        resolveInit(init)
 
       case Term.NewAnonymous(_) =>
         // Skip anonymous class
@@ -710,7 +678,7 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
     val cands = owners.flatMap { owner =>
       val sym = if (inCallContext) SymbolUtils.methodSymbol(owner, n, 0)
                 else SymbolUtils.termSymbol(owner, n)
-      if (sym.endsWith("().") || !inCallContext) List(sym) else List(sym, SymbolUtils.termSymbol(owner, n))
+      List(sym)
     }.distinct
     if (cands.nonEmpty) cands.foreach(sym => emitRef(name.pos, sym))
     else emitRefUnresolved(name.pos)
@@ -858,22 +826,20 @@ class ScalaReferencesResolver(symbolTable: SymbolTable) extends StrictLogging {
 
   // ── init (constructor calls in new / extends) ─────────────────
 
-  private def resolveInit(init: Init, isNew: Boolean): Unit = {
+  private def resolveInit(init: Init): Unit = {
     // Emit type ref for the class
     resolveType(init.tpe)
 
     // For `new C(...)`, emit constructor ref — resolve via scope
-    if (isNew) {
-      init.tpe match {
-        case Type.Name(n) =>
-          lookup(n, isType = true, inCallContext = false) match {
-            case Some(typeSym) if typeSym.endsWith("#") =>
-              val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
-              emitRef(init.tpe.pos, ctorSym)
-            case _ => ()
-          }
-        case _ => ()
-      }
+    init.tpe match {
+      case Type.Name(n) =>
+        lookup(n, isType = true, inCallContext = false) match {
+          case Some(typeSym) if typeSym.endsWith("#") =>
+            val ctorSym = SymbolUtils.constructorSymbol(typeSym, 0)
+            emitRef(init.tpe.pos, ctorSym)
+          case _ => ()
+        }
+      case _ => ()
     }
 
     // Recurse args as values (argss: List[List[Term]])
