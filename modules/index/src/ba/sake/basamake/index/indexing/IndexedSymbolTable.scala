@@ -77,6 +77,11 @@ class IndexedSymbolTable(
   private[indexing] val activeIndexCount = new java.util.concurrent.atomic.AtomicInteger(0)
   /** Background index spawns (test instrumentation). */
   private[indexing] val backgroundIndexStarts = new java.util.concurrent.atomic.AtomicInteger(0)
+  /** Background indexes completed, success or failure (test instrumentation).
+    * Incremented in the index thread's finally — the reliable "done" signal:
+    * activeIndexCount is 0 both BEFORE the thread first runs and AFTER it
+    * finishes, so it can't distinguish the two. */
+  private[indexing] val backgroundIndexCompletions = new java.util.concurrent.atomic.AtomicInteger(0)
 
   /** JDK sources zip + its fingerprint — implicit candidate for every lookup. */
   private val jdkSource: Option[(os.Path, String)] = {
@@ -348,6 +353,7 @@ class IndexedSymbolTable(
             progressListener.onProgress(phase, 1, 1, s"Indexing failed: ${src.last}")
         } finally {
           indexingInProgress.remove(fingerprint)
+          backgroundIndexCompletions.incrementAndGet()
         }
       })
     }
