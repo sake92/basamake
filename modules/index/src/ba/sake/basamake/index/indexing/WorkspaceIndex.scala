@@ -44,7 +44,6 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   /** Set when initialize is interrupted mid-fallback — records the startup
     * failure instead of silently continuing with partial data. */
   private val startupFailed = new java.util.concurrent.atomic.AtomicBoolean(false)
-  private[index] def didStartupFail: Boolean = startupFailed.get()
 
   /** disk (mtime, size) at the time of the last buffer refresh — lets onDidChange
     * skip the per-keystroke re-parse: occurrences only depend on DISK content
@@ -78,36 +77,39 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   @volatile private var activeRoots: List[SemanticdbDirs] = Nil
 
   // ── test seams ────────────────────────────────────────────────
-  private val semanticdbIndexCount = new java.util.concurrent.atomic.AtomicLong(0)
-  private val bufferRefreshCount = new java.util.concurrent.atomic.AtomicLong(0)
-  private val directPairCount = new java.util.concurrent.atomic.AtomicLong(0)
-  private[index] def indexedSemanticdbFiles: Long = semanticdbIndexCount.get()
-  private[index] def bufferRefreshCountValue: Long = bufferRefreshCount.get()
-  private[index] def directPairCountValue: Long = directPairCount.get()
-  private[index] def symbolTableDumpDirty: Boolean = debugDumps.isDirty
-  private[index] def flushSymbolTableDump(): Unit = debugDumps.flush()
-  private[index] def setInvalidating(v: Boolean): Unit = invalidating = v
-  /** Test seam: called right after the startup roots snapshot is published and
-    * before broad Pass A begins. Tests block here to hold bulk initialization
-    * while exercising onDidOpen's direct single-source pairing. */
-  private[index] var afterRootsPublishedHook: () => Unit = () => ()
+  /** Grouped test seams. Concurrency-ordering assertions (holding initialize
+    * mid-flight, bounding Pass B workers) cannot go through the public API, so
+    * they live in this single documented object. Production code never reads
+    * or writes these — all writes happen via the hooks, all production reads
+    * stay on WorkspaceIndex internals. */
+  final class TestHooks {
+    private[index] val semanticdbIndexCount = new java.util.concurrent.atomic.AtomicLong(0)
+    private[index] val bufferRefreshCount = new java.util.concurrent.atomic.AtomicLong(0)
+    private[index] val directPairCount = new java.util.concurrent.atomic.AtomicLong(0)
+    private[index] def indexedSemanticdbFiles: Long = semanticdbIndexCount.get()
+    private[index] def bufferRefreshCountValue: Long = bufferRefreshCount.get()
+    private[index] def directPairCountValue: Long = directPairCount.get()
 
-  /** Test seam: called at the start of each Pass B fallback extraction job
-    * (before reading/extracting the file). Tests block here to observe the
-    * bound on simultaneously-running fallback jobs without time-based
-    * assertions. */
-  private[index] var fallbackJobHook: os.Path => Unit = _ => ()
+    /** Called right after the startup roots snapshot is published and before
+      * broad Pass A begins. Tests block here to hold bulk initialization while
+      * exercising onDidOpen's direct single-source pairing. */
+    private[index] var afterRootsPublishedHook: () => Unit = () => ()
+    /** Called at the start of each Pass B fallback job. Tests block here to
+      * observe the bound on simultaneously-running fallback jobs. */
+    private[index] var fallbackJobHook: os.Path => Unit = _ => ()
+    /** Number of CPU-bound Pass B worker threads (tests shrink it). */
+    private[index] var fallbackWorkerCount: Int = WorkspaceIndex.DefaultFallbackWorkerCount
 
-  /** Number of CPU-bound Pass B worker threads (tests shrink it to assert the
-    * concurrency bound; production uses [[WorkspaceIndex.DefaultFallbackWorkerCount]]). */
-  private[index] var fallbackWorkerCount: Int = WorkspaceIndex.DefaultFallbackWorkerCount
+    private[index] val phaseEvents = new java.util.concurrent.CopyOnWriteArrayList[String]()
+    private[index] def phaseEventLog: List[String] = phaseEvents.asScala.toList
 
-  /** Deterministic phase-event sink (ordered): lets tests verify startup phase
-    * ordering — e.g. that direct pairing for an opened file completes before
-    * broad Pass A / fallback Pass B — without asserting real elapsed time. */
-  private val phaseEvents = new java.util.concurrent.CopyOnWriteArrayList[String]()
-  private[index] def phaseEventLog: List[String] = phaseEvents.asScala.toList
-  private def recordPhaseEvent(event: String): Unit = phaseEvents.add(event)
+    private[index] def setInvalidating(v: Boolean): Unit = WorkspaceIndex.this.invalidating = v
+    private[index] def didStartupFail: Boolean = WorkspaceIndex.this.startupFailed.get()
+    private[index] def symbolTableDumpDirty: Boolean = debugDumps.isDirty
+    private[index] def flushSymbolTableDump(): Unit = debugDumps.flush()
+  }
+  private[index] val testHooks: TestHooks = new TestHooks
+  private def recordPhaseEvent(event: String): Unit = testHooks.phaseEvents.add(event)
 
   private def elapsedMs(fromNanos: Long): Long = (System.nanoTime() - fromNanos) / 1_000_000L
 
@@ -218,7 +220,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     // direct pairing reads it while initialize is still walking roots concurrently.
     activeRoots = roots
     recordPhaseEvent("roots-published")
-    afterRootsPublishedHook()
+    testHooks.afterRootsPublishedHook()
 
     val total = allFiles.size.toLong
     var done = 0L
@@ -274,7 +276,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     val passBOk = new AtomicLong(0L)
     val passBFail = new AtomicLong(0L)
     val tPassBStart = System.nanoTime()
-    val workerCount = fallbackWorkerCount
+    val workerCount = testHooks.fallbackWorkerCount
     val latch = new CountDownLatch(passBFiles.length)
     val executor = Executors.newFixedThreadPool(workerCount, new ThreadFactory {
       private val threadSeq = new java.util.concurrent.atomic.AtomicLong(0)
@@ -288,7 +290,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       passBFiles.foreach { path =>
         executor.execute(() => {
           try {
-            fallbackJobHook(path)
+            testHooks.fallbackJobHook(path)
             val tJobStart = System.nanoTime()
             logger.debug(s"Extracting definitions from $path")
             val is = os.read.inputStream(path)
@@ -374,7 +376,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           SemanticdbIndexing.pairSourceFromRoot(path, root.sourceRootDir, root.semanticdbDir, workspacePath, symbolTable) match {
             case Some(semPath) =>
               setSemanticdbPath(path, semPath)
-              directPairCount.incrementAndGet()
+              testHooks.directPairCount.incrementAndGet()
               recordPhaseEvent(s"direct-pair:$path")
               logger.info(s"Direct semanticdb pairing: $path <- $semPath (${elapsedMs(t0)}ms)")
               break()
@@ -500,7 +502,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       // only record the stamp after a successful parse — a transient failure
       // stays un-stamped and is retried on the next invalidate
       semanticdbStamps.put(semPath, diskStampOf(semPath))
-      semanticdbIndexCount.incrementAndGet()
+      testHooks.semanticdbIndexCount.incrementAndGet()
       paired
     } catch {
       case e: Exception => logger.warn(s"Failed to index $semPath: ${e.getMessage}"); false
@@ -655,7 +657,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           base.copy(occurrences = occs, locals = locals)
         })
         diskStamps.put(path, diskStampOf(path))
-        bufferRefreshCount.incrementAndGet()
+        testHooks.bufferRefreshCount.incrementAndGet()
       }
     }
   }

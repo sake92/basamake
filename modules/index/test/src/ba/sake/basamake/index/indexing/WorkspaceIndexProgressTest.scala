@@ -147,19 +147,19 @@ class WorkspaceIndexProgressTest extends FunSuite {
 
       val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
-      idx.fallbackWorkerCount = 2
+      idx.testHooks.fallbackWorkerCount = 2
 
       // hold broad Pass A until the direct-paired open file is verified
       val rootsPublished = new CountDownLatch(1)
       val releaseBroadInit = new CountDownLatch(1)
-      idx.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
+      idx.testHooks.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
 
       // observe + block Pass B jobs: at most `fallbackWorkerCount` may run at once
       val maxObserved = new AtomicInteger(0)
       val active = new AtomicInteger(0)
       val jobsReachedCap = new CountDownLatch(1)
       val releaseJobs = new CountDownLatch(1)
-      idx.fallbackJobHook = { _ =>
+      idx.testHooks.fallbackJobHook = { _ =>
         val cur = active.incrementAndGet()
         var done = false
         while (!done) {
@@ -203,12 +203,12 @@ class WorkspaceIndexProgressTest extends FunSuite {
 
       val st = new InMemorySymbolTable
       val idx = new WorkspaceIndex(root, st)
-      idx.fallbackWorkerCount = 2
+      idx.testHooks.fallbackWorkerCount = 2
 
       // hold broad Pass A so the direct pairing event is emitted before it
       val rootsPublished = new CountDownLatch(1)
       val releaseBroadInit = new CountDownLatch(1)
-      idx.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
+      idx.testHooks.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
 
       val initThread = Thread.ofVirtual().start(() =>
         idx.initialize(List(SemanticdbDirs(root, semDir))))
@@ -218,7 +218,7 @@ class WorkspaceIndexProgressTest extends FunSuite {
       initThread.join(10_000)
       assert(!initThread.isAlive, "initialize must complete")
 
-      val events = idx.phaseEventLog
+      val events = idx.testHooks.phaseEventLog
       val directIdx = events.indexWhere(_.startsWith("direct-pair:"))
       val passAIdx = events.indexOf("pass-a-done")
       val passBIdx = events.indexWhere(_.startsWith("pass-b-done:"))

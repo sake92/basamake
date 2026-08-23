@@ -1158,7 +1158,7 @@ class WorkspaceIndexTest extends FunSuite {
       val idx = new WorkspaceIndex(root, st)
       val rootsPublished = new CountDownLatch(1)
       val releaseBroadInit = new CountDownLatch(1)
-      idx.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
+      idx.testHooks.afterRootsPublishedHook = () => { rootsPublished.countDown(); releaseBroadInit.await() }
 
       val initThread = Thread.ofVirtual().start(() =>
         idx.initialize(List(SemanticdbDirs(root, semanticdbDirOf(root)))))

@@ -360,10 +360,10 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
     try {
       val (idx, _) = freshIndexAt(root)
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
-      val afterFirst = idx.indexedSemanticdbFiles
+      val afterFirst = idx.testHooks.indexedSemanticdbFiles
       assertEquals(afterFirst, 2L, "both semanticdb files indexed on first invalidate")
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
-      assertEquals(idx.indexedSemanticdbFiles, afterFirst, "unchanged files must not be re-indexed")
+      assertEquals(idx.testHooks.indexedSemanticdbFiles, afterFirst, "unchanged files must not be re-indexed")
     } finally os.remove.all(root)
   }
 
@@ -372,7 +372,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
     try {
       val (idx, st) = freshIndexAt(root)
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
-      val afterFirst = idx.indexedSemanticdbFiles
+      val afterFirst = idx.testHooks.indexedSemanticdbFiles
 
       // a compile produced one more source + semanticdb file
       os.write(root / "src" / "main" / "scala" / "Extra.scala", "object Extra:\n  def extra() = 1\n")
@@ -390,7 +390,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
         TextDocuments(List(newDoc)).toByteArray)
 
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
-      assertEquals(idx.indexedSemanticdbFiles, afterFirst + 1, "only the new file is re-indexed")
+      assertEquals(idx.testHooks.indexedSemanticdbFiles, afterFirst + 1, "only the new file is re-indexed")
       assert(st.get("_empty_/Extra#").isDefined, "new file's defs are loaded")
     } finally os.remove.all(root)
   }
@@ -406,11 +406,11 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       val before = os.mtime(dumpFile)
 
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
-      assert(idx.symbolTableDumpDirty, "invalidate must mark the symbol table dump dirty")
+      assert(idx.testHooks.symbolTableDumpDirty, "invalidate must mark the symbol table dump dirty")
       assertEquals(os.mtime(dumpFile), before, "invalidate must NOT rewrite symbol_table.txt synchronously")
 
-      idx.flushSymbolTableDump()
-      assert(!idx.symbolTableDumpDirty, "flush clears the dirty flag")
+      idx.testHooks.flushSymbolTableDump()
+      assert(!idx.testHooks.symbolTableDumpDirty, "flush clears the dirty flag")
       assert(os.read(dumpFile).contains("_empty_/utils.getMsg()."),
         "flushed dump contains the new defs")
 
@@ -429,7 +429,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       assert(!os.exists(root / ".basamake" / "symbol_table.txt"),
         "symbol_table.txt must not be written on the default startup path")
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
-      assert(!idx.symbolTableDumpDirty, "invalidate must not mark the dump dirty when disabled")
+      assert(!idx.testHooks.symbolTableDumpDirty, "invalidate must not mark the dump dirty when disabled")
       assert(!os.exists(root / ".basamake" / "symbol_table.txt"),
         "invalidate must not start the heavy flusher when the dump is disabled")
       // the lightweight dump still works
@@ -451,7 +451,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       st.removeByPath(utilsFile) // simulate the tear-down half of an invalidation
 
       val fut = new java.util.concurrent.CompletableFuture[Vector[SymbolDefinition]]()
-      idx.setInvalidating(true)
+      idx.testHooks.setInvalidating(true)
       Thread.ofVirtual().start(() => fut.complete(idx.gotoDefinitions(mainFile, 2, 18)))
       Thread.sleep(150) // first resolution comes up empty → retry loop waits
       st.add(SymbolDefinition("_empty_/utils.getMsg().", "getMsg", isType = false,
@@ -470,7 +470,7 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       val (idx, _) = freshIndexAt(root)
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
       idx.onDidOpen(mainFile)
-      idx.setInvalidating(true)
+      idx.testHooks.setInvalidating(true)
       // no occurrence at (0, 1) → None → no retry loop → immediate empty
       val locs = idx.gotoDefinitions(mainFile, 0, 1)
       assert(locs.isEmpty, s"def-site goto must return empty, got $locs")
@@ -486,15 +486,15 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
       val (idx, _) = freshIndexAt(root)
       idx.invalidate(List(SemanticdbDirs(root, semanticdbDirOf(root))))
       idx.onDidOpen(mainFile)
-      val afterOpen = idx.bufferRefreshCountValue
+      val afterOpen = idx.testHooks.bufferRefreshCountValue
 
       idx.onDidChange(mainFile) // typing with an unchanged disk file → no refresh
-      assertEquals(idx.bufferRefreshCountValue, afterOpen, "unchanged disk must skip the refresh")
+      assertEquals(idx.testHooks.bufferRefreshCountValue, afterOpen, "unchanged disk must skip the refresh")
 
       // external disk change (different size) → next didChange refreshes
       os.write.over(mainFile, "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.getMsg()); println(\"changed\")\n")
       idx.onDidChange(mainFile)
-      assertEquals(idx.bufferRefreshCountValue, afterOpen + 1, "disk change must trigger a refresh")
+      assertEquals(idx.testHooks.bufferRefreshCountValue, afterOpen + 1, "disk change must trigger a refresh")
     } finally os.remove.all(root)
   }
 }
