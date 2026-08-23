@@ -781,40 +781,8 @@ class WorkspaceIndexTest extends FunSuite {
     * (empty symbol), so `_empty_/utils.getMsg().` can ONLY come from semanticdb. */
   private def buildDirectPairingFixture(): os.Path = {
     val root = os.pwd / "tmp" / s"direct-pair-${System.currentTimeMillis()}"
-    val srcDir = root / "src" / "main" / "scala"
-    os.makeDir.all(srcDir)
-    val semDir = root / "target" / "scala-3.8.4" / "meta" / "META-INF" / "semanticdb" / "src" / "main" / "scala"
-    os.makeDir.all(semDir)
-
-    val utilsContent = "object utils:\n  def getMsg() = \"bla\"\n"
-    val mainContent = "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.getMsg())\n"
-    os.write(srcDir / "utils.scala", utilsContent)
-    os.write(srcDir / "Main.scala", mainContent)
-
-    val utilsDoc = TextDocument(
-      schema = Schema.SEMANTICDB4,
-      uri = "src/main/scala/utils.scala",
-      text = utilsContent,
-      language = Language.SCALA,
-      symbols = Nil,
-      occurrences = List(
-        SymbolOccurrence(symbol = "_empty_/utils.", range = Some(SdbRange(0, 7, 0, 12)), role = SymbolOccurrence.Role.DEFINITION),
-        SymbolOccurrence(symbol = "_empty_/utils.getMsg().", range = Some(SdbRange(1, 6, 1, 12)), role = SymbolOccurrence.Role.DEFINITION)
-      )
-    )
-    val mainDoc = TextDocument(
-      schema = Schema.SEMANTICDB4,
-      uri = "src/main/scala/Main.scala",
-      text = mainContent,
-      language = Language.SCALA,
-      symbols = Nil,
-      occurrences = List(
-        SymbolOccurrence(symbol = "_empty_/utils.", range = Some(SdbRange(2, 12, 2, 15)), role = SymbolOccurrence.Role.REFERENCE),
-        SymbolOccurrence(symbol = "_empty_/utils.getMsg().", range = Some(SdbRange(2, 16, 2, 22)), role = SymbolOccurrence.Role.REFERENCE)
-      )
-    )
-    os.write(semDir / "utils.scala.semanticdb", TextDocuments(List(utilsDoc)).toByteArray)
-    os.write(semDir / "Main.scala.semanticdb", TextDocuments(List(mainDoc)).toByteArray)
+    os.makeDir.all(root)
+    SemanticdbTestFixtures.writeUtilsMainFixture(root)
     root
   }
 
