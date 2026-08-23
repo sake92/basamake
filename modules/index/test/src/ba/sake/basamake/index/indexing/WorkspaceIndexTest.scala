@@ -304,14 +304,14 @@ class WorkspaceIndexTest extends FunSuite {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // REPRO: sbt project with real semanticdb files
+  // sbt project: cross-file goto (source-parse)
   // ═══════════════════════════════════════════════════════════════
 
-  test("REPRO sbt: goto utils from Main.scala uses semanticdb") {
+  test("gotoDefinitions resolves cross-file utils from Main.scala") {
     checkGoto("sbt", "repro-sbt-utils", "src/main/scala/Main.scala", """(?<p>utils)\.getMsg""", "utils.scala")
   }
 
-  test("REPRO sbt: goto getMsg member from Main.scala uses semanticdb") {
+  test("gotoDefinitions resolves cross-file getMsg member from Main.scala") {
     checkGoto("sbt", "repro-sbt-getmsg", "src/main/scala/Main.scala", """utils\.(?<p>getMsg)\(\)""", "utils.scala")
   }
 
