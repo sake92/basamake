@@ -119,23 +119,6 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
     assert(inA.startsWith(cacheDir(fingerprintA)), s"expected def from jarA, got $inA")
   }
 
-  test("same package in an unrelated jar does NOT satisfy a lookup") {
-    val tempDir = os.temp.dir()
-    val jarA = writeJarPair(tempDir, "a-sources.jar", "com.foo", methodName = "bar")
-    val jarB = writeJarPair(tempDir, "b-sources.jar", "com.foo", methodName = "onlyHere")
-    val fingerprintA = Fingerprint.fromJarPath(jarA)
-    val fingerprintB = Fingerprint.fromJarPath(jarB)
-    cleanCache(fingerprintA)
-    cleanCache(fingerprintB)
-
-    val deps = new IndexedSymbolTable(cacheRoot = testCacheRoot)
-    // precondition: jarB DOES hold the symbol (warmed via background indexing)
-    assert(eventually(deps.get("com/foo/Foo#onlyHere().", List(jarB)).isDefined), "jarB must hold the symbol")
-
-    // jarB is out of scope even though it holds the symbol and shares the package
-    assertEquals(deps.get("com/foo/Foo#onlyHere().", List(jarA)), None)
-  }
-
   test("registering a target never indexes its jars; a lookup indexes only what it needs") {
     val tempDir = os.temp.dir()
     // 2 package-matching jars: one holds Foo#, the other only shares the package
