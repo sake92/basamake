@@ -208,21 +208,19 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     testHooks.afterRootsPublishedHook()
 
     val total = (scalaFiles.size + sbtFiles.size + javaFiles.size).toLong
-    var done = 0L
     def report(d: Long, msg: String): Unit =
       progressListener.onProgress(IndexingPhase.Workspace, d.min(total), total, msg)
     report(0L, "scanning workspace")
 
     // Pass A: semanticdb DEFINITION occurrences from BSP-provided roots.
-    if (roots.nonEmpty) done = indexSemanticdbRoots(roots, total, report)
+    val pairedA = if (roots.nonEmpty) indexSemanticdbRoots(roots, report) else 0L
 
     // Pass B: source-AST extraction for files WITHOUT semanticdb.
     val passBFiles = (scalaFiles ++ sbtFiles).filter(p => sourcesMap.get(p).semanticdbPath.isEmpty) ++
       javaFiles.filter(p => sourcesMap.get(p).semanticdbPath.isEmpty)
-    if (!runFallbackPass(passBFiles, done, total, report)) return
-    done += passBFiles.size.toLong
+    if (!runFallbackPass(passBFiles, pairedA, report)) return
 
-    report(done, s"Indexed $total files")
+    report(pairedA + passBFiles.size.toLong, s"Indexed $total files")
     // Async initialize: files may be opened while indexing runs — restore their
     // buffer state (occurrences/locals), preferring semanticdb now that pairing
     // is done.
@@ -264,7 +262,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     * (sourceRootDir, semanticdbDir) pairs into symbolTable, pair with sources.
     * No workspace-wide .semanticdb walk — only explicit dirs from data.json /
     * BSP compile. Returns the number of paired sources. */
-  private def indexSemanticdbRoots(roots: List[SemanticdbDirs], total: Long, report: (Long, String) => Unit): Long = {
+  private def indexSemanticdbRoots(roots: List[SemanticdbDirs], report: (Long, String) => Unit): Long = {
     logger.info(s"Indexing semanticdb from ${roots.size} target root(s)")
     val tPassAStart = System.nanoTime()
     var pairedTotal = 0L
@@ -302,7 +300,6 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   private def runFallbackPass(
       passBFiles: Vector[os.Path],
       baseDone: Long,
-      total: Long,
       report: (Long, String) => Unit
   ): Boolean = {
     val passBDone = new AtomicLong(0L)
