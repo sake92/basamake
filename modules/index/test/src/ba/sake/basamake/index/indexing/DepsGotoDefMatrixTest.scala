@@ -2,8 +2,7 @@ package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.index.*
-import java.util.zip.{ZipOutputStream, ZipEntry}
-import java.io.FileOutputStream
+import DepTestUtils.*
 
 /** Exhaustive dep goto-def matrix over REAL cats/sttp/commons-net source jars.
   * Two modes: source-parse (no semanticdb dir — the resolver does the work) and
@@ -35,12 +34,6 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
     * CPU load to the parallel suite runs. */
   private val allJars = List(catsCore, catsKernel, catsEffect, catsEffectKernel, commonsNet)
 
-  private def eventually(cond: => Boolean, timeoutMs: Long = 90000): Boolean = {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(100)
-    cond
-  }
-
   /** Poll `gotoDefinitions` until nonEmpty or 60s — background jar indexes warm
     * asynchronously; returns the last result. */
   private def eventuallyResult(
@@ -57,28 +50,6 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
       last = idx.gotoDefinitions(file, l, c, depCandidates = candidates)
     }
     last
-  }
-
-  /** Multi-entry sources jar + sibling classes jar (one dummy .class per source
-    * entry, so metadata.json package filtering works). Copied from SourceNavigationTest. */
-  private def writeJar(dir: os.Path, name: String, entries: List[(String, String)]): os.Path = {
-    val sourcesJar = dir / name
-    val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
-    try {
-      entries.foreach { case (entry, content) =>
-        sources.putNextEntry(new ZipEntry(entry)); sources.write(content.getBytes("UTF-8")); sources.closeEntry()
-      }
-    } finally sources.close()
-    val classesJar = dir / (name.stripSuffix("-sources.jar") + ".jar")
-    val classes = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
-    try {
-      entries.foreach { case (entry, _) =>
-        val base = entry.split('/').last.stripSuffix(".scala").stripSuffix(".java")
-        val pkgPath = entry.split('/').toList.dropRight(1).mkString("/")
-        classes.putNextEntry(new ZipEntry(s"$pkgPath/$base.class")); classes.write(Array[Byte](1, 2)); classes.closeEntry()
-      }
-    } finally classes.close()
-    sourcesJar
   }
 
   /** Setup for one fixture file: copy workspace, register target, initialize,
@@ -104,7 +75,7 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
     * (a cold jar misses fast by design — see IndexedSymbolTable docs). */
   private def warm(deps: IndexedSymbolTable, probes: List[(String, os.Path)]): Unit = {
     probes.foreach { case (sym, jar) =>
-      assert(eventually(deps.get(sym, List(jar)).isDefined), s"warm-up must index $sym from $jar")
+      assert(eventually(deps.get(sym, List(jar)).isDefined, timeoutMs = 90000), s"warm-up must index $sym from $jar")
     }
   }
 
@@ -251,7 +222,7 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
       idx.initialize(List(SemanticdbDirs(ws, semDir)))
       idx.onDidOpen(file)
       val (l, c) = TestPositions.at(text, "Monad\\[Option\\] = (?<p>Monad)\\[Option\\]")
-      assert(eventually(idx.gotoDefinitions(file, l, c, depCandidates = allJars).nonEmpty),
+      assert(eventually(idx.gotoDefinitions(file, l, c, depCandidates = allJars).nonEmpty, timeoutMs = 90000),
         "gap-merge must fill compiler-dropped body refs from source-parse")
     } finally {
       os.remove.all(ws)
@@ -280,7 +251,7 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
       val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget(List(jar))
       // the WRAPPER-OWNED conversion method must be INDEXED (compiler-truth key)
-      assert(eventually(depsTable.get("demo/TopConv$package.TopConv().", List(jar)).isDefined),
+      assert(eventually(depsTable.get("demo/TopConv$package.TopConv().", List(jar)).isDefined, timeoutMs = 90000),
         "the wrapper-owned conversion method must be indexed")
 
       // semanticdb-paired importee (the compiler's symbol) resolves into the dep
@@ -339,7 +310,7 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
     try {
       val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget("t", List(commonsNet))
-      assert(eventually(depsTable.get("org/apache/commons/net/ftp/FTPClient#", List(commonsNet)).isDefined),
+      assert(eventually(depsTable.get("org/apache/commons/net/ftp/FTPClient#", List(commonsNet)).isDefined, timeoutMs = 90000),
         "warm commons-net")
       val ftpFile = depsTable.get("org/apache/commons/net/ftp/FTPClient#", List(commonsNet)).get.path
       val idx = new WorkspaceIndex(ws, new InMemorySymbolTable, Some(depsTable))
@@ -409,7 +380,7 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
       val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget("t", allJars)
       // cats.Monad extends FlatMap with Applicative — all in cats-core
-      assert(eventually(depsTable.get("cats/Monad#", List(catsCore)).isDefined), "warm cats-core")
+      assert(eventually(depsTable.get("cats/Monad#", List(catsCore)).isDefined, timeoutMs = 90000), "warm cats-core")
       val monadFile = depsTable.get("cats/Monad#", List(catsCore)).get.path
       val idx = new WorkspaceIndex(ws, new InMemorySymbolTable, Some(depsTable))
       idx.onDidOpen(monadFile)
@@ -435,8 +406,8 @@ class DepsGotoDefMatrixTest extends FunSuite, TestCacheRoot {
       val depsTable = new IndexedSymbolTable(cacheRoot = testCacheRoot)
       depsTable.registerTarget("t", allJars)
       // cats.Foldable imports cats.kernel.CommutativeMonoid — a cross-artifact ref
-      assert(eventually(depsTable.get("cats/Foldable#", List(catsCore)).isDefined), "warm cats-core")
-      assert(eventually(depsTable.get("cats/kernel/CommutativeMonoid#", List(catsKernel)).isDefined),
+      assert(eventually(depsTable.get("cats/Foldable#", List(catsCore)).isDefined, timeoutMs = 90000), "warm cats-core")
+      assert(eventually(depsTable.get("cats/kernel/CommutativeMonoid#", List(catsKernel)).isDefined, timeoutMs = 90000),
         "warm cats-kernel")
       val foldableFile = depsTable.get("cats/Foldable#", List(catsCore)).get.path
       val idx = new WorkspaceIndex(ws, new InMemorySymbolTable, Some(depsTable))

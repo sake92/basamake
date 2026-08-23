@@ -2,51 +2,13 @@ package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.index.*
-import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
-import java.util.zip.{ZipOutputStream, ZipEntry}
-import java.io.FileOutputStream
+import DepTestUtils.*
+import scala.meta.internal.semanticdb.{Range => SdbRange, SymbolOccurrence}
 
 /** End-to-end: goto-def from a semanticdb-paired workspace file into a dep
   * source jar, through WorkspaceIndex → depsTable candidate-scoped lookup
   * → LMDB point query → lazy file extraction. */
 class DepsGotoDefTest extends FunSuite, TestCacheRoot {
-
-  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
-    cond
-  }
-
-  private def writeJarPair(dir: os.Path, name: String, pkg: String, sourceEntry: String, sourceContent: String): os.Path = {
-    val sourcesJar = dir / name
-    val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
-    try {
-      sources.putNextEntry(new ZipEntry(sourceEntry)); sources.write(sourceContent.getBytes("UTF-8")); sources.closeEntry()
-    } finally sources.close()
-    val classesJar = dir / (name.stripSuffix("-sources.jar") + ".jar")
-    val pkgPath = pkg.replace('.', '/')
-    val classes = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
-    try {
-      classes.putNextEntry(new ZipEntry(s"$pkgPath/Foo.class")); classes.write(Array[Byte](1, 2)); classes.closeEntry()
-    } finally classes.close()
-    sourcesJar
-  }
-
-  /** Pair `Main.scala` at the workspace root with a hand-crafted semanticdb
-    * whose occurrences carry FULL dep symbols (as a real compile would). */
-  private def pairMainWithSemanticdb(workspace: os.Path, occurrences: List[SymbolOccurrence]): Unit = {
-    val semDir = workspace / ".semanticdb"
-    val doc = TextDocument(
-      schema = Schema.SEMANTICDB4,
-      uri = "Main.scala",
-      text = os.read(workspace / "Main.scala"),
-      language = Language.SCALA,
-      symbols = Nil,
-      occurrences = occurrences
-    )
-    os.makeDir.all(semDir)
-    os.write(semDir / "Main.scala.semanticdb", TextDocuments(List(doc)).toByteArray)
-  }
 
   test("gotoDefinitions resolves a jar type into the extracted source") {
     val workspace = os.temp.dir(prefix = "deps-gotodef-ws-")
@@ -63,8 +25,9 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
     os.write.over(mainFile, mainText)
 
     val jarDir = os.temp.dir(prefix = "deps-gotodef-jar-")
-    val jarPath = writeJarPair(jarDir, "example-lib-sources.jar", "com.example", "com/example/Foo.java",
-      "package com.example;\npublic class Foo { public void bar() {} }\n")
+    val jarPath = writeJar(jarDir, "example-lib-sources.jar", List(
+      "com/example/Foo.java" -> "package com.example;\npublic class Foo { public void bar() {} }\n"
+    ))
 
     try {
       pairMainWithSemanticdb(workspace, List(
@@ -113,11 +76,12 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
     os.write.over(mainFile, mainText)
 
     val jarDir = os.temp.dir(prefix = "deps-gotodef-jar2-")
-    val jarPath = writeJarPair(jarDir, "example-lib-sources.jar", "com.example.deep", "com/example/deep/Foo.scala",
+    val jarPath = writeJar(jarDir, "example-lib-sources.jar", List(
       // scala-library style: `package com.example` + `package deep` as SEPARATE statements.
       // Regression: the extractor used to drop the outer prefix (`deep/Foo#` instead of
       // `com/example/deep/Foo#`), breaking the LMDB key lookup.
-      "package com.example\npackage deep\nclass Foo\n")
+      "com/example/deep/Foo.scala" -> "package com.example\npackage deep\nclass Foo\n"
+    ))
 
     try {
       pairMainWithSemanticdb(workspace, List(
@@ -156,10 +120,12 @@ class DepsGotoDefTest extends FunSuite, TestCacheRoot {
   test("candidate lookup from a dep file resolves to the file's own jar on collisions") {
     val jarDirA = os.temp.dir(prefix = "deps-gotodef-jarA-")
     val jarDirB = os.temp.dir(prefix = "deps-gotodef-jarB-")
-    val jarA = writeJarPair(jarDirA, "a-sources.jar", "com.example", "com/example/Foo.java",
-      "package com.example;\npublic class Foo { public void a() {} }\n")
-    val jarB = writeJarPair(jarDirB, "b-sources.jar", "com.example", "com/example/Foo.java",
-      "package com.example;\npublic class Foo { public void b() {} }\n")
+    val jarA = writeJar(jarDirA, "a-sources.jar", List(
+      "com/example/Foo.java" -> "package com.example;\npublic class Foo { public void a() {} }\n"
+    ))
+    val jarB = writeJar(jarDirB, "b-sources.jar", List(
+      "com/example/Foo.java" -> "package com.example;\npublic class Foo { public void b() {} }\n"
+    ))
     val fingerprintA = Fingerprint.fromJarPath(jarA)
     val fingerprintB = Fingerprint.fromJarPath(jarB)
 

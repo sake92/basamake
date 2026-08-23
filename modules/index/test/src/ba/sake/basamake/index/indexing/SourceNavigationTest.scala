@@ -2,43 +2,14 @@ package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.index.*
+import DepTestUtils.*
 import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range as SdbRange, SymbolOccurrence}
-import java.util.zip.{ZipOutputStream, ZipEntry}
-import java.io.FileOutputStream
 
 /** Goto-definition FROM inside dep/JDK sources and package-segment cursors.
   * Dep-file parsing must resolve same-jar refs (owning-jar candidates), Java
   * imports must emit refs, package segments must resolve to package objects
   * (Scala), and cross-jar dep→dep must stay a clean miss. */
 class SourceNavigationTest extends FunSuite, TestCacheRoot {
-
-  private def eventually(cond: => Boolean, timeoutMs: Long = 30000): Boolean = {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
-    cond
-  }
-
-  /** Multi-entry sources jar + sibling classes jar (one dummy .class per source
-    * entry, so metadata.json package filtering works). */
-  private def writeJar(dir: os.Path, name: String, entries: List[(String, String)]): os.Path = {
-    val sourcesJar = dir / name
-    val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
-    try {
-      entries.foreach { case (entry, content) =>
-        sources.putNextEntry(new ZipEntry(entry)); sources.write(content.getBytes("UTF-8")); sources.closeEntry()
-      }
-    } finally sources.close()
-    val classesJar = dir / (name.stripSuffix("-sources.jar") + ".jar")
-    val classes = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
-    try {
-      entries.foreach { case (entry, _) =>
-        val base = entry.split('/').last.stripSuffix(".scala").stripSuffix(".java")
-        val pkgPath = entry.split('/').toList.dropRight(1).mkString("/")
-        classes.putNextEntry(new ZipEntry(s"$pkgPath/$base.class")); classes.write(Array[Byte](1, 2)); classes.closeEntry()
-      }
-    } finally classes.close()
-    sourcesJar
-  }
 
   /** Index the jar, extract the file defining `sym`, open it in a fresh
     * WorkspaceIndex, return (idx, deps, extractedFilePath). */

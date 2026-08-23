@@ -1,6 +1,7 @@
 package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
+import DepTestUtils.*
 import java.util.zip.{ZipOutputStream, ZipEntry}
 import java.io.FileOutputStream
 
@@ -10,32 +11,6 @@ class IndexedSymbolTableTest extends FunSuite, TestCacheRoot {
 
   private def cleanCache(fingerprint: String): Unit = {
     if (os.exists(cacheDir(fingerprint))) os.remove.all(cacheDir(fingerprint))
-  }
-
-  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
-    cond
-  }
-
-  /** Sources jar + its classes sibling (coursier-style), so package metadata
-    * can be derived from the classes jar. Class content is arbitrary bytes —
-    * only the zip directory listing matters. */
-  private def writeJarPair(dir: os.Path, name: String, pkg: String, methodName: String = "bar"): os.Path = {
-    val sourcesJar = dir / name
-    val pkgPath = pkg.replace('.', '/')
-    val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
-    try {
-      sources.putNextEntry(new ZipEntry(s"$pkgPath/Foo.java"))
-      sources.write(s"package $pkg;\npublic class Foo { public void $methodName() {} }\n".getBytes("UTF-8"))
-      sources.closeEntry()
-    } finally sources.close()
-    val classesJar = dir / (name.stripSuffix("-sources.jar") + ".jar")
-    val classes = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
-    try {
-      classes.putNextEntry(new ZipEntry(s"$pkgPath/Foo.class")); classes.write(Array[Byte](1, 2)); classes.closeEntry()
-    } finally classes.close()
-    sourcesJar
   }
 
   /** A bigger jar pair (`entries` classes) — used to hold a background-index

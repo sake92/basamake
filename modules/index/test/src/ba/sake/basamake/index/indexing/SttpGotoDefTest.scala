@@ -2,7 +2,7 @@ package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.index.*
-import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
+import scala.meta.internal.semanticdb.{Range => SdbRange, SymbolOccurrence}
 
 /** Regression for the sttp client3 import line:
   * `import sttp.client3.{HttpError, SttpBackend, UriContext, basicRequest}`.
@@ -30,23 +30,6 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
   private val sttpClient3Jar = fixtureJar("sttp-client3-core_3-3.11.0-sources.jar")
   private val sttpModelJar = fixtureJar("sttp-model-core_3-1.7.17-sources.jar")
 
-  /** Pair `Main.scala` at the workspace root with a hand-crafted semanticdb
-    * whose occurrences carry the compiler's importee symbols for the four
-    * names (as a real compile would emit them). */
-  private def pairMainWithSemanticdb(workspace: os.Path, occurrences: List[SymbolOccurrence]): Unit = {
-    val semDir = workspace / ".semanticdb"
-    val doc = TextDocument(
-      schema = Schema.SEMANTICDB4,
-      uri = "Main.scala",
-      text = os.read(workspace / "Main.scala"),
-      language = Language.SCALA,
-      symbols = Nil,
-      occurrences = occurrences
-    )
-    os.makeDir.all(semDir)
-    os.write(semDir / "Main.scala.semanticdb", TextDocuments(List(doc)).toByteArray)
-  }
-
   private def gotoDefOn(mainFile: os.Path, mainText: String, idx: WorkspaceIndex, regex: String): Vector[SymbolDefinition] = {
     val (l, c) = TestPositions.at(mainText, regex)
     idx.gotoDefinitions(mainFile, l, c, depCandidates = List(sttpClient3Jar, sttpModelJar))
@@ -60,7 +43,7 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
 
     try {
       // importee ranges on line 0 (copied from a real Scala 3.7.4 semanticdb dump)
-      pairMainWithSemanticdb(workspace, List(
+      DepTestUtils.pairMainWithSemanticdb(workspace, List(
         SymbolOccurrence(symbol = "sttp/client3/HttpError.", range = Some(SdbRange(0, 21, 0, 30)), role = SymbolOccurrence.Role.REFERENCE),
         SymbolOccurrence(symbol = "sttp/client3/HttpError#", range = Some(SdbRange(0, 21, 0, 30)), role = SymbolOccurrence.Role.REFERENCE),
         SymbolOccurrence(symbol = "sttp/client3/SttpBackend.", range = Some(SdbRange(0, 32, 0, 43)), role = SymbolOccurrence.Role.REFERENCE),
@@ -75,21 +58,15 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
       idx.initialize(List(SemanticdbDirs(workspace, workspace / ".semanticdb")))
       idx.onDidOpen(mainFile)
 
-      def eventually(cond: => Boolean): Boolean = {
-        val deadline = System.currentTimeMillis() + 60000
-        while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(100)
-        cond
-      }
-
       // each importee must resolve into the extracted dep source — the background
       // index of the two jars runs on first lookup, so poll until warm
-      assert(eventually(gotoDefOn(mainFile, mainText, idx, "HttpError").nonEmpty),
+      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "HttpError").nonEmpty, timeoutMs = 60000),
         "HttpError must resolve (case class + companion)")
-      assert(eventually(gotoDefOn(mainFile, mainText, idx, "SttpBackend").nonEmpty),
+      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "SttpBackend").nonEmpty, timeoutMs = 60000),
         "SttpBackend must resolve (trait synthetic-companion TERM symbol)")
-      assert(eventually(gotoDefOn(mainFile, mainText, idx, "UriContext").nonEmpty),
+      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "UriContext").nonEmpty, timeoutMs = 60000),
         "UriContext must resolve (implicit-class conversion method, in sttp.model)")
-      assert(eventually(gotoDefOn(mainFile, mainText, idx, "basicRequest").nonEmpty),
+      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "basicRequest").nonEmpty, timeoutMs = 60000),
         "basicRequest must resolve (val in trait SttpApi)")
 
       // and each resolves to the RIGHT file

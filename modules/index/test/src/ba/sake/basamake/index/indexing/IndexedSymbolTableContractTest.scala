@@ -1,8 +1,7 @@
 package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
-import java.util.zip.{ZipOutputStream, ZipEntry}
-import java.io.FileOutputStream
+import DepTestUtils.*
 
 /** Contract tests for the deterministic dependency lookup pipeline: candidates
   * scope every lookup, the package filter (metadata.json) decides which jars
@@ -14,34 +13,6 @@ class IndexedSymbolTableContractTest extends FunSuite, TestCacheRoot {
 
   private def cleanCache(fingerprint: String): Unit = {
     if (os.exists(cacheDir(fingerprint))) os.remove.all(cacheDir(fingerprint))
-  }
-
-  private def eventually(cond: => Boolean, timeoutMs: Long = 20000): Boolean = {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
-    cond
-  }
-
-  /** Sources jar + its classes sibling (coursier-style), so package metadata
-    * can be derived from the classes jar. Class content is arbitrary bytes —
-    * only the zip directory listing matters. `className` lets tests plant a
-    * package-matching jar that does NOT hold the queried class (needed to prove
-    * a lookup indexes every package-matching jar, not just the one that hits). */
-  private def writeJarPair(dir: os.Path, name: String, pkg: String, methodName: String = "bar", className: String = "Foo"): os.Path = {
-    val sourcesJar = dir / name
-    val pkgPath = pkg.replace('.', '/')
-    val sources = new ZipOutputStream(new FileOutputStream(sourcesJar.toIO))
-    try {
-      sources.putNextEntry(new ZipEntry(s"$pkgPath/$className.java"))
-      sources.write(s"package $pkg;\npublic class $className { public void $methodName() {} }\n".getBytes("UTF-8"))
-      sources.closeEntry()
-    } finally sources.close()
-    val classesJar = dir / (name.stripSuffix("-sources.jar") + ".jar")
-    val classes = new ZipOutputStream(new FileOutputStream(classesJar.toIO))
-    try {
-      classes.putNextEntry(new ZipEntry(s"$pkgPath/$className.class")); classes.write(Array[Byte](1, 2)); classes.closeEntry()
-    } finally classes.close()
-    sourcesJar
   }
 
   test("a symbol living only in an unrelated jar resolves to None") {
