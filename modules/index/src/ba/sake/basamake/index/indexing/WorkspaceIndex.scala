@@ -79,9 +79,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   // ── test seams ────────────────────────────────────────────────
   /** Grouped test seams. Concurrency-ordering assertions (holding initialize
     * mid-flight, bounding Pass B workers) cannot go through the public API, so
-    * they live in this single documented object. Production code never reads
-    * or writes these — all writes happen via the hooks, all production reads
-    * stay on WorkspaceIndex internals. */
+    * they live in this single documented object. Hooks are set by tests only;
+    * counters and the phase log exist solely for test assertions (production
+    * merely records into them and calls the hooks). The one production read is
+    * `fallbackWorkerCount` — the Pass B pool size, defaulted by
+    * [[WorkspaceIndex.DefaultFallbackWorkerCount]] and shrunk by tests. */
   final class TestHooks {
     private[index] val semanticdbIndexCount = new java.util.concurrent.atomic.AtomicLong(0)
     private[index] val bufferRefreshCount = new java.util.concurrent.atomic.AtomicLong(0)
@@ -97,7 +99,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     /** Called at the start of each Pass B fallback job. Tests block here to
       * observe the bound on simultaneously-running fallback jobs. */
     private[index] var fallbackJobHook: os.Path => Unit = _ => ()
-    /** Number of CPU-bound Pass B worker threads (tests shrink it). */
+    /** Number of CPU-bound Pass B worker threads (tests shrink it; production
+      * default: [[WorkspaceIndex.DefaultFallbackWorkerCount]]). */
     private[index] var fallbackWorkerCount: Int = WorkspaceIndex.DefaultFallbackWorkerCount
 
     private[index] val phaseEvents = new java.util.concurrent.CopyOnWriteArrayList[String]()
