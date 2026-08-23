@@ -10,8 +10,8 @@ import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocum
   * This discriminates semanticdb-based occurrences from source-parsed ones. */
 object SemanticdbTestFixtures {
 
-  val UtilsContent: String = "object utils:\n  def getMsg() = \"bla\"\n"
-  val MainContent: String = "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.getMsg())\n"
+  private val UtilsContent: String = "object utils:\n  def getMsg() = \"bla\"\n"
+  private val MainContent: String = "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.getMsg())\n"
 
   /** Write source files + semanticdb files under `root` (directories created).
     * Returns the semanticdb OUTPUT dir (parent of META-INF) for SemanticdbDirs. */

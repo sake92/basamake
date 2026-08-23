@@ -781,7 +781,6 @@ class WorkspaceIndexTest extends FunSuite {
     * (empty symbol), so `_empty_/utils.getMsg().` can ONLY come from semanticdb. */
   private def buildDirectPairingFixture(): os.Path = {
     val root = os.pwd / "tmp" / s"direct-pair-${System.currentTimeMillis()}"
-    os.makeDir.all(root)
     SemanticdbTestFixtures.writeUtilsMainFixture(root)
     root
   }

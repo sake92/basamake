@@ -35,7 +35,6 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
     */
   private def buildSbtLikeFixture(): os.Path = {
     val root = os.pwd / "tmp" / s"semdb-invalidate-${System.currentTimeMillis()}"
-    os.makeDir.all(root)
     SemanticdbTestFixtures.writeUtilsMainFixture(root)
     root
   }
