@@ -32,31 +32,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   // open files — separate set: an open file with zero references must stay "open"
   private val openFiles = ConcurrentHashMap.newKeySet[os.Path]()
 
-  // serialize debug-dump file writes (os.write.over is not atomic)
-  private val dumpLock = new Object
-
-  // ── debug dump throttling ─────────────────────────────────────
-  // index_sources.txt stays SYNCHRONOUS (cheap, few ms — tests rely on it being
-  // fresh after invalidate). symbol_table.txt is the heavy one (serializes the
-  // whole symbol table, e.g. 12.9MB for msc-backend) — it used to run on the
-  // BSP event thread after EVERY compile; it's now deferred to a background
-  // flusher that writes at most once per interval, only when dirty.
-  private val DumpFlushIntervalMs = 60_000L
-  private val symbolTableDirty = new java.util.concurrent.atomic.AtomicBoolean(false)
-  private val dumpFlusherStarted = new java.util.concurrent.atomic.AtomicBoolean(false)
-
-  /** Lazy-start the background symbol-table flusher (one virtual thread). */
-  private def ensureDumpFlusher(): Unit = {
-    if (!dumpFlusherStarted.compareAndSet(false, true)) return
-    Thread.ofVirtual().start(() => {
-      var running = true
-      while (running) {
-        try Thread.sleep(DumpFlushIntervalMs)
-        catch { case _: InterruptedException => running = false }
-        if (running && symbolTableDirty.getAndSet(false)) writeSymbolTableDump()
-      }
-    })
-  }
+  // debug dumps: index_sources.txt synchronous (cheap — tests rely on it being
+  // fresh after invalidate); symbol_table.txt deferred to a throttled background
+  // flusher (the ~13MB serialize must never run on the BSP event thread)
+  private val debugDumps = new DebugDumpWriter(workspacePath, sourcesMap, symbolTable, debugSymbolTableDump)
 
   /** True while a BSP-compile invalidation is tearing down + rebuilding the
     * symbol table — gotoDefinitions retries once in this window (see below). */
@@ -105,11 +84,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   private[index] def indexedSemanticdbFiles: Long = semanticdbIndexCount.get()
   private[index] def bufferRefreshCountValue: Long = bufferRefreshCount.get()
   private[index] def directPairCountValue: Long = directPairCount.get()
-  private[index] def symbolTableDumpDirty: Boolean = symbolTableDirty.get()
-  private[index] def flushSymbolTableDump(): Unit = {
-    symbolTableDirty.set(false)
-    writeSymbolTableDump()
-  }
+  private[index] def symbolTableDumpDirty: Boolean = debugDumps.isDirty
+  private[index] def flushSymbolTableDump(): Unit = debugDumps.flush()
   private[index] def setInvalidating(v: Boolean): Unit = invalidating = v
   /** Test seam: called right after the startup roots snapshot is published and
     * before broad Pass A begins. Tests block here to hold bulk initialization
@@ -367,60 +343,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     val pairedFinal = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
     logger.info(s"Workspace indexing finished: ${elapsedMs(tInitStart)}ms total, semanticdb-paired=$pairedFinal, fallback-extracted=${passBFiles.size}")
     recordPhaseEvent("init-done")
-    writeDebugDump()
-  }
-
-  /** Debug dump: .basamake/index_sources.txt + (opt-in) symbol_table.txt —
-    * which source files are paired with which .semanticdb files, and the full
-    * symbol table. index_sources.txt is written at initialize AND refreshed
-    * after every index state change (cheap). symbol_table.txt is the heavy one
-    * (serializes the whole symbol table, e.g. 12.9MB for msc-backend) — it is
-    * OPT-IN (`debugSymbolTableDump`), so the default startup path never pays
-    * for it. */
-  private def writeDebugDump(): Unit = {
-    writeIndexSourcesDump()
-    if (debugSymbolTableDump) writeSymbolTableDump()
-  }
-
-  /** Cheap refresh after index state changes (invalidate / file create+delete):
-    * index_sources.txt synchronously (tests + freshness), symbol_table.txt
-    * deferred to the throttled background flusher — the full-table serialize
-    * (~13MB) must not run on the BSP event thread after every compile. */
-  private def refreshDebugDump(): Unit = {
-    writeIndexSourcesDump()
-    if (debugSymbolTableDump) {
-      symbolTableDirty.set(true)
-      ensureDumpFlusher()
-    }
-  }
-
-  private def writeIndexSourcesDump(): Unit = {
-    try {
-      val pairs = sourcesMap.entrySet().asScala.flatMap { e =>
-        e.getValue.semanticdbPath.map(sem => e.getKey -> sem)
-      }.toMap
-      val allSources = sourcesMap.keySet().asScala.toSet
-      val dump = SemanticdbIndexing.dumpPairs(pairs, allSources, workspacePath)
-      val dumpDir = workspacePath / ".basamake"
-      os.makeDir.all(dumpDir)
-      dumpLock.synchronized {
-        os.write.over(dumpDir / "index_sources.txt", dump)
-      }
-    } catch {
-      case e: Exception => logger.warn(s"Failed to write index_sources.txt: ${e.getMessage}")
-    }
-  }
-
-  private def writeSymbolTableDump(): Unit = {
-    try {
-      val dumpDir = workspacePath / ".basamake"
-      os.makeDir.all(dumpDir)
-      dumpLock.synchronized {
-        os.write.over(dumpDir / "symbol_table.txt", symbolTable.all.toVector.sortBy(_.symbol).mkString("\n"), createFolders = true)
-      }
-    } catch {
-      case e: Exception => logger.warn(s"Failed to write symbol_table.txt: ${e.getMessage}")
-    }
+    debugDumps.writeDebugDump()
   }
 
   // ── onDidOpen/Change/Save/Close ──────────────────────────────
@@ -509,7 +432,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       sourceParseCache.remove(path)
       symbolTable.removeByPath(path)
     }
-    refreshDebugDump()
+    debugDumps.refresh()
   }
 
   /** New source files on disk (watcher create events, rename new paths).
@@ -519,7 +442,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     val accepted = paths.filterNot(isIgnoredWorkspacePath)
     if (accepted.isEmpty) return
     accepted.foreach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
-    refreshDebugDump()
+    debugDumps.refresh()
   }
 
   // ── invalidate (BSP compile callback) ────────────────────────
@@ -550,7 +473,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     } finally {
       invalidating = false
     }
-    refreshDebugDump()
+    debugDumps.refresh()
   }
 
   /** Index a single .semanticdb file: parse definitions, pair with source via direct
