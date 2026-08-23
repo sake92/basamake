@@ -7,7 +7,7 @@ import scala.util.boundary, boundary.break
 import com.typesafe.scalalogging.StrictLogging
 import scala.meta.internal.semanticdb.Range
 import ba.sake.basamake.index.*
-import ba.sake.basamake.index.scalasrc.{ScalaDefinitionsExtractor, ScalaReferencesResolver }
+import ba.sake.basamake.index.scalasrc.{ScalaDefinitionsExtractor, ScalaReferencesResolver}
 import ba.sake.basamake.index.javasrc.{JavaDefinitionsExtractor, JavaReferencesResolver}
 
 /** Per-source index state. `occurrences`/`locals` are populated only while the
