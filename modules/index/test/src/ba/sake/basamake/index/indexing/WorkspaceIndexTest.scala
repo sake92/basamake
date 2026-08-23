@@ -54,7 +54,7 @@ class WorkspaceIndexTest extends FunSuite {
       val (l, c) = TestPositions.at(os.read(cur), regex)
       val refs = idx.references(cur, l, c, includeDeclaration = true)
       val got = refs.map(_.path.last).toSet
-      assert(expectedPathsLast.subsetOf(got), s"expected refs in $expectedPathsLast, got $got")
+      assert(expectedPathsLast.subsetOf(got), s"expected refs in $expectedPathsLast for $cursorFile, got $got")
     } finally os.remove.all(root)
   }
 
@@ -109,30 +109,6 @@ class WorkspaceIndexTest extends FunSuite {
       val syms = idx.findSymbolsAt(mainFile, 10, 4)
       assert(syms.exists(_ == "_empty_/utils."),
         s"Expected _empty_/utils., got: ${syms}")
-    } finally os.remove.all(root)
-  }
-
-  test("gotoDefinitions resolves cross-file utils from Main.scala") {
-    val root = TestFixture.copy("sbt", "sbt-gotoutils")
-    try {
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile)
-      val locs = idx.gotoDefinitions(mainFile, 10, 4)
-      assert(locs.nonEmpty, s"Expected locations for utils, got $locs")
-      assertEquals(locs.head.path.last, "utils.scala")
-    } finally os.remove.all(root)
-  }
-
-  test("gotoDefinitions resolves cross-file getMsg member") {
-    val root = TestFixture.copy("sbt", "sbt-gotogetmsg")
-    try {
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile)
-      val locs = idx.gotoDefinitions(mainFile, 10, 10)
-      assert(locs.nonEmpty, s"Expected locations for getMsg, got $locs")
-      assertEquals(locs.head.path.last, "utils.scala")
     } finally os.remove.all(root)
   }
 
@@ -332,29 +308,11 @@ class WorkspaceIndexTest extends FunSuite {
   // ═══════════════════════════════════════════════════════════════
 
   test("REPRO sbt: goto utils from Main.scala uses semanticdb") {
-    val root = TestFixture.copy("sbt", "repro-sbt-utils")
-    try {
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile)
-      val (l, c) = TestPositions.at(os.read(mainFile), """(?<p>utils)\.getMsg""")
-      val locs = idx.gotoDefinitions(mainFile, l, c)
-      assert(locs.nonEmpty, s"expected utils goto to resolve via semanticdb, got empty")
-      assertEquals(locs.head.path.last, "utils.scala")
-    } finally os.remove.all(root)
+    checkGoto("sbt", "repro-sbt-utils", "src/main/scala/Main.scala", """(?<p>utils)\.getMsg""", "utils.scala")
   }
 
   test("REPRO sbt: goto getMsg member from Main.scala uses semanticdb") {
-    val root = TestFixture.copy("sbt", "repro-sbt-getmsg")
-    try {
-      val mainFile = root / "src" / "main" / "scala" / "Main.scala"
-      val (idx, _) = freshIndexAt(root)
-      idx.onDidOpen(mainFile)
-      val (l, c) = TestPositions.at(os.read(mainFile), """utils\.(?<p>getMsg)\(\)""")
-      val locs = idx.gotoDefinitions(mainFile, l, c)
-      assert(locs.nonEmpty, s"expected getMsg goto to resolve via semanticdb, got empty")
-      assertEquals(locs.head.path.last, "utils.scala")
-    } finally os.remove.all(root)
+    checkGoto("sbt", "repro-sbt-getmsg", "src/main/scala/Main.scala", """utils\.(?<p>getMsg)\(\)""", "utils.scala")
   }
 
   test("source-only: goto utils.getMsg() cross-file without semanticdb") {
