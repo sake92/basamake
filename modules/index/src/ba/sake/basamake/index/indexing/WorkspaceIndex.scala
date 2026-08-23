@@ -308,6 +308,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     val tPassBStart = System.nanoTime()
     val workerCount = testHooks.fallbackWorkerCount
     val latch = new CountDownLatch(passBFiles.length)
+    /** Serializes Pass B increment+emit: the counter claim and the listener
+      * call must be one atomic unit, or concurrent workers can emit done=2
+      * after done=3 and the progress consumer sees the counter regress. */
+    val passBProgressLock = new Object
     val executor = Executors.newFixedThreadPool(workerCount, new ThreadFactory {
       private val threadSeq = new java.util.concurrent.atomic.AtomicLong(0)
       override def newThread(r: Runnable): Thread = {
@@ -339,8 +343,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
               passBFail.incrementAndGet()
               logger.warn(s"Failed to extract $path: ${e.getMessage}")
           } finally {
-            val n = baseDone + passBDone.incrementAndGet()
-            report(n, path.last)
+            passBProgressLock.synchronized {
+              val n = baseDone + passBDone.incrementAndGet()
+              report(n, path.last)
+            }
             latch.countDown()
           }
         })

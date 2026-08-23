@@ -21,21 +21,17 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      # scala-cli must be installed BEFORE setup-java — it ships its own JVM
-      # detection and can interfere with the JDK setup when installed after.
-      # SemanticdbFixture compiles test fixtures with scala-cli — required by the
-      # sbt-fixture tests in modules-index-test. Pinned to the version used
-      # in local dev for deterministic fixture output.
+      - uses: coursier/cache-action@v7
+
       - name: Install scala-cli
-        run: |
-          curl -fL https://github.com/VirtusLab/scala-cli/releases/download/v1.8.4/scala-cli-x86_64-pc-linux.gz | gzip -d > scala-cli
-          chmod +x scala-cli
-          sudo mv scala-cli /usr/local/bin/
+        uses: VirtusLab/scala-cli-setup@v1.16
+        with:
+          scala-cli-version: 1.8.4
+
       - uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
-      - uses: coursier/cache-action@v7
       - name: Set Homebrew env
         shell: bash
         run: echo "HOMEBREW_NO_SANDBOX_LINUX=1" >> $GITHUB_ENV

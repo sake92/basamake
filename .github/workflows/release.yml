@@ -17,13 +17,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: coursier/cache-action@v7
+
+      - name: Install scala-cli
+        uses: VirtusLab/scala-cli-setup@v1.16
+        with:
+          scala-cli-version: 1.8.4
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '21'
-
-      - uses: coursier/cache-action@v7
 
       - name: Set Homebrew env
         shell: bash
