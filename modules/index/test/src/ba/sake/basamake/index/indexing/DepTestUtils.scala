@@ -7,7 +7,9 @@ import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocum
 /** Shared helpers for dep-index tests (sources-jar fixtures, polling, semanticdb pairing). */
 object DepTestUtils {
 
-  /** Poll `cond` until true or the timeout expires. */
+  /** Poll `cond` until true or the timeout expires.
+    * Real-jar background warm-ups need `timeoutMs` > 30000 (e.g. 90000 — see
+    * DepsGotoDefMatrixTest); the 30s default is only for fast synthetic jars. */
   def eventually(cond: => Boolean, timeoutMs: Long = 30000): Boolean = {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (!cond && System.currentTimeMillis() < deadline) Thread.sleep(50)
@@ -36,7 +38,10 @@ object DepTestUtils {
     sourcesJar
   }
 
-  /** Single-entry Java sources jar + classes sibling (coursier-style). */
+  /** Single-entry Java sources jar + classes sibling (coursier-style).
+    * `className` lets tests plant a package-matching jar that does NOT hold the
+    * queried class (proving a lookup indexes every package-matching jar, not
+    * just the one that hits). */
   def writeJarPair(dir: os.Path, name: String, pkg: String, methodName: String = "bar", className: String = "Foo"): os.Path = {
     val pkgPath = pkg.replace('.', '/')
     writeJar(dir, name, List(

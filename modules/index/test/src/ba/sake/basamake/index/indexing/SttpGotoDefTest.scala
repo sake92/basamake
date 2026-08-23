@@ -2,6 +2,7 @@ package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.index.*
+import DepTestUtils.*
 import scala.meta.internal.semanticdb.{Range => SdbRange, SymbolOccurrence}
 
 /** Regression for the sttp client3 import line:
@@ -43,7 +44,7 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
 
     try {
       // importee ranges on line 0 (copied from a real Scala 3.7.4 semanticdb dump)
-      DepTestUtils.pairMainWithSemanticdb(workspace, List(
+      pairMainWithSemanticdb(workspace, List(
         SymbolOccurrence(symbol = "sttp/client3/HttpError.", range = Some(SdbRange(0, 21, 0, 30)), role = SymbolOccurrence.Role.REFERENCE),
         SymbolOccurrence(symbol = "sttp/client3/HttpError#", range = Some(SdbRange(0, 21, 0, 30)), role = SymbolOccurrence.Role.REFERENCE),
         SymbolOccurrence(symbol = "sttp/client3/SttpBackend.", range = Some(SdbRange(0, 32, 0, 43)), role = SymbolOccurrence.Role.REFERENCE),
@@ -60,13 +61,13 @@ class SttpGotoDefTest extends FunSuite, TestCacheRoot {
 
       // each importee must resolve into the extracted dep source — the background
       // index of the two jars runs on first lookup, so poll until warm
-      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "HttpError").nonEmpty, timeoutMs = 60000),
+      assert(eventually(gotoDefOn(mainFile, mainText, idx, "HttpError").nonEmpty, timeoutMs = 60000),
         "HttpError must resolve (case class + companion)")
-      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "SttpBackend").nonEmpty, timeoutMs = 60000),
+      assert(eventually(gotoDefOn(mainFile, mainText, idx, "SttpBackend").nonEmpty, timeoutMs = 60000),
         "SttpBackend must resolve (trait synthetic-companion TERM symbol)")
-      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "UriContext").nonEmpty, timeoutMs = 60000),
+      assert(eventually(gotoDefOn(mainFile, mainText, idx, "UriContext").nonEmpty, timeoutMs = 60000),
         "UriContext must resolve (implicit-class conversion method, in sttp.model)")
-      assert(DepTestUtils.eventually(gotoDefOn(mainFile, mainText, idx, "basicRequest").nonEmpty, timeoutMs = 60000),
+      assert(eventually(gotoDefOn(mainFile, mainText, idx, "basicRequest").nonEmpty, timeoutMs = 60000),
         "basicRequest must resolve (val in trait SttpApi)")
 
       // and each resolves to the RIGHT file
