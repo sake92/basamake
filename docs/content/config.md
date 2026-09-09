@@ -20,6 +20,11 @@ Basamake works with zero configuration. If you need to tweak something, create
 }
 ```
 
+To generate a complete starting config for the BSP files currently in the
+workspace, run the LSP command `basamake.createDefaultConfig`. It writes every
+discovered `.bsp/*.json` as an enabled override with the standard timeouts. The
+command never replaces an existing config file.
+
 ## bspOverrides
 
 Per-connection overrides, matched by the `.bsp/*.json` path relative to the workspace root:

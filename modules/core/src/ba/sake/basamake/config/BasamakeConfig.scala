@@ -33,6 +33,25 @@ final case class BasamakeConfig(
 
 object BasamakeConfig {
 
+  /** Creates a complete, editable config template without replacing user
+    * configuration. BSP file paths must be relative to the workspace root. */
+  def createDefaultConfig(workspaceRoot: os.Path, bspFiles: List[String]): Boolean = {
+    val configPath = workspaceRoot / ".basamake" / "config.json"
+    if (os.exists(configPath)) false
+    else {
+      val overrides = bspFiles.distinct.sorted.map { bspFile =>
+        BspOverride(
+          bspFile = bspFile,
+          enabled = true,
+          compileTimeoutSec = Some(BspOverride.defaultCompileTimeoutSec),
+          handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec)
+        )
+      }
+      os.write(configPath, ba.sake.tupson.toJson(BasamakeConfig(bspOverrides = overrides)), createFolders = true)
+      true
+    }
+  }
+
   def load(workspaceRoot: os.Path): BasamakeConfig = {
     val configPath = workspaceRoot / ".basamake/config.json"
     if os.isFile(configPath) then
@@ -55,3 +74,8 @@ final case class BspOverride(
     compileTimeoutSec: Option[Long] = None,   // default 600s (10 min)
     handshakeTimeoutSec: Option[Long] = None  // default 120s
 ) derives JsonRW
+
+object BspOverride {
+  val defaultCompileTimeoutSec: Long = 600
+  val defaultHandshakeTimeoutSec: Long = 120
+}

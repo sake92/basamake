@@ -46,6 +46,8 @@ final class LspTestClient private (
       require(caps.getDefinitionProvider != null && caps.getDefinitionProvider.getLeft.booleanValue(), "definition capability expected")
       require(caps.getReferencesProvider != null && caps.getReferencesProvider.getLeft.booleanValue(), "references capability expected")
       require(caps.getHoverProvider != null && caps.getHoverProvider.getLeft.booleanValue(), "hover capability expected")
+      require(caps.getExecuteCommandProvider.getCommands.contains("basamake.createDefaultConfig"),
+        "default-config command capability expected")
       val didRename = caps.getWorkspace.getFileOperations.getDidRename
       require(didRename != null && didRename.getFilters != null && !didRename.getFilters.isEmpty,
         "didRename filters must be advertised (vscode-languageclient ignores filter-less registrations)")
