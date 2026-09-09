@@ -478,6 +478,9 @@ class BspConnectionTest extends FunSuite {
   private def scalacOptionsItem(tid: BuildTargetIdentifier, options: List[String]): ScalacOptionsItem =
     new ScalacOptionsItem(tid, options.asJava, java.util.Collections.emptyList(), "/class/dir")
 
+  private def javacOptionsItem(tid: BuildTargetIdentifier, options: List[String]): JavacOptionsItem =
+    new JavacOptionsItem(tid, options.asJava, java.util.Collections.emptyList(), "file:///class/dir")
+
   test("sourceRootDirByTarget: explicit -sourceroot flag wins over workingDir") {
     val tid = new BuildTargetIdentifier("//t")
     val result = new ScalacOptionsResult(java.util.List.of(
@@ -506,6 +509,36 @@ class BspConnectionTest extends FunSuite {
   test("sourceRootDirByTarget: empty scalacOptions → empty map (no crash)") {
     val result = new ScalacOptionsResult(java.util.Collections.emptyList())
     assertEquals(BspConnection.sourceRootDirByTarget(result, os.Path("/work")), Map.empty)
+  }
+
+  test("handshake Java options: targetroot and sourceroot reach the SemanticDB index") {
+    val root = os.temp.dir(prefix = "bsp-java-semanticdb")
+    val tid = new BuildTargetIdentifier("//java")
+    val captured = new java.util.concurrent.CopyOnWriteArrayList[List[SemanticdbDirs]]()
+    val sink = new BspEvents {
+      def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+      override def onAfterCompile(roots: List[SemanticdbDirs]): Unit = captured.add(roots)
+    }
+    val javaOpts = new JavacOptionsResult(java.util.List.of(
+      javacOptionsItem(tid, List("-Xplugin:semanticdb -sourceroot:/java/src -targetroot:/java/semanticdb"))))
+    val conn = new BspConnection(
+      spec = BspConnectionSpec(BspDiscoveryFile("fake", List("true")), root / ".bsp/fake.json", workspaceRoot = root),
+      spawnFn = () => HandshakeResult(
+        new FakeProcess { override def isAlive = true; override def onExit() = CompletableFuture.completedFuture(null) },
+        new MockBuildServer,
+        new SourcesResult(java.util.Collections.emptyList()),
+        new DependencySourcesResult(java.util.Collections.emptyList()),
+        emptyScalacOptions,
+        javaOpts
+      ),
+      killTreeFn = _ => (),
+      events = sink,
+      debounceMs = 500
+    )
+    try {
+      conn.ensureConnected()
+      assertEquals(captured.asScala.flatMap(_.iterator).toSet, Set(SemanticdbDirs(os.Path("/java/src"), os.Path("/java/semanticdb"))))
+    } finally os.remove.all(root)
   }
 
   test("BspConnectionSpec: default handshake timeout is 120s (matches BasamakeConfig docs)") {

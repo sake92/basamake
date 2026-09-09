@@ -73,6 +73,31 @@ class ScalacOptionsUtilsTest extends FunSuite {
     assertEquals(ScalacOptionsUtils.semanticdbTargetPath(List("-Xsemanticdb")), None)
   }
 
+  // ── javac SemanticDB plugin ───────────────────────────────────
+
+  test("javacSemanticdbTargetPath: parses targetroot from the single plugin option") {
+    assertEquals(
+      ScalacOptionsUtils.javacSemanticdbTargetPath(
+        List("-Xplugin:semanticdb -sourceroot:/workspace -targetroot:/sem/out")),
+      Some(os.Path("/sem/out"))
+    )
+  }
+
+  test("javacSemanticdbTargetPath: parses standalone targetroot option") {
+    assertEquals(
+      ScalacOptionsUtils.javacSemanticdbTargetPath(List("-Xplugin:semanticdb", "-targetroot:/sem/out")),
+      Some(os.Path("/sem/out"))
+    )
+  }
+
+  test("javacSourceRootDir: parses sourceroot from the plugin option") {
+    assertEquals(
+      ScalacOptionsUtils.javacSourceRootDir(
+        List("-Xplugin:semanticdb -sourceroot:/workspace -targetroot:/sem/out")),
+      Some(os.Path("/workspace"))
+    )
+  }
+
   // ── other helpers ─────────────────────────────────────────────
 
   test("hasBestEffortFlag: detects -Ybest-effort") {

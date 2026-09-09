@@ -40,7 +40,7 @@ class BspConnection (
   /** target → source dirs (from handshake SourcesResult). Used by selectTargets. */
   @volatile private var sourceDirsByTarget: Map[BuildTargetIdentifier, List[String]] = Map.empty
   @volatile private var classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
-  /** target → semanticdb target dir (from handshake ScalacOptionsResult). */
+  /** target → SemanticDB target dir (from handshake Scala or Java options). */
   @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
   /** target → dependency source jars (from handshake DependencySourcesResult). */
   @volatile private var dependencySourcesByTarget: Map[BuildTargetIdentifier, List[os.Path]] = Map.empty
@@ -209,10 +209,10 @@ class BspConnection (
     val result = spawnFn()
     process = Some(result.process)
     buildServer = Some(result.buildServer)
-    sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions, spec.workingDir)
+    sourceRootDirByTarget = BspConnection.sourceRootDirByTarget(result.scalacOptions, result.javacOptions, spec.workingDir)
     sourceDirsByTarget = BspConnection.extractTargetSourceDirs(result.sources)
-    classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions)
-    semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, classDirectoryByTarget)
+    classDirectoryByTarget = BspConnection.extractTargetClassDir(result.scalacOptions, result.javacOptions)
+    semanticdbDirByTarget = BspConnection.extractTargetSemanticdbDir(result.scalacOptions, result.javacOptions, classDirectoryByTarget)
     // Seed from the deps persisted in this connection's data.json (previous
     // sessions), then merge the fresh handshake result — servers intermittently
     // return empty DependencySourcesResult, which must never wipe known deps.
@@ -457,6 +457,18 @@ object BspConnection {
     }.toMap
   }
 
+  private[bsp] def sourceRootDirByTarget(
+      scalacOpts: ScalacOptionsResult,
+      javacOpts: JavacOptionsResult,
+      workingDir: os.Path
+  ): Map[BuildTargetIdentifier, os.Path] = {
+    val javaRoots = Option(javacOpts.getItems).toList.flatMap(_.asScala).map { item =>
+      val fromFlag = ScalacOptionsUtils.javacSourceRootDir(Option(item.getOptions).toList.flatMap(_.asScala))
+      item.getTarget -> fromFlag.getOrElse(workingDir)
+    }.toMap
+    javaRoots ++ sourceRootDirByTarget(scalacOpts, workingDir)
+  }
+
   private def extractTargetSourceDirs(sources: SourcesResult): Map[BuildTargetIdentifier, List[String]] = {
     def ensureTrailingSlash(uri: String): String = if (uri.endsWith("/")) uri else s"$uri/"
     def parentDirUri(uri: String): String = {
@@ -486,6 +498,16 @@ object BspConnection {
     }.toMap
   }
 
+  private def extractTargetClassDir(
+      scalacOpts: ScalacOptionsResult,
+      javacOpts: JavacOptionsResult
+  ): Map[BuildTargetIdentifier, os.Path] = {
+    val javaClassDirs = Option(javacOpts.getItems).toList.flatMap(_.asScala).map { item =>
+      item.getTarget -> os.Path(URI.create(item.getClassDirectory))
+    }.toMap
+    javaClassDirs ++ extractTargetClassDir(scalacOpts)
+  }
+
   private def extractTargetSemanticdbDir(opts: ScalacOptionsResult, classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path]): Map[BuildTargetIdentifier, os.Path] = {
     Option(opts.getItems).toList.flatMap(_.asScala).map { item =>
       val target = item.getTarget
@@ -493,6 +515,19 @@ object BspConnection {
       val fallback = classDirectoryByTarget(target) // fall back to class directory if no explicit semanticdb-target
       target -> path.getOrElse(fallback)
     }.toMap
+  }
+
+  private def extractTargetSemanticdbDir(
+      scalacOpts: ScalacOptionsResult,
+      javacOpts: JavacOptionsResult,
+      classDirectoryByTarget: Map[BuildTargetIdentifier, os.Path]
+  ): Map[BuildTargetIdentifier, os.Path] = {
+    val javaSemanticdbDirs = Option(javacOpts.getItems).toList.flatMap(_.asScala).map { item =>
+      val target = item.getTarget
+      val path = ScalacOptionsUtils.javacSemanticdbTargetPath(Option(item.getOptions).toList.flatMap(_.asScala))
+      target -> path.getOrElse(classDirectoryByTarget(target))
+    }.toMap
+    javaSemanticdbDirs ++ extractTargetSemanticdbDir(scalacOpts, classDirectoryByTarget)
   }
 
   /** target → dependency source jars (absolute paths), from the handshake

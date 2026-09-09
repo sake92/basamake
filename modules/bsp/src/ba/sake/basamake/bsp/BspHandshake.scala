@@ -5,16 +5,17 @@ import com.typesafe.scalalogging.StrictLogging
 import ch.epfl.scala.bsp4j.*
 import ba.sake.basamake.util.ProcessUtils
 
-/** Union of BuildServer + ScalaBuildServer. lsp4j discovers all @JsonRequest
-  * methods from both parent interfaces. Single proxy, both casts work. */
-trait BasamakeBspServer extends BuildServer, ScalaBuildServer
+/** Union of BuildServer's language extensions. lsp4j discovers all
+  * @JsonRequest methods from the parent interfaces on one proxy. */
+trait BasamakeBspServer extends BuildServer, ScalaBuildServer, JavaBuildServer
 
 final case class HandshakeResult(
     process: java.lang.Process,
     buildServer: BuildServer,
     sources: SourcesResult,
     dependencySources: DependencySourcesResult,
-    scalacOptions: ScalacOptionsResult
+    scalacOptions: ScalacOptionsResult,
+    javacOptions: JavacOptionsResult = new JavacOptionsResult(java.util.Collections.emptyList())
 )
 
 object BspHandshake extends StrictLogging {
@@ -93,8 +94,8 @@ object BspHandshake extends StrictLogging {
       val dependencySourcesResult = depSourcesFuture.get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       logger.debug("buildTargetDependencySources OK")
 
-      // Query scalacOptions for semanticdb target dirs — best-effort; non-Scala
-      // BSP servers may not support this. Fall back to empty result.
+      // Query language-specific options for SemanticDB target dirs. Either
+      // extension can be unsupported; source-only indexing remains available.
       logger.debug("Requesting buildTargetScalacOptions...")
       val scalacOptionsResult = try {
         remoteProxy.buildTargetScalacOptions(new ScalacOptionsParams(targetIds.asJava))
@@ -106,7 +107,18 @@ object BspHandshake extends StrictLogging {
       }
       logger.debug("buildTargetScalacOptions OK")
 
-      HandshakeResult(process, remoteProxy, sourcesResult, dependencySourcesResult, scalacOptionsResult)
+      logger.debug("Requesting buildTargetJavacOptions...")
+      val javacOptionsResult = try {
+        remoteProxy.buildTargetJavacOptions(new JavacOptionsParams(targetIds.asJava))
+          .get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      } catch {
+        case e: Exception =>
+          logger.debug(s"buildTargetJavacOptions failed (${e.getMessage}), continuing without javacOptions")
+          new JavacOptionsResult(java.util.Collections.emptyList())
+      }
+      logger.debug("buildTargetJavacOptions OK")
+
+      HandshakeResult(process, remoteProxy, sourcesResult, dependencySourcesResult, scalacOptionsResult, javacOptionsResult)
     } catch {
       case e: Exception =>
         val signaled = ProcessUtils.terminateProcessTree(process)
