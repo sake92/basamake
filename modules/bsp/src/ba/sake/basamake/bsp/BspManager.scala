@@ -31,6 +31,7 @@ class BspManager (
     * logMessage when the client lacks the progress capability. */
   private val compileProgress = new CompileProgressReporter
   private var knownBspFiles: Set[os.Path] = Set.empty
+  private var configState: BasamakeConfig = config
 
   private val watchFilter = new WatchFilter(workspaceRoot, config)
   private val bspWatcher = new BspWatcher(
@@ -76,6 +77,7 @@ class BspManager (
       catch { case e: Exception => logger.warn(s"registerTarget failed for $srcRoot: ${e.getMessage}", e) }
     }
     val discovered = BspDiscovery.discover(workspaceRoot, watchFilter.engine)
+    configState = BasamakeConfig.ensureBspDefaults(workspaceRoot, discovered.map(_.path).map(relativeBspPath))
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
 
@@ -298,10 +300,11 @@ class BspManager (
     stateLock.lock()
     try {
       val current = BspDiscovery.discover(workspaceRoot, watchFilter.engine).map(_.path).toSet
-    val (newFiles, deletedFiles, modifiedFiles) =
-      BspManager.classifyBspChanges(knownBspFiles, current, changed)
+      configState = BasamakeConfig.ensureBspDefaults(workspaceRoot, current.toList.map(relativeBspPath))
+      val (newFiles, deletedFiles, modifiedFiles) =
+        BspManager.classifyBspChanges(knownBspFiles, current, changed)
 
-    for (p <- deletedFiles) {
+      for (p <- deletedFiles) {
       try {
         logger.info(s"BSP config deleted: $p")
         knownBspFiles -= p
@@ -310,7 +313,7 @@ class BspManager (
         case e: Exception => logger.warn(s"Failed to process deleted BSP config $p: ${e.getMessage}", e)
       }
     }
-    for (p <- newFiles) {
+      for (p <- newFiles) {
       try {
         logger.info(s"New BSP config detected: $p")
         knownBspFiles += p
@@ -319,7 +322,7 @@ class BspManager (
         case e: Exception => logger.warn(s"Failed to process new BSP config $p: ${e.getMessage}", e)
       }
     }
-    for (p <- modifiedFiles) {
+      for (p <- modifiedFiles) {
       try {
         BspDiscovery.parseSingleSpec(p, workspaceRoot).foreach { spec =>
           val connId = BspConnectionId(spec.path.toString)
@@ -385,7 +388,7 @@ class BspManager (
   private def applyOverrides(spec: BspConnectionSpec): Option[BspConnectionSpec] = {
     val relPath = try spec.path.relativeTo(workspaceRoot).toString
       catch { case _: Exception => spec.path.toString }
-    config.bspOverrides.find(_.bspFile == relPath) match {
+    configState.bspOverrides.find(_.bspFile == relPath) match {
       case Some(ov) =>
         if (ov.enabled) {
           val merged = spec.copy(
@@ -401,6 +404,10 @@ class BspManager (
       case None => Some(spec)
     }
   }
+
+  private def relativeBspPath(path: os.Path): String =
+    try path.relativeTo(workspaceRoot).toString
+    catch { case _: Exception => path.toString }
 
   private def bspDiagToLsp(bsp: ch.epfl.scala.bsp4j.Diagnostic): Diagnostic = {
     val diag = new Diagnostic()

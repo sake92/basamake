@@ -56,9 +56,10 @@ object ScalacOptionsUtils {
     options.iterator.flatMap { option =>
       option.split("\\s+").iterator.collect {
         case token if token.startsWith(prefix) && token.length > prefix.length =>
-          os.Path(token.stripPrefix(prefix))
+          try Some(os.Path(token.stripPrefix(prefix)))
+          catch { case _: Exception => None }
       }
-    }.toSeq.headOption
+    }.flatten.nextOption
 
   /** Checks if -Ybest-effort flag is present (allows indexing when compilation had errors). */
   def hasBestEffortFlag(options: List[String]): Boolean =

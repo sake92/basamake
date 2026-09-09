@@ -8,14 +8,12 @@ import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.services.*
 
 import ba.sake.basamake.index.{SymbolDefinition, InMemorySymbolTable, HoverProvider}
-import ba.sake.basamake.index.indexing.{GitIgnoreEngine, WorkspaceIndex, IndexedSymbolTable, SourceJarIndexer}
-import ba.sake.basamake.bsp.{BspDiscovery, BspManager, BspWarmStart}
+import ba.sake.basamake.index.indexing.{WorkspaceIndex, IndexedSymbolTable, SourceJarIndexer}
+import ba.sake.basamake.bsp.{BspManager, BspWarmStart}
 import ba.sake.basamake.config.BasamakeConfig
 import ba.sake.basamake.util.LoggingUtils
 
 class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware, LanguageServer, TextDocumentService, WorkspaceService, StrictLogging {
-
-  private val CreateDefaultConfigCommand = "basamake.createDefaultConfig"
 
   // Set by connect() — the LSP launcher always connects before initialize()
   // (the protocol guarantees it), so `.get` at the initialize call site is safe.
@@ -69,8 +67,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setHoverProvider(true)
-    capabilities.setExecuteCommandProvider(
-      new ExecuteCommandOptions(java.util.List.of(CreateDefaultConfigCommand)))
     // Advertise rename handling so VS Code sends didRenameFiles notifications.
     // MUST declare filters: vscode-languageclient only registers its
     // workspace/didRenameFiles listener when filters are present
@@ -151,26 +147,6 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   // ----- WorkspaceService
   override def didChangeConfiguration(params: DidChangeConfigurationParams): Unit = {
     logger.debug(s"didChangeConfiguration: ${params.getSettings}")
-  }
-
-  override def executeCommand(params: ExecuteCommandParams): CompletableFuture[Object] = {
-    if (params.getCommand == CreateDefaultConfigCommand) {
-      val ignoreEngine = new GitIgnoreEngine(
-        workspacePath,
-        basamakeConfig.ignorePatterns.toVector,
-        exemptLastNames = Set(".bsp")
-      )
-      val bspFiles = BspDiscovery.discover(workspacePath, ignoreEngine).map { spec =>
-        spec.path.relativeTo(workspacePath).toString
-      }
-      val created = BasamakeConfig.createDefaultConfig(workspacePath, bspFiles)
-      val outcome = if (created) "created" else "already exists"
-      logger.info(s"Default Basamake config $outcome at .basamake/config.json")
-      CompletableFuture.completedFuture(outcome)
-    } else {
-      CompletableFuture.failedFuture(
-        new IllegalArgumentException(s"Unsupported command: ${params.getCommand}"))
-    }
   }
 
   override def didChangeWatchedFiles(params: DidChangeWatchedFilesParams): Unit = {

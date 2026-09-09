@@ -33,22 +33,39 @@ final case class BasamakeConfig(
 
 object BasamakeConfig {
 
-  /** Creates a complete, editable config template without replacing user
-    * configuration. BSP file paths must be relative to the workspace root. */
-  def createDefaultConfig(workspaceRoot: os.Path, bspFiles: List[String]): Boolean = {
+  /** Ensures every discovered BSP file has an explicit override while keeping
+    * all existing user values intact. Malformed existing config is preserved. */
+  def ensureBspDefaults(workspaceRoot: os.Path, bspFiles: List[String]): BasamakeConfig = {
     val configPath = workspaceRoot / ".basamake" / "config.json"
-    if (os.exists(configPath)) false
-    else {
-      val overrides = bspFiles.distinct.sorted.map { bspFile =>
-        BspOverride(
-          bspFile = bspFile,
-          enabled = true,
-          compileTimeoutSec = Some(BspOverride.defaultCompileTimeoutSec),
-          handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec)
-        )
+    val current =
+      if (!os.exists(configPath)) Some(BasamakeConfig())
+      else {
+        try Some(os.read(configPath).parseJson[BasamakeConfig])
+        catch {
+          case e: Exception =>
+            com.typesafe.scalalogging.Logger("BasamakeConfig").warn(
+              s"Failed to update malformed $configPath, preserving it: ${e.getMessage}")
+            None
+        }
       }
-      os.write(configPath, ba.sake.tupson.toJson(BasamakeConfig(bspOverrides = overrides)), createFolders = true)
-      true
+    current match {
+      case None => load(workspaceRoot)
+      case Some(cfg) =>
+        val known = cfg.bspOverrides.map(_.bspFile).toSet
+        val missing = bspFiles.distinct.sorted.filterNot(known)
+          .map(bspFile => BspOverride(
+            bspFile = bspFile,
+            enabled = true,
+            compileTimeoutSec = Some(BspOverride.defaultCompileTimeoutSec),
+            handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec)
+          ))
+        val updated = if (missing.isEmpty) cfg else cfg.copy(bspOverrides = cfg.bspOverrides ++ missing)
+        if (missing.nonEmpty || !os.exists(configPath)) {
+          val json = ba.sake.tupson.toJson(updated)
+          if (os.exists(configPath)) os.write.over(configPath, json)
+          else os.write(configPath, json, createFolders = true)
+        }
+        updated
     }
   }
 

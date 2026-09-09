@@ -36,12 +36,11 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(cfg.debugSymbolTableDump, None)
   }
 
-  test("createDefaultConfig: writes fully populated BSP defaults without overwriting") {
+  test("ensureBspDefaults: writes missing defaults without overwriting user values") {
     val proj = root / "default-template"
     os.makeDir.all(proj)
 
-    assert(BasamakeConfig.createDefaultConfig(proj, List(".bsp/mill.json", "app/.bsp/sbt.json")))
-    val cfg = BasamakeConfig.load(proj)
+    val cfg = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/mill.json", "app/.bsp/sbt.json"))
     assertEquals(
       cfg.bspOverrides,
       List(
@@ -50,8 +49,11 @@ class BasamakeConfigTest extends FunSuite {
       )
     )
 
-    os.write.over(proj / ".basamake" / "config.json", "{\"ignorePatterns\":[\"keep/\"]}")
-    assert(!BasamakeConfig.createDefaultConfig(proj, List(".bsp/other.json")))
-    assertEquals(BasamakeConfig.load(proj).ignorePatterns, List("keep/"))
+    os.write.over(proj / ".basamake" / "config.json",
+      """{"bspOverrides":[{"bspFile":".bsp/mill.json","enabled":false,"compileTimeoutSec":42}],"ignorePatterns":["keep/"]}""")
+    val updated = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/mill.json", "app/.bsp/sbt.json"))
+    assertEquals(updated.bspOverrides.head, BspOverride(".bsp/mill.json", false, Some(42), None))
+    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(120)))
+    assertEquals(updated.ignorePatterns, List("keep/"))
   }
 }

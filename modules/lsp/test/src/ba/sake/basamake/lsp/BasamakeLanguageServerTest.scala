@@ -2,34 +2,10 @@ package ba.sake.basamake.lsp
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
-import scala.jdk.CollectionConverters.*
 import munit.FunSuite
 import org.eclipse.lsp4j.*
 
 class BasamakeLanguageServerTest extends FunSuite {
-
-  test("executeCommand: creates a complete default config from discovered BSP files") {
-    val root = os.temp.dir(prefix = "lsp-default-config-")
-    try {
-      os.write(
-        root / ".bsp" / "mill.json",
-        """{"name":"mill","argv":["mill","--bsp"]}""",
-        createFolders = true
-      )
-      val server = new BasamakeLanguageServer(root)
-      val result = server.executeCommand(new ExecuteCommandParams("basamake.createDefaultConfig", Nil.asJava)).get(10, TimeUnit.SECONDS)
-      assertEquals(result, "created")
-      val config = ba.sake.basamake.config.BasamakeConfig.load(root)
-      assertEquals(
-        config.bspOverrides,
-        List(ba.sake.basamake.config.BspOverride(".bsp/mill.json", true, Some(600), Some(120)))
-      )
-      assertEquals(
-        server.executeCommand(new ExecuteCommandParams("basamake.createDefaultConfig", Nil.asJava)).get(10, TimeUnit.SECONDS),
-        "already exists"
-      )
-    } finally os.remove.all(root)
-  }
 
   private def copyFixture(name: String, testName: String): os.Path = {
     val src = os.pwd / "test" / "resources" / "examples" / name
