@@ -66,6 +66,7 @@
   <span class="hljs-attr">"ignorePatterns"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">"generated/"</span><span class="hljs-punctuation">]</span>
 <span class="hljs-punctuation">}</span>
 </code></pre>
+   <p>When Basamake starts, it automatically adds an enabled override for every discovered <code>.bsp/*.json</code>, using the standard timeouts (<code>600</code> seconds for compile and <code>120</code> seconds for handshake). Existing overrides are preserved. New BSP files discovered later are added automatically as well.</p>
    <h2 id="bspoverrides">bspOverrides<a href="#bspoverrides" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <p>Per-connection overrides, matched by the <code>.bsp/*.json</code> path relative to the workspace root:</p>
    <ul>
