@@ -52,9 +52,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable, basamakeConfig)
   private val hoverProvider = HoverProvider(workspaceIndex)
-  // A project gets at most one offer per server session, whether the user
-  // installs or dismisses it. This prevents every opened source file nagging.
-  private val bspInstallOffered = ConcurrentHashMap.newKeySet[os.Path]()
+  // An unanswered request is retried on the next open; this set only avoids
+  // concurrent duplicate dialogs for a project root.
+  private val bspInstallOfferPending = ConcurrentHashMap.newKeySet[os.Path]()
 
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
@@ -227,23 +227,35 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   private def offerBspInstallIfNeeded(uri: String, path: os.Path): Unit = {
     if (!isBuildSource(path) || bspManager.handles(uri)) return
-    BspBuildTool.nearestFor(path, workspacePath).foreach { case (tool, root) =>
-      if (bspInstallOffered.add(root)) {
+    BspBuildTool.nearestFor(path, workspacePath).foreach { candidate =>
+      val tool = candidate.tool
+      val root = candidate.root
+      val markerKey = candidate.configKey(workspacePath)
+      if (!bspManager.isInstallOfferBlacklisted(markerKey) && bspInstallOfferPending.add(root)) {
         val install = new MessageActionItem("Install")
-        val notNow = new MessageActionItem("Not now")
+        val never = new MessageActionItem("Do not offer again")
         val request = new ShowMessageRequestParams()
         request.setType(MessageType.Info)
         request.setMessage(s"No BSP configuration found for this ${tool.displayName} project. Install it?")
-        request.setActions(java.util.List.of(install, notNow))
+        request.setActions(java.util.List.of(install, never))
         client.foreach { lspClient =>
           try {
             lspClient.showMessageRequest(request).thenAccept { choice =>
               if (choice != null && choice.getTitle == install.getTitle) {
                 Thread.ofVirtual().start(() => installBsp(tool, root, uri))
+              } else if (choice != null && choice.getTitle == never.getTitle) {
+                if (!bspManager.blacklistInstallOffer(markerKey)) {
+                  logger.warn(s"Could not persist BSP-install offer dismissal for $markerKey")
+                }
+                bspInstallOfferPending.remove(root)
+              } else {
+                bspInstallOfferPending.remove(root)
               }
             }
           } catch {
-            case e: Exception => logger.warn(s"Failed to offer BSP installation for $root: ${e.getMessage}")
+            case e: Exception =>
+              bspInstallOfferPending.remove(root)
+              logger.warn(s"Failed to offer BSP installation for $root: ${e.getMessage}")
           }
         }
       }
@@ -251,17 +263,21 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   }
 
   private def installBsp(tool: BspBuildTool, root: os.Path, uri: String): Unit = {
-    BspInstaller.install(tool, root) match {
-      case Right(_) =>
-        bspManager.rescanBspConfigs()
-        if (bspManager.handles(uri)) {
-          client.foreach(_.showMessage(new MessageParams(MessageType.Info, s"BSP support installed for ${tool.displayName}.")))
-          bspManager.poke(uri, compile = true)
-        } else {
-          client.foreach(_.showMessage(new MessageParams(MessageType.Warning,
-            s"${tool.displayName} completed, but no BSP configuration was found.")))
-        }
-      case Left(message) => client.foreach(_.showMessage(new MessageParams(MessageType.Error, message)))
+    try {
+      BspInstaller.install(tool, root) match {
+        case Right(_) =>
+          bspManager.rescanBspConfigs()
+          if (bspManager.handles(uri)) {
+            client.foreach(_.showMessage(new MessageParams(MessageType.Info, s"BSP support installed for ${tool.displayName}.")))
+            bspManager.poke(uri, compile = true)
+          } else {
+            client.foreach(_.showMessage(new MessageParams(MessageType.Warning,
+              s"${tool.displayName} completed, but no BSP configuration was found.")))
+          }
+        case Left(message) => client.foreach(_.showMessage(new MessageParams(MessageType.Error, message)))
+      }
+    } finally {
+      bspInstallOfferPending.remove(root)
     }
   }
 

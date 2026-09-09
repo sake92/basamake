@@ -5,13 +5,14 @@ import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.watcher.FileChangeWatcher
 
 /** Owns the filesystem watcher and the .bsp-change debounce machinery.
-  * No BSP semantics: splits raw change batches into .gitignore changes and
-  * .bsp changes and hands them to the manager via callbacks. */
+  * No BSP semantics: splits raw change batches into .gitignore, .bsp, and
+  * Basamake-config changes and hands them to the manager via callbacks. */
 final class BspWatcher(
     workspaceRoot: os.Path,
     isIgnored: os.Path => Boolean,
     onGitignoreChanged: () => Unit,
-    onBspFilesChanged: Set[os.Path] => Unit
+    onBspFilesChanged: Set[os.Path] => Unit,
+    onConfigChanged: () => Unit
 ) extends StrictLogging {
 
   private val DebounceMs = 500L
@@ -28,7 +29,8 @@ final class BspWatcher(
   private var pendingDebounceTask: Option[ScheduledFuture[?]] = None
 
   private var started = false
-  private val watcher = FileChangeWatcher(workspaceRoot, onFileChanged, p => !isIgnored(p))
+  private val configPath = workspaceRoot / ".basamake" / "config.json"
+  private val watcher = FileChangeWatcher(workspaceRoot, onFileChanged, p => !isIgnored(p) || p == configPath)
 
   def start(): Unit = {
     started = true
@@ -48,12 +50,17 @@ final class BspWatcher(
   }
 
   private def onFileChanged(changedPaths: Set[os.Path]): Unit = {
-    val watched = changedPaths.filterNot(isIgnored)
+    val watched = changedPaths.filter(p => !isIgnored(p) || p == configPath)
     val changedBspFiles = watched.filter(_.segments.toSeq.contains(".bsp"))
     val gitignoreChanges = watched.filter(_.last == ".gitignore")
+    val configChanged = watched.contains(configPath)
     if (gitignoreChanges.nonEmpty) {
       logger.info(s"Detected .gitignore change(s): ${gitignoreChanges.mkString(", ")} — reloading ignore engine")
       onGitignoreChanged()
+    }
+    if (configChanged) {
+      logger.info(s"Detected Basamake config change: $configPath")
+      onConfigChanged()
     }
     if (changedBspFiles.nonEmpty) {
       logger.info(s"Detected .bsp change(s): ${changedBspFiles.mkString(", ")}")

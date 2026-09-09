@@ -5,10 +5,10 @@ import com.typesafe.scalalogging.StrictLogging
 
 /** Each supported build tool owns its project markers and install command.
   * Detection uses the nearest matching ancestor, so nested builds win. */
-private[lsp] enum BspBuildTool(val displayName: String, val markers: Set[os.RelPath]) {
-  case Deder extends BspBuildTool("Deder", Set(os.rel / "deder.pkl"))
-  case Sbt extends BspBuildTool("sbt", Set(os.rel / "build.sbt", os.rel / "project" / "build.properties"))
-  case Mill extends BspBuildTool("Mill", Set(
+private[lsp] enum BspBuildTool(val displayName: String, val markers: List[os.RelPath]) {
+  case Deder extends BspBuildTool("Deder", List(os.rel / "deder.pkl"))
+  case Sbt extends BspBuildTool("sbt", List(os.rel / "build.sbt", os.rel / "project" / "build.properties"))
+  case Mill extends BspBuildTool("Mill", List(
     os.rel / "build.mill",
     os.rel / "build.mill.yaml",
     os.rel / "build.sc",
@@ -22,13 +22,21 @@ private[lsp] enum BspBuildTool(val displayName: String, val markers: Set[os.RelP
   }
 }
 
+private[lsp] final case class BspInstallCandidate(
+    tool: BspBuildTool,
+    root: os.Path,
+    marker: os.RelPath
+) {
+  def configKey(workspaceRoot: os.Path): String = (root / marker).relativeTo(workspaceRoot).toString
+}
+
 private[lsp] object BspBuildTool {
   private[lsp] def commandOrWrapper(root: os.Path, name: String): String = {
     val wrapper = root / name
     if (os.isFile(wrapper)) wrapper.toString else name
   }
 
-  def nearestFor(file: os.Path, workspaceRoot: os.Path): Option[(BspBuildTool, os.Path)] = {
+  def nearestFor(file: os.Path, workspaceRoot: os.Path): Option[BspInstallCandidate] = {
     var current = if (os.isDir(file)) file else file / os.up
     while (current.startsWith(workspaceRoot)) {
       toolAt(current) match {
@@ -41,8 +49,10 @@ private[lsp] object BspBuildTool {
     None
   }
 
-  private def toolAt(root: os.Path): Option[(BspBuildTool, os.Path)] = {
-    BspBuildTool.values.find(tool => tool.markers.exists(marker => os.isFile(root / marker))).map(_ -> root)
+  private def toolAt(root: os.Path): Option[BspInstallCandidate] = {
+    BspBuildTool.values.iterator.flatMap { tool =>
+      tool.markers.find(marker => os.isFile(root / marker)).map(marker => BspInstallCandidate(tool, root, marker))
+    }.toSeq.headOption
   }
 }
 

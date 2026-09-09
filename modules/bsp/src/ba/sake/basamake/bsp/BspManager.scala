@@ -31,7 +31,7 @@ class BspManager (
     * logMessage when the client lacks the progress capability. */
   private val compileProgress = new CompileProgressReporter
   private var knownBspFiles: Set[os.Path] = Set.empty
-  private var configState: BasamakeConfig = config
+  @volatile private var configState: BasamakeConfig = config
 
   private val watchFilter = new WatchFilter(workspaceRoot, config)
   private val bspWatcher = new BspWatcher(
@@ -46,6 +46,9 @@ class BspManager (
       // never let a failing batch escape the watcher's executor thread
       try handleBspChanges(batch)
       catch { case e: Exception => logger.error(s"Failed to process .bsp changes: ${e.getMessage}", e) }
+    },
+    onConfigChanged = () => {
+      configState = BasamakeConfig.load(workspaceRoot)
     }
   )
 
@@ -112,6 +115,19 @@ class BspManager (
     * temporarily down should reconnect, not trigger an installation offer. */
   def handles(uri: String): Boolean =
     router.route(uri).exists(id => connections.containsKey(id))
+
+  /** Config is refreshed by BspWatcher, so a manual blacklist edit applies to
+    * the next LSP file-open without restarting the language server. */
+  def isInstallOfferBlacklisted(markerFile: String): Boolean =
+    configState.offerInstallBlacklist.contains(markerFile)
+
+  /** Persist a dismissal and update the in-memory view immediately; the file
+    * watcher handles subsequent manual edits to the same setting. */
+  def blacklistInstallOffer(markerFile: String): Boolean = {
+    val written = BasamakeConfig.blacklistInstallOffer(workspaceRoot, markerFile)
+    if (written) configState = BasamakeConfig.load(workspaceRoot)
+    written
+  }
 
   /** Re-run discovery after an external tool has created BSP config files.
     * The watcher normally notices this too, but an explicit rescan makes the

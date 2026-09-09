@@ -34,6 +34,14 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(cfg.ignorePatterns, Nil)
     assertEquals(cfg.bspOverrides, Nil)
     assertEquals(cfg.debugSymbolTableDump, None)
+    assertEquals(cfg.offerInstallBlacklist, Nil)
+  }
+
+  test("blacklistInstallOffer: persists an explicit BSP-install dismissal per marker") {
+    val proj = root / "install-offer"
+    assert(BasamakeConfig.blacklistInstallOffer(proj, "a/b/c/build.mill"))
+    assert(BasamakeConfig.blacklistInstallOffer(proj, "build.sbt"))
+    assertEquals(BasamakeConfig.load(proj).offerInstallBlacklist, List("a/b/c/build.mill", "build.sbt"))
   }
 
   test("ensureBspDefaults: writes missing defaults without overwriting user values") {

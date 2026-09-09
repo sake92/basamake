@@ -28,7 +28,10 @@ final case class BasamakeConfig(
     /** Override the dep/JDK cache root (default: XDG `~/.cache/basamake/deps`).
       * Relative paths resolve against the workspace root; absolute paths are
       * used as-is. Invalid paths fall back to the default with a warning. */
-    depsCacheRoot: Option[String] = None
+    depsCacheRoot: Option[String] = None,
+    /** Build-tool marker paths, relative to the workspace root, for which the
+      * user explicitly declined the BSP-install offer. */
+    offerInstallBlacklist: List[String] = Nil
 ) derives JsonRW
 
 object BasamakeConfig {
@@ -81,6 +84,35 @@ object BasamakeConfig {
         com.typesafe.scalalogging.Logger("BasamakeConfig").warn(s"Failed to parse $configPath, using defaults: ${e}")
         BasamakeConfig()
     else BasamakeConfig()
+  }
+
+  /** Persist an explicit BSP-install dismissal for one build marker. Malformed
+    * config is never overwritten merely to record this preference. */
+  def blacklistInstallOffer(workspaceRoot: os.Path, markerFile: String): Boolean = {
+    val configPath = workspaceRoot / ".basamake" / "config.json"
+    val current =
+      if (!os.exists(configPath)) Some(BasamakeConfig())
+      else {
+        try Some(os.read(configPath).parseJson[BasamakeConfig])
+        catch {
+          case e: Exception =>
+            com.typesafe.scalalogging.Logger("BasamakeConfig").warn(
+              s"Failed to update malformed $configPath, preserving it: ${e.getMessage}")
+            None
+        }
+      }
+    current.exists { config =>
+      try {
+        val updated = config.copy(offerInstallBlacklist = (config.offerInstallBlacklist :+ markerFile).distinct)
+        os.write.over(configPath, ba.sake.tupson.toJson(updated), createFolders = true)
+        true
+      } catch {
+        case e: Exception =>
+          com.typesafe.scalalogging.Logger("BasamakeConfig").warn(
+            s"Failed to write $configPath: ${e.getMessage}")
+          false
+      }
+    }
   }
 }
 
