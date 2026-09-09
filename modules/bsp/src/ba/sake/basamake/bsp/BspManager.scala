@@ -107,6 +107,23 @@ class BspManager (
     }
   }
 
+  /** Whether a discovered BSP configuration owns this URI. This deliberately
+    * says nothing about process liveness: a configured connection that is
+    * temporarily down should reconnect, not trigger an installation offer. */
+  def handles(uri: String): Boolean =
+    router.route(uri).exists(id => connections.containsKey(id))
+
+  /** Re-run discovery after an external tool has created BSP config files.
+    * The watcher normally notices this too, but an explicit rescan makes the
+    * install action deterministic even when a client has no file watcher. */
+  def rescanBspConfigs(): Unit = {
+    if (!shuttingDown.get()) {
+      router.invalidateBootstrapCache()
+      try handleBspChanges(Set.empty)
+      catch { case e: Exception => logger.warn(s"Failed to rescan BSP configs: ${e.getMessage}", e) }
+    }
+  }
+
   /** Clear diagnostics for a specific URI (e.g., when a file is closed/renamed).
     * Always publishes an empty list — VS Code keeps showing stale diagnostics
     * (e.g. published by a previous server session) unless we explicitly clear them. */

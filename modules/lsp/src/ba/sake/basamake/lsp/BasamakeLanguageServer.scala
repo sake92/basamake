@@ -2,6 +2,7 @@ package ba.sake.basamake.lsp
 
 import java.net.URI
 import java.util.concurrent.{CompletableFuture, Executors}
+import java.util.concurrent.ConcurrentHashMap
 import scala.jdk.CollectionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import org.eclipse.lsp4j.*
@@ -51,6 +52,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable, basamakeConfig)
   private val hoverProvider = HoverProvider(workspaceIndex)
+  // A project gets at most one offer per server session, whether the user
+  // installs or dismisses it. This prevents every opened source file nagging.
+  private val bspInstallOffered = ConcurrentHashMap.newKeySet[os.Path]()
 
   // ----- LanguageClientAware
   override def connect(client: LanguageClient): Unit = {
@@ -217,8 +221,52 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     Thread.ofVirtual().start(() => {
       workspaceIndex.onDidOpen(path)
       bspManager.poke(uri, compile = true)
+      offerBspInstallIfNeeded(uri, path)
     })
   }
+
+  private def offerBspInstallIfNeeded(uri: String, path: os.Path): Unit = {
+    if (!isBuildSource(path) || bspManager.handles(uri)) return
+    BspBuildTool.nearestFor(path, workspacePath).foreach { case (tool, root) =>
+      if (bspInstallOffered.add(root)) {
+        val install = new MessageActionItem("Install")
+        val notNow = new MessageActionItem("Not now")
+        val request = new ShowMessageRequestParams()
+        request.setType(MessageType.Info)
+        request.setMessage(s"No BSP configuration found for this ${tool.displayName} project. Install it?")
+        request.setActions(java.util.List.of(install, notNow))
+        client.foreach { lspClient =>
+          try {
+            lspClient.showMessageRequest(request).thenAccept { choice =>
+              if (choice != null && choice.getTitle == install.getTitle) {
+                Thread.ofVirtual().start(() => installBsp(tool, root, uri))
+              }
+            }
+          } catch {
+            case e: Exception => logger.warn(s"Failed to offer BSP installation for $root: ${e.getMessage}")
+          }
+        }
+      }
+    }
+  }
+
+  private def installBsp(tool: BspBuildTool, root: os.Path, uri: String): Unit = {
+    BspInstaller.install(tool, root) match {
+      case Right(_) =>
+        bspManager.rescanBspConfigs()
+        if (bspManager.handles(uri)) {
+          client.foreach(_.showMessage(new MessageParams(MessageType.Info, s"BSP support installed for ${tool.displayName}.")))
+          bspManager.poke(uri, compile = true)
+        } else {
+          client.foreach(_.showMessage(new MessageParams(MessageType.Warning,
+            s"${tool.displayName} completed, but no BSP configuration was found.")))
+        }
+      case Left(message) => client.foreach(_.showMessage(new MessageParams(MessageType.Error, message)))
+    }
+  }
+
+  private def isBuildSource(path: os.Path): Boolean =
+    path.ext == "scala" || path.ext == "java" || path.ext == "sbt"
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri

@@ -14,6 +14,7 @@ final class TestLanguageClient extends LanguageClient {
   private var diagByUri = Map.empty[String, List[Diagnostic]]
   private var publishCountByUri = Map.empty[String, Int]          // NEW
   private val messages = new CopyOnWriteArrayList[MessageParams]()
+  private val messageRequests = new CopyOnWriteArrayList[ShowMessageRequestParams]()
   private val progress = new CopyOnWriteArrayList[ProgressParams]()
 
   override def publishDiagnostics(p: PublishDiagnosticsParams): Unit = lock.synchronized {
@@ -24,8 +25,10 @@ final class TestLanguageClient extends LanguageClient {
   }
   override def telemetryEvent(x: Any): Unit = ()
   override def showMessage(p: MessageParams): Unit = ()
-  override def showMessageRequest(p: ShowMessageRequestParams): CompletableFuture[MessageActionItem] =
+  override def showMessageRequest(p: ShowMessageRequestParams): CompletableFuture[MessageActionItem] = {
+    messageRequests.add(p)
     CompletableFuture.completedFuture(null)
+  }
   override def logMessage(p: MessageParams): Unit = messages.add(p)
   override def createProgress(p: WorkDoneProgressCreateParams): CompletableFuture[Void] =
     CompletableFuture.completedFuture(null)
@@ -35,6 +38,7 @@ final class TestLanguageClient extends LanguageClient {
 
   def diagnosticsFor(uri: String): List[Diagnostic] = lock.synchronized(diagByUri.getOrElse(uri, Nil))
   def loggedMessages: List[MessageParams] = messages.asScala.toList
+  def shownMessageRequests: List[ShowMessageRequestParams] = messageRequests.asScala.toList
   def progressNotifications: List[ProgressParams] = progress.asScala.toList
 
   /** Waits until a NEW (post-call) Info logMessage starting with "Compiled"
