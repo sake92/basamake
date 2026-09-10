@@ -8,14 +8,17 @@ import scala.jdk.OptionConverters.*
 import com.typesafe.scalalogging.StrictLogging
 import coursierapi.{Dependency, Fetch}
 import org.eclipse.lsp4j.{CompletionList, Hover}
-import scala.meta.pc.{CancelToken, OffsetParams, PresentationCompiler}
+import scala.meta.pc.{CancelToken, OffsetParams, PresentationCompiler, SymbolSearch}
 import ba.sake.basamake.bsp.ScalaPresentationTarget
 import PresentationCompilerHover.*
 
 /** Resolves target-matched Scala presentation compilers behind the stable mtags
   * interface. Each compiler runs in its own classloader so Scala compiler
   * internals never leak into the language server's classpath. */
-private[lsp] final class PresentationCompilerHover(workspaceRoot: os.Path) extends StrictLogging {
+private[lsp] final class PresentationCompilerHover(
+    workspaceRoot: os.Path,
+    symbolSearch: SymbolSearch = PresentationCompilerHover.EmptySymbolSearch
+) extends StrictLogging {
   private val compilers = new ConcurrentHashMap[CompilerKey, LoadedCompiler]()
 
   def hover(
@@ -85,7 +88,8 @@ private[lsp] final class PresentationCompilerHover(workspaceRoot: os.Path) exten
       }
       LoadedCompiler(
         compiler.newInstance(target.id, target.classpath.map(_.toNIO).asJava, target.options.asJava)
-          .withWorkspace(workspaceRoot.toNIO),
+          .withWorkspace(workspaceRoot.toNIO)
+          .withSearch(symbolSearch),
         loader
       )
     } catch {
@@ -145,6 +149,17 @@ private[lsp] final class PresentationCompilerHover(workspaceRoot: os.Path) exten
 
 private object PresentationCompilerHover {
   private val MtagsVersion = "1.6.2"
+
+  private object EmptySymbolSearch extends SymbolSearch {
+    override def documentation(symbol: String, parents: scala.meta.pc.ParentSymbols): java.util.Optional[scala.meta.pc.SymbolDocumentation] =
+      java.util.Optional.empty()
+    override def definition(symbol: String, source: URI): java.util.List[org.eclipse.lsp4j.Location] = java.util.List.of()
+    override def definitionSourceToplevels(symbol: String, source: URI): java.util.List[String] = java.util.List.of()
+    override def search(query: String, buildTarget: String, visitor: scala.meta.pc.SymbolSearchVisitor): SymbolSearch.Result =
+      SymbolSearch.Result.COMPLETE
+    override def searchMethods(query: String, buildTarget: String, visitor: scala.meta.pc.SymbolSearchVisitor): SymbolSearch.Result =
+      SymbolSearch.Result.COMPLETE
+  }
 
   private final case class CompilerKey(
       id: String,

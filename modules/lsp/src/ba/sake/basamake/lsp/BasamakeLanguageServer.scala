@@ -52,7 +52,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable, basamakeConfig)
   private val hoverProvider = HoverProvider(workspaceIndex)
-  private val presentationHover = new PresentationCompilerHover(workspacePath)
+  private val presentationHover = new PresentationCompilerHover(
+    workspacePath,
+    new PresentationCompilerSymbolSearch(workspaceIndex)
+  )
   /** LSP full-sync buffer text. The workspace index intentionally works from
     * disk; the presentation compiler must instead see unsaved editor contents. */
   private val openDocumentTexts = new ConcurrentHashMap[String, String]()

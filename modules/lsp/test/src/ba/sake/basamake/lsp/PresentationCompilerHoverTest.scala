@@ -4,6 +4,9 @@ import java.net.URI
 import munit.FunSuite
 import scala.jdk.CollectionConverters.*
 import ba.sake.basamake.bsp.ScalaPresentationTarget
+import ba.sake.basamake.index.{InMemorySymbolTable, SymbolDefinition}
+import ba.sake.basamake.index.indexing.WorkspaceIndex
+import scala.meta.internal.semanticdb.Range
 
 class PresentationCompilerHoverTest extends FunSuite {
   private val scalaLibrary = os.Path(classOf[scala.Option[?]].getProtectionDomain.getCodeSource.getLocation.toURI)
@@ -47,6 +50,27 @@ class PresentationCompilerHoverTest extends FunSuite {
         character = 18
       )
       assert(result.exists(_.toString.contains("Int")), clues(result))
+    } finally hover.shutdown()
+  }
+
+  test("hover includes Scaladoc for an indexed workspace definition") {
+    val source = os.temp.dir() / "Documented.scala"
+    val text = """object Main:
+      |  /** The answer to everything. */
+      |  val answer = 42
+      |  val result = answer
+      |""".stripMargin
+    os.write(source, text)
+    val symbols = new InMemorySymbolTable
+    symbols.add(SymbolDefinition("_empty_/Main.answer.", "answer", false, Range(2, 6, 2, 12), source))
+    val target = ScalaPresentationTarget("scaladoc-poc", "3.7.4", List(scalaLibrary), Nil, Nil)
+    val hover = new PresentationCompilerHover(
+      os.pwd,
+      new PresentationCompilerSymbolSearch(new WorkspaceIndex(os.pwd, symbols))
+    )
+    try {
+      val result = hover.hover(target, source.toNIO.toUri, text, line = 3, character = 16)
+      assert(result.exists(_.toString.contains("The answer to everything.")), clues(result))
     } finally hover.shutdown()
   }
 
