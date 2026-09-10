@@ -1,6 +1,6 @@
 ---
 title: Basamake
-description: Minimalistic Scala language server — fast and stable navigation and build diagnostics for everyday work
+description: Minimalistic Scala language server — fast navigation, compiler-backed editing help, and build diagnostics
 pagination:
   enabled: false
 ---
@@ -15,8 +15,10 @@ and gives you the essentials:
 - **Build diagnostics** (errors, warnings) reported by your build tool
 - **Multiple build tools per workspace** (sbt, Mill, scala-cli, deder, ...) — all discovered and routed automatically
 - **Cached indexes** for dependency jars and JDK sources — fast startup and snappy navigation
+- **Hover and completion** for Scala files, using the build target's presentation compiler
 
-No completion, hover, rename, or formatting. Just the bare minimum to get work done — fast and stable.
+No rename refactoring, formatting, or workspace-wide symbol search. Just the tools needed to
+navigate, understand, and edit Scala code — fast and stable.
 
 > **New here?** Start with the [Installation](/install.html) guide,
 > then read [How it works](/how-it-works.html).
@@ -33,6 +35,8 @@ No completion, hover, rename, or formatting. Just the bare minimum to get work d
 
 - go to definition, including into dependency jars and JDK sources
 - find references
+- type and documentation on hover for Scala files
+- code completion for Scala files
 - build diagnostics from BSP servers
 - multiple BSP servers per workspace, lazily started
 - indexing progress reported to the editor while the workspace index is built

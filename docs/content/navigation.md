@@ -37,7 +37,29 @@ are ready first.
 The cache survives restarts: the second time you open the same project, navigation into
 dependencies is instant, with no re-indexing.
 
+## Hover and completion
+
+For a Scala file owned by a BSP build target, Basamake starts that target's Scala
+presentation compiler on demand. It uses the target's Scala version, classpath, compiler
+options, and your current unsaved editor buffer.
+
+- **Hover** shows the inferred type or symbol signature, plus Scaladoc or Javadoc when the
+  compiler can obtain it.
+- **Completion** suggests names and members valid at the cursor.
+
+The presentation compiler is separate from the workspace index. If it is unavailable,
+navigation and references still use the index as usual.
+
+### Availability
+
+Hover and completion need a working BSP target and a presentation-compiler artifact for its
+exact Scala version. Scala 2 uses the version-matched `mtags` compiler; Scala 3 uses the
+presentation compiler published with that Scala version. They can be unavailable for an old,
+unpublished, or otherwise unsupported compiler version, or while its artifact cannot be
+downloaded. In those cases Basamake returns no compiler result rather than substituting a
+newer compiler, which could typecheck the target incorrectly.
+
 ## Not supported (yet)
 
-- completion, hover, rename, formatting, workspace symbols
+- rename, formatting, workspace symbols
 - `documentSymbol` (outline) is registered but returns nothing in v1
