@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="Minimalistic Scala language server — fast and stable navigation and build diagnostics for everyday work">
+  <meta name="description" content="Minimalistic Scala language server — fast navigation, compiler-backed editing help, and build diagnostics">
   <title> Basamake | Basamake Documentation </title>
   <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
@@ -61,8 +61,9 @@
     <li><strong>Build diagnostics</strong> (errors, warnings) reported by your build tool</li>
     <li><strong>Multiple build tools per workspace</strong> (sbt, Mill, scala-cli, deder, ...) — all discovered and routed automatically</li>
     <li><strong>Cached indexes</strong> for dependency jars and JDK sources — fast startup and snappy navigation</li>
+    <li><strong>Hover and completion</strong> for Scala files, using the build target's presentation compiler</li>
    </ul>
-   <p>No completion, hover, rename, or formatting. Just the bare minimum to get work done — fast and stable.</p>
+   <p>No rename refactoring, formatting, or workspace-wide symbol search. Just the tools needed to navigate, understand, and edit Scala code — fast and stable.</p>
    <blockquote>
     <p><strong>New here?</strong> Start with the <a href="https://sake92.github.io/basamake/install.html">Installation</a> guide, then read <a href="https://sake92.github.io/basamake/how-it-works.html">How it works</a>. Already set up? See the <a href="https://sake92.github.io/basamake/config.html">Configuration</a> page.</p>
    </blockquote>
@@ -77,6 +78,8 @@
    <ul>
     <li>go to definition, including into dependency jars and JDK sources</li>
     <li>find references</li>
+    <li>type and documentation on hover for Scala files</li>
+    <li>code completion for Scala files</li>
     <li>build diagnostics from BSP servers</li>
     <li>multiple BSP servers per workspace, lazily started</li>
     <li>indexing progress reported to the editor while the workspace index is built</li>
