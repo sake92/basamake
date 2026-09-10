@@ -4,10 +4,20 @@ import java.util.concurrent.{CompletableFuture, ConcurrentHashMap, CopyOnWriteAr
 import java.net.URI
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.*
+import com.google.gson.JsonElement
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.util.{ProcessUtils, ScalacOptionsUtils, UriUtils}
 import ba.sake.basamake.index.indexing.SemanticdbDirs
 import ba.sake.tupson.{given, *}
+
+/** Compiler inputs reported by the BSP target that owns an open Scala file. */
+final case class ScalaPresentationTarget(
+    id: String,
+    scalaVersion: String,
+    classpath: List[os.Path],
+    options: List[String],
+    sourcePaths: List[os.Path]
+)
 
 /** One BSP connection: process + liveness.
   *
@@ -44,6 +54,8 @@ class BspConnection (
   @volatile private var semanticdbDirByTarget: Map[BuildTargetIdentifier, os.Path] = Map.empty
   /** target → dependency source jars (from handshake DependencySourcesResult). */
   @volatile private var dependencySourcesByTarget: Map[BuildTargetIdentifier, List[os.Path]] = Map.empty
+  @volatile private var scalaVersionByTarget: Map[BuildTargetIdentifier, String] = Map.empty
+  @volatile private var scalacOptionsByTarget: Map[BuildTargetIdentifier, ScalacOptionsItem] = Map.empty
 
   private val spawnLock = new java.util.concurrent.locks.ReentrantLock()
   /** True while spawnAndHandshake is in progress. Volatile for fast-path checks. */
@@ -218,6 +230,8 @@ class BspConnection (
     // return empty DependencySourcesResult, which must never wipe known deps.
     val freshDeps = BspConnection.extractTargetDependencySources(result.dependencySources)
     dependencySourcesByTarget = BspConnection.mergeDeps(loadPersistedDependencySources(), freshDeps)
+    scalaVersionByTarget = BspConnection.extractScalaVersions(result.targets)
+    scalacOptionsByTarget = BspConnection.scalacOptionsByTarget(result.scalacOptions)
   }
 
   private def drainPendingCompiles(): Unit = {
@@ -259,6 +273,26 @@ class BspConnection (
     if (!alive) return Nil
     val tids = BspConnection.targetIdsForUri(uri, sourceDirsByTarget)
     tids.flatMap(tid => dependencySourcesByTarget.getOrElse(tid, Nil)).distinct
+  }
+
+  /** Presentation-compiler inputs for the source-owning BSP target. This is
+    * intentionally live-only: a warmed SemanticDB index can serve navigation,
+    * but an interactive compiler requires the active build target's exact
+    * Scala version and classpath. */
+  def scalaPresentationTargetFor(uri: String): Option[ScalaPresentationTarget] = {
+    if (!alive) return None
+    BspConnection.targetIdsForUri(uri, sourceDirsByTarget).iterator.flatMap { tid =>
+      for {
+        scalaVersion <- scalaVersionByTarget.get(tid)
+        item <- scalacOptionsByTarget.get(tid)
+      } yield ScalaPresentationTarget(
+        id = tid.getUri,
+        scalaVersion = scalaVersion,
+        classpath = BspConnection.classpathOf(item),
+        options = Option(item.getOptions).toList.flatMap(_.asScala),
+        sourcePaths = sourceDirsByTarget.getOrElse(tid, Nil).flatMap(BspConnection.toPath)
+      )
+    }.toSeq.headOption
   }
 
   /** Writes .basamake/bsp/<name>_<hash>/data.json with target metadata
@@ -549,6 +583,37 @@ object BspConnection {
       case _: Exception => None
     }
   }
+
+  private[bsp] def toPath(value: String): Option[os.Path] = {
+    try {
+      val uri = URI.create(value)
+      if (uri.getScheme == null) Some(os.Path(value)) else Some(os.Path(uri))
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  private[bsp] def classpathOf(item: ScalacOptionsItem): List[os.Path] =
+    Option(item.getClasspath).toList.flatMap(_.asScala).flatMap(toPath)
+
+  private[bsp] def scalacOptionsByTarget(result: ScalacOptionsResult): Map[BuildTargetIdentifier, ScalacOptionsItem] =
+    Option(result.getItems).toList.flatMap(_.asScala).map(item => item.getTarget -> item).toMap
+
+  /** BSP embeds ScalaBuildTarget in BuildTarget.data when dataKind is "scala".
+    * bsp4j intentionally decodes its untyped `data` field as a JsonElement, so
+    * extract just the stable `scalaVersion` field from that wire representation. */
+  private[bsp] def extractScalaVersions(result: WorkspaceBuildTargetsResult): Map[BuildTargetIdentifier, String] =
+    Option(result.getTargets).toList.flatMap(_.asScala).flatMap { target =>
+      target.getData match {
+        case data: JsonElement if target.getDataKind == "scala" && data.isJsonObject =>
+          Option(data.getAsJsonObject.get("scalaVersion"))
+            .filter(element => !element.isJsonNull)
+            .map(_.getAsString)
+            .filter(_.nonEmpty)
+            .map(target.getId -> _)
+        case _ => None
+      }
+    }.toMap
 
   private def targetIdsForUri(
       uri: String, targetToSourceRoots: Map[BuildTargetIdentifier, List[String]]

@@ -95,6 +95,10 @@ local const lspModules =
         "com.lihaoyi::mainargs:0.7.8"
         "com.lihaoyi::os-lib:0.11.9-M8"
         "org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0"
+        // Presentation compilers are resolved per BSP target, not bundled with
+        // the server: Scala 2 uses mtags and Scala 3 uses its compiler artifact.
+        "io.get-coursier:interface:1.0.28"
+        "org.scalameta:mtags-interfaces:1.6.2"
       }
     }
     testTemplate = (template.asTest()) {

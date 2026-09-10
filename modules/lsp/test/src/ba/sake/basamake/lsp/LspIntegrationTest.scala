@@ -102,6 +102,29 @@ class LspIntegrationTest extends FunSuite {
     }
   }
 
+  test("completion: real LSP request uses the active BSP target compiler") {
+    val root = BspProjectFixture.prepare("simple", "lsp-e2e-completion")
+    val client = LspTestClient.start(root)
+    try {
+      client.initialize()
+      client.open("Main.scala")
+      client.open("Utils.scala")
+      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = 300, minPublishCount = 1)
+      client.awaitCompileSucceeded()
+
+      // The cursor is immediately after `Utils.` in the valid fixture source;
+      // the editor has not changed the file, so this isolates completion from
+      // the compile/diagnostics lifecycle.
+      val completions = client.completion("Main.scala", line = 2, char = 18)
+      val labels = completions.getItems.asScala.map(_.getLabel).toSet
+      assert(labels.exists(_.startsWith("add(")), s"expected add completion, got: $labels")
+      assert(labels.exists(_.startsWith("message")), s"expected message completion, got: $labels")
+    } finally {
+      client.close()
+      os.remove.all(root)
+    }
+  }
+
   test("broken → fixed → broken again (diagnostics track the source)") {
     val root = BspProjectFixture.prepare("errors", "lsp-e2e-cycle")
     val client = LspTestClient.start(root)

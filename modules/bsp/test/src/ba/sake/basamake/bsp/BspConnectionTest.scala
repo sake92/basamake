@@ -3,6 +3,7 @@ package ba.sake.basamake.bsp
 import java.util.concurrent.{CompletableFuture, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import ch.epfl.scala.bsp4j.*
+import com.google.gson.JsonParser
 import scala.jdk.CollectionConverters.*
 import munit.FunSuite
 import ba.sake.basamake.index.indexing.SemanticdbDirs
@@ -42,6 +43,22 @@ class BspConnectionTest extends FunSuite {
 
   private def noopSink = new BspEvents {
     def onDiagnostics(p: PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
+  }
+
+  test("extractScalaVersions reads BSP JsonElement target data") {
+    val id = new BuildTargetIdentifier("file:///example")
+    val target = new BuildTarget(
+      id,
+      java.util.Collections.emptyList(),
+      java.util.List.of("scala"),
+      java.util.Collections.emptyList(),
+      new BuildTargetCapabilities()
+    )
+    target.setDataKind("scala")
+    target.setData(JsonParser.parseString("{\"scalaVersion\": \"3.7.4\"}"))
+
+    val result = new WorkspaceBuildTargetsResult(java.util.List.of(target))
+    assertEquals(BspConnection.extractScalaVersions(result), Map(id -> "3.7.4"))
   }
 
   test("dead process on ping → respawn (killTree skips already-dead process)") {

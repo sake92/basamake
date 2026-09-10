@@ -46,6 +46,7 @@ final class LspTestClient private (
       require(caps.getDefinitionProvider != null && caps.getDefinitionProvider.getLeft.booleanValue(), "definition capability expected")
       require(caps.getReferencesProvider != null && caps.getReferencesProvider.getLeft.booleanValue(), "references capability expected")
       require(caps.getHoverProvider != null && caps.getHoverProvider.getLeft.booleanValue(), "hover capability expected")
+      require(caps.getCompletionProvider != null, "completion capability expected")
       val didRename = caps.getWorkspace.getFileOperations.getDidRename
       require(didRename != null && didRename.getFilters != null && !didRename.getFilters.isEmpty,
         "didRename filters must be advertised (vscode-languageclient ignores filter-less registrations)")
@@ -116,6 +117,17 @@ final class LspTestClient private (
       params.setTextDocument(new TextDocumentIdentifier(uriOf(relPath)))
       params.setPosition(new Position(line, char))
       Option(proxy.getTextDocumentService.hover(params).get(60, TimeUnit.SECONDS))
+    }
+
+  /** Completion at (line, character) — both 0-based. */
+  def completion(relPath: String, line: Int, char: Int): CompletionList =
+    measure("completion") {
+      val params = new CompletionParams()
+      params.setTextDocument(new TextDocumentIdentifier(uriOf(relPath)))
+      params.setPosition(new Position(line, char))
+      val result = proxy.getTextDocumentService.completion(params).get(60, TimeUnit.SECONDS)
+      if (result.isRight) result.getRight
+      else new CompletionList(false, result.getLeft)
     }
 
   /** Write a file directly on disk — NOT through the LSP. Simulates external

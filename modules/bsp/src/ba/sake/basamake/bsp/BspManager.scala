@@ -247,6 +247,10 @@ class BspManager (
     }.getOrElse(depFileCandidates(uri))
   }
 
+  /** Exact live compiler inputs for the build target owning `uri`. */
+  def scalaPresentationTargetFor(uri: String): Option[ScalaPresentationTarget] =
+    router.route(uri).flatMap(id => Option(connections.get(id))).flatMap(_.scalaPresentationTargetFor(uri))
+
   /** Candidates for a dep/JDK source file (`~/.cache/basamake/deps/<fp>/src/...`):
     * the jar the file was extracted from (owning jar). */
   private def depFileCandidates(uri: String): List[os.Path] = {

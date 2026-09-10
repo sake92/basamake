@@ -52,6 +52,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable, basamakeConfig)
   private val hoverProvider = HoverProvider(workspaceIndex)
+  private val presentationHover = new PresentationCompilerHover(workspacePath)
+  /** LSP full-sync buffer text. The workspace index intentionally works from
+    * disk; the presentation compiler must instead see unsaved editor contents. */
+  private val openDocumentTexts = new ConcurrentHashMap[String, String]()
   // An unanswered request is retried on the next open; this set only avoids
   // concurrent duplicate dialogs for a project root.
   private val bspInstallOfferPending = ConcurrentHashMap.newKeySet[os.Path]()
@@ -71,6 +75,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     capabilities.setDefinitionProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setHoverProvider(true)
+    val completionOptions = new CompletionOptions()
+    completionOptions.setTriggerCharacters(java.util.List.of("."))
+    capabilities.setCompletionProvider(completionOptions)
     // Advertise rename handling so VS Code sends didRenameFiles notifications.
     // MUST declare filters: vscode-languageclient only registers its
     // workspace/didRenameFiles listener when filters are present
@@ -141,6 +148,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   /** Idempotent cleanup — called by shutdown/exit and the JVM shutdown hook. */
   def cleanup(): Unit = {
     navigationExecutor.shutdown()
+    presentationHover.shutdown()
     bspManager.shutdown()
   }
 
@@ -212,6 +220,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   // ----- TextDocumentService
   override def didOpen(params: DidOpenTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
+    openDocumentTexts.put(uri, params.getTextDocument.getText)
     logger.info(s"didOpen: $uri — scheduling compile")
     val path = os.Path(URI.create(uri))
     // index on a background thread — source parsing (dep/JDK files without
@@ -286,6 +295,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   override def didChange(params: DidChangeTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
+    Option(params.getContentChanges).toList.flatMap(_.asScala).lastOption.foreach { change =>
+      openDocumentTexts.put(uri, change.getText)
+    }
     logger.debug(s"didChange: $uri")
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
@@ -305,6 +317,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
 
   override def didClose(params: DidCloseTextDocumentParams): Unit = {
     val uri = params.getTextDocument.getUri
+    openDocumentTexts.remove(uri)
     logger.debug(s"didClose: $uri")
     val path = os.Path(URI.create(uri))
     Thread.ofVirtual().start(() => {
@@ -362,18 +375,53 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
       val depCandidates = bspManager.dependencySourcesFor(uri)
-      hoverProvider.hover(path, line, char, depCandidates) match {
-        case Some(info) =>
-          logger.debug(s"hover at $line:$char → ${info.signature}")
-          val md = new MarkupContent()
-          md.setKind("markdown")
-          md.setValue(info.markdown)
-          new Hover(md)
-        case None =>
-          logger.debug(s"hover at $line:$char → no info")
-          null
+      val compilerHover = for {
+        target <- bspManager.scalaPresentationTargetFor(uri)
+        text <- Option(openDocumentTexts.get(uri)).orElse(readText(path))
+        hover <- presentationHover.hover(target, URI.create(uri), text, line, char)
+      } yield hover
+      compilerHover match {
+        case Some(hover) => hover
+        case None => hoverProvider.hover(path, line, char, depCandidates) match {
+          case Some(info) =>
+            logger.debug(s"hover at $line:$char → ${info.signature}")
+            val md = new MarkupContent()
+            md.setKind("markdown")
+            md.setValue(info.markdown)
+            new Hover(md)
+          case None =>
+            logger.debug(s"hover at $line:$char → no info")
+            null
+        }
       }
     }, navigationExecutor)
+
+  override def completion(params: CompletionParams)
+      : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
+        java.util.List[CompletionItem],
+        CompletionList
+      ]] =
+    CompletableFuture.supplyAsync(() => {
+      val uri = params.getTextDocument.getUri
+      logger.debug(s"completion: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
+      Thread.ofVirtual().start(() => {
+        bspManager.poke(uri, compile = false)
+      })
+      val path = os.Path(URI.create(uri))
+      val line = params.getPosition.getLine
+      val char = params.getPosition.getCharacter
+      val completions = for {
+        target <- bspManager.scalaPresentationTargetFor(uri)
+        text <- Option(openDocumentTexts.get(uri)).orElse(readText(path))
+        result <- presentationHover.complete(target, URI.create(uri), text, line, char)
+      } yield result
+      val result = completions.getOrElse(new CompletionList(false, java.util.Collections.emptyList()))
+      org.eclipse.lsp4j.jsonrpc.messages.Either.forRight(result)
+    }, navigationExecutor)
+
+  private def readText(path: os.Path): Option[String] =
+    try Some(os.read(path))
+    catch { case _: Exception => None }
 
   private def toLspLocation(loc: SymbolDefinition): Location = {
     val uri = loc.path.toNIO.toUri.toString

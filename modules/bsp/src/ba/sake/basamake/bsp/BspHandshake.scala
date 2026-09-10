@@ -15,7 +15,8 @@ final case class HandshakeResult(
     sources: SourcesResult,
     dependencySources: DependencySourcesResult,
     scalacOptions: ScalacOptionsResult,
-    javacOptions: JavacOptionsResult = new JavacOptionsResult(java.util.Collections.emptyList())
+    javacOptions: JavacOptionsResult = new JavacOptionsResult(java.util.Collections.emptyList()),
+    targets: WorkspaceBuildTargetsResult = new WorkspaceBuildTargetsResult(java.util.Collections.emptyList())
 )
 
 object BspHandshake extends StrictLogging {
@@ -118,7 +119,7 @@ object BspHandshake extends StrictLogging {
       }
       logger.debug("buildTargetJavacOptions OK")
 
-      HandshakeResult(process, remoteProxy, sourcesResult, dependencySourcesResult, scalacOptionsResult, javacOptionsResult)
+      HandshakeResult(process, remoteProxy, sourcesResult, dependencySourcesResult, scalacOptionsResult, javacOptionsResult, targetsResult)
     } catch {
       case e: Exception =>
         val signaled = ProcessUtils.terminateProcessTree(process)
