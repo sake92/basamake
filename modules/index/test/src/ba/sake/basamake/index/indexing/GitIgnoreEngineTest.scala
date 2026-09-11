@@ -54,7 +54,10 @@ class GitIgnoreEngineTest extends FunSuite {
   }
 
   test("no .git in ancestor chain: only the walk root's own .gitignore is honored") {
-    withRoot { base =>
+    // Other tests use /tmp as a synthetic Git root. Use /var/tmp so this fixture
+    // genuinely has no git ancestor.
+    val base = os.temp.dir(dir = os.root / "var" / "tmp", prefix = "gignore-nongit-")
+    try {
       os.write(base / ".gitignore", "ignored/\n")
       val root = base / "proj"
       os.makeDir.all(root / "src")
@@ -63,6 +66,8 @@ class GitIgnoreEngineTest extends FunSuite {
       // base/.gitignore must NOT apply (no git boundary)
       assert(!engine.isIgnored(root / "ignored", isDir = true))
       assert(engine.isIgnored(root / "src", isDir = true))
+    } finally {
+      os.remove.all(base)
     }
   }
 

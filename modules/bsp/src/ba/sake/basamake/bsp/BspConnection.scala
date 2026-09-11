@@ -1,6 +1,6 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.{CompletableFuture, ConcurrentHashMap, CopyOnWriteArrayList, Executors, TimeUnit}
+import java.util.concurrent.{CompletableFuture, ConcurrentHashMap, CopyOnWriteArrayList, Executors, RejectedExecutionException, TimeUnit}
 import java.net.URI
 import scala.jdk.CollectionConverters.*
 import ch.epfl.scala.bsp4j.*
@@ -43,6 +43,8 @@ class BspConnection (
   @volatile private var process: Option[java.lang.Process] = None
   @volatile private var buildServer: Option[BuildServer] = None
   @volatile private var alive = false
+  /** A closed connection is terminal: late LSP/watcher work must not respawn it. */
+  @volatile private var closed = false
   @volatile private var inverseSourcesUnsupported = false
 
 
@@ -75,10 +77,12 @@ class BspConnection (
   private val ShutdownTimeoutSec = 2L
 
   def ensureConnected(): Unit = {
+    if (closed) return
     if (alive) return
     if (spawning) return          // another caller is spawning; any intent is already queued
     spawnLock.lock()
     try {
+      if (closed) return
       if (alive) return           // re-check after lock acquire
       if (spawning) return        // another thread started spawn between our check and lock
       spawning = true
@@ -111,6 +115,7 @@ class BspConnection (
   }
 
   def poke(): Unit = {
+    if (closed) return
     if (!alive) {
       if (spawning) return         // spawn in progress → no-op
       ensureConnected()
@@ -141,6 +146,7 @@ class BspConnection (
     * per target: at most one pending + one running compile per target, so a burst
     * of didOpen/didSave/watcher events collapses into a single build. */
   def requestCompile(uri: String): Unit = {
+    if (closed) return
     if (!alive) {
       if (spawning) {
         val tids = selectTargets(uri)
@@ -157,22 +163,28 @@ class BspConnection (
 
   private def scheduleCompiles(targetIds: List[BuildTargetIdentifier]): Unit = {
     targetIds.foreach { tid =>
-      if (pendingCompileTargets.putIfAbsent(tid, java.lang.Boolean.TRUE) == null) {
+      if (!closed && pendingCompileTargets.putIfAbsent(tid, java.lang.Boolean.TRUE) == null) {
         logger.info(s"Compile scheduled (debounced): ${tid.getUri} in ${debounceMs}ms")
-        compileExecutor.schedule(new Runnable {
-          override def run(): Unit = {
-            // removed BEFORE compiling, so a poke during the in-flight compile
-            // re-schedules exactly one follow-up (and further pokes coalesce into it)
-            pendingCompileTargets.remove(tid)
-            if (!alive) {
-              // connection died between schedule and fire — back to the spawn queue
-              pendingCompileTargetIds.addIfAbsent(tid)
-              if (!spawning) ensureConnected()
-              return
+        try {
+          compileExecutor.schedule(new Runnable {
+            override def run(): Unit = {
+              // removed BEFORE compiling, so a poke during the in-flight compile
+              // re-schedules exactly one follow-up (and further pokes coalesce into it)
+              pendingCompileTargets.remove(tid)
+              if (!alive) {
+                // connection died between schedule and fire — back to the spawn queue
+                if (!closed) {
+                  pendingCompileTargetIds.addIfAbsent(tid)
+                  if (!spawning) ensureConnected()
+                }
+                return
+              }
+              compileTargets(List(tid))
             }
-            compileTargets(List(tid))
-          }
-        }, debounceMs, TimeUnit.MILLISECONDS)
+          }, debounceMs, TimeUnit.MILLISECONDS)
+        } catch {
+          case _: RejectedExecutionException => pendingCompileTargets.remove(tid)
+        }
       }
     }
   }
@@ -202,6 +214,7 @@ class BspConnection (
   def shutdown(): Unit = {
     spawnLock.lock()
     try {
+      closed = true
       alive = false
       spawning = false
       pendingCompileTargetIds.clear()

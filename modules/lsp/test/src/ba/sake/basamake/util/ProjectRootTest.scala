@@ -46,9 +46,14 @@ class ProjectRootTest extends FunSuite {
   }
 
   test("non-git folder without marker → opened folder") {
-    withRoot { root =>
+    // Other tests use /tmp as a synthetic Git root. Use /var/tmp so this fixture
+    // genuinely has no git ancestor.
+    val root = os.temp.dir(dir = os.root / "var" / "tmp", prefix = "proot-nongit-")
+    try {
       os.makeDir.all(root / "a" / "b")
       assertEquals(ProjectRoot.resolve(root / "a" / "b"), root / "a" / "b")
+    } finally {
+      os.remove.all(root)
     }
   }
 
