@@ -103,6 +103,11 @@ local const lspModules =
     }
     testTemplate = (template.asTest()) {
       deps { "org.scalameta::munit::1.0.4" }
+      // These tests start real scala-cli BSP servers and presentation compilers.
+      // Concurrent cold starts contend on Coursier's shared cache and can prevent
+      // the BSP process from completing its JSON-RPC handshake in CI.
+      maxTestForks = 1
+      testParallelism = 1
       jvmOptions {
         "--add-opens=java.base/java.nio=ALL-UNNAMED"
         "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
