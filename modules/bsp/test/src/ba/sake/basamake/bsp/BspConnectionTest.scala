@@ -558,8 +558,8 @@ class BspConnectionTest extends FunSuite {
     } finally os.remove.all(root)
   }
 
-  test("BspConnectionSpec: default handshake timeout is 120s (matches BasamakeConfig docs)") {
-    assertEquals(fakeSpec.handshakeTimeoutSec, 120L)
+  test("BspConnectionSpec: default handshake timeout is 300s (matches BasamakeConfig docs)") {
+    assertEquals(fakeSpec.handshakeTimeoutSec, 300L)
   }
 
   test("handshake → index catch-up: all targets with semanticdb dirs reach the index once") {

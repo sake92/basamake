@@ -14,6 +14,10 @@ import scala.jdk.CollectionConverters.*
 class LspIntegrationTest extends FunSuite {
 
   override def munitTimeout = scala.concurrent.duration.Duration(12, scala.concurrent.duration.MINUTES)
+  // A cold scala-cli BSP can spend several minutes resolving compiler inputs on
+  // a constrained CI runner. Keep the test's expectation aligned with the BSP
+  // connection's 300-second cold-handshake allowance.
+  private val ColdStartTimeoutSec = 600L
 
   // Fixed Main.scala: 42, line 3 = `    println(Utils.message)`, `Utils` at char 12.
   private val FixedMain =
@@ -32,8 +36,8 @@ class LspIntegrationTest extends FunSuite {
       client.open("Main.scala")
 
       // Real BSP compile triggered by didOpen: the error must reach the client.
-      // 300s cold-start budget: scala-cli BSP spawn + first-compile dependency resolution.
-      val errs = client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = 300)
+      // Cold BSP spawn + first-compile dependency resolution.
+      val errs = client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = ColdStartTimeoutSec)
       assert(
         errs.exists(_.getSeverity == DiagnosticSeverity.Error),
         s"expected an Error-severity diagnostic, got: ${errs.map(_.getMessage)}")
@@ -63,7 +67,7 @@ class LspIntegrationTest extends FunSuite {
       client.open("Utils.scala")
       // minPublishCount=1: the FIRST compile must have run AND be clean —
       // without the count guard an empty await passes before any compile.
-      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = 300, minPublishCount = 1)
+      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 1)
 
       // Round 2: edit + save, still clean, then all three navigation requests.
       client.replaceAndSave("Main.scala",
@@ -109,7 +113,7 @@ class LspIntegrationTest extends FunSuite {
       client.initialize()
       client.open("Main.scala")
       client.open("Utils.scala")
-      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = 300, minPublishCount = 1)
+      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 1)
       client.awaitCompileSucceeded()
 
       // The cursor is immediately after `Utils.` in the valid fixture source;
@@ -133,7 +137,7 @@ class LspIntegrationTest extends FunSuite {
       client.open("Main.scala")
 
       val brokenMain = os.read(root / "Main.scala") // the committed broken version
-      client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = 300)
+      client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = ColdStartTimeoutSec)
 
       client.replaceAndSave("Main.scala", FixedMain)
       client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = 120, minPublishCount = 2)
@@ -159,7 +163,7 @@ class LspIntegrationTest extends FunSuite {
     try {
       client.initialize()
       client.open("Main.scala")
-      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = 300, minPublishCount = 1)
+      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 1)
 
       // External tooling creates Extra.scala (no LSP notifications at all).
       client.writeOnDisk("Extra.scala",
@@ -214,7 +218,7 @@ class LspIntegrationTest extends FunSuite {
       client.open("Main.scala")
 
       val brokenMain = os.read(root / "Main.scala")
-      client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = 300)
+      client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = ColdStartTimeoutSec)
 
       // Fix once (clean state).
       client.replaceAndSave("Main.scala", FixedMain)
@@ -228,7 +232,7 @@ class LspIntegrationTest extends FunSuite {
       // detect the dead connection (3s ping timeout), respawn, recompile,
       // and deliver diagnostics.
       client.replaceAndSave("Main.scala", brokenMain)
-      client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = 300, minPublishCount = 3)
+      client.awaitDiagnostics("Main.scala", _.nonEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 3)
 
       client.printTimings()
     } finally {
@@ -260,8 +264,8 @@ class LspIntegrationTest extends FunSuite {
       client.open("project-b/MainB.scala")
 
       // minPublishCount=1: BOTH compiles must have run and be clean.
-      client.awaitDiagnostics("project-a/MainA.scala", _.isEmpty, timeoutSec = 300, minPublishCount = 1)
-      client.awaitDiagnostics("project-b/MainB.scala", _.isEmpty, timeoutSec = 300, minPublishCount = 1)
+      client.awaitDiagnostics("project-a/MainA.scala", _.isEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 1)
+      client.awaitDiagnostics("project-b/MainB.scala", _.isEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 1)
 
       // UtilsA.valueA in MainA line 2 char 12 → resolves inside project-a only.
       val defsA = client.goToDefinition("project-a/MainA.scala", line = 2, char = 12)

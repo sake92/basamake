@@ -52,8 +52,8 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(
       cfg.bspOverrides,
       List(
-        BspOverride(".bsp/mill.json", true, Some(600), Some(120)),
-        BspOverride("app/.bsp/sbt.json", true, Some(600), Some(120))
+        BspOverride(".bsp/mill.json", true, Some(600), Some(300)),
+        BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300))
       )
     )
 
@@ -61,7 +61,7 @@ class BasamakeConfigTest extends FunSuite {
       """{"bspOverrides":[{"bspFile":".bsp/mill.json","enabled":false,"compileTimeoutSec":42}],"ignorePatterns":["keep/"]}""")
     val updated = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/mill.json", "app/.bsp/sbt.json"))
     assertEquals(updated.bspOverrides.head, BspOverride(".bsp/mill.json", false, Some(42), None))
-    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(120)))
+    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300)))
     assertEquals(updated.ignorePatterns, List("keep/"))
   }
 }

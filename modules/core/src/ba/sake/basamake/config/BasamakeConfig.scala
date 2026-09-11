@@ -121,10 +121,12 @@ final case class BspOverride(
     bspFile: String,
     enabled: Boolean = true,
     compileTimeoutSec: Option[Long] = None,   // default 600s (10 min)
-    handshakeTimeoutSec: Option[Long] = None  // default 120s
+    handshakeTimeoutSec: Option[Long] = None  // default 300s
 ) derives JsonRW
 
 object BspOverride {
   val defaultCompileTimeoutSec: Long = 600
-  val defaultHandshakeTimeoutSec: Long = 120
+  // Cold BSP launch can include a first-time compiler/dependency resolution.
+  // Two minutes is too short on constrained CI runners and slow workstations.
+  val defaultHandshakeTimeoutSec: Long = 300
 }

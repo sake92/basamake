@@ -31,7 +31,7 @@ Per-connection overrides, matched by the `.bsp/*.json` path relative to the work
 
 - `enabled: false` — disable a connection entirely (stops its process, clears its diagnostics, removes routing); `true` re-enables it (still lazily started)
 - `compileTimeoutSec` — compile timeout per connection, default `600` (10 minutes)
-- `handshakeTimeoutSec` — startup/handshake timeout, default `120`
+- `handshakeTimeoutSec` — startup/handshake timeout, default `300`
 
 Overrides apply at startup and reactively when `.bsp/*.json` files change on disk.
 
