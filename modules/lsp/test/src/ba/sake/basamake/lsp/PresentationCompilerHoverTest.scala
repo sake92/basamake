@@ -56,21 +56,30 @@ class PresentationCompilerHoverTest extends FunSuite {
   test("hover includes Scaladoc for an indexed workspace definition") {
     val source = os.temp.dir() / "Documented.scala"
     val text = """object Main:
-      |  /** The answer to everything. */
+      |  /**
+      |   * The answer to everything.
+      |   *
+      |   * === Heading ===
+      |   * [[scala.Int]]
+      |   */
       |  val answer = 42
       |  val result = answer
       |""".stripMargin
     os.write(source, text)
     val symbols = new InMemorySymbolTable
-    symbols.add(SymbolDefinition("_empty_/Main.answer.", "answer", false, Range(2, 6, 2, 12), source))
+    symbols.add(SymbolDefinition("_empty_/Main.answer.", "answer", false, Range(7, 6, 7, 12), source))
     val target = ScalaPresentationTarget("scaladoc-poc", "3.7.4", List(scalaLibrary), Nil, Nil)
     val hover = new PresentationCompilerHover(
       os.pwd,
-      new PresentationCompilerSymbolSearch(new WorkspaceIndex(os.pwd, symbols))
+      _ => new PresentationCompilerSymbolSearch(
+        new WorkspaceIndex(os.pwd, symbols),
+        MtagsScaladocMarkdown()
+      )
     )
     try {
-      val result = hover.hover(target, source.toNIO.toUri, text, line = 3, character = 16)
+      val result = hover.hover(target, source.toNIO.toUri, text, line = 8, character = 16)
       assert(result.exists(_.toString.contains("The answer to everything.")), clues(result))
+      assert(!result.exists(_.toString.contains("=== Heading ===")), clues(result))
     } finally hover.shutdown()
   }
 

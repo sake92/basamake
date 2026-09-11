@@ -17,7 +17,7 @@ import PresentationCompilerHover.*
   * internals never leak into the language server's classpath. */
 private[lsp] final class PresentationCompilerHover(
     workspaceRoot: os.Path,
-    symbolSearch: SymbolSearch = PresentationCompilerHover.EmptySymbolSearch
+    symbolSearchFactory: ClassLoader => SymbolSearch = _ => PresentationCompilerHover.EmptySymbolSearch
 ) extends StrictLogging {
   private val compilers = new ConcurrentHashMap[CompilerKey, LoadedCompiler]()
 
@@ -86,6 +86,7 @@ private[lsp] final class PresentationCompilerHover(
               .asInstanceOf[PresentationCompiler]
         }
       }
+      val symbolSearch = symbolSearchFactory(loader)
       LoadedCompiler(
         compiler.newInstance(target.id, target.classpath.map(_.toNIO).asJava, target.options.asJava)
           .withWorkspace(workspaceRoot.toNIO)

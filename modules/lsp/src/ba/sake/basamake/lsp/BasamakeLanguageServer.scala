@@ -52,9 +52,10 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   )
   private val bspManager = BspManager(workspacePath, workspaceIndex, depsSymbolTable, basamakeConfig)
   private val hoverProvider = HoverProvider(workspaceIndex)
+  private val scaladocMarkdown = MtagsScaladocMarkdown()
   private val presentationHover = new PresentationCompilerHover(
     workspacePath,
-    new PresentationCompilerSymbolSearch(workspaceIndex)
+    _ => new PresentationCompilerSymbolSearch(workspaceIndex, scaladocMarkdown)
   )
   /** LSP full-sync buffer text. The workspace index intentionally works from
     * disk; the presentation compiler must instead see unsaved editor contents. */
@@ -152,6 +153,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   def cleanup(): Unit = {
     navigationExecutor.shutdown()
     presentationHover.shutdown()
+    scaladocMarkdown.close()
     bspManager.shutdown()
   }
 
