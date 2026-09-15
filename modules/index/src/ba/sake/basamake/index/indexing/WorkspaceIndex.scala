@@ -1,6 +1,6 @@
 package ba.sake.basamake.index.indexing
 
-import java.util.concurrent.{ConcurrentHashMap, CountDownLatch, Executors, ThreadFactory}
+import java.util.concurrent.{CountDownLatch, Executors, ThreadFactory}
 import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
 import scala.util.boundary, boundary.break
@@ -10,32 +10,18 @@ import ba.sake.basamake.index.*
 import ba.sake.basamake.index.scalasrc.{ScalaDefinitionsExtractor, ScalaReferencesResolver}
 import ba.sake.basamake.index.javasrc.{JavaDefinitionsExtractor, JavaReferencesResolver}
 
-/** Per-source index state. `occurrences`/`locals` are populated only while the
-  * file is open; `semanticdbPath` is workspace-level state that survives tab close. */
-private final case class SourceData(
-    occurrences: Vector[ReferenceOccurrence],
-    locals: Vector[SymbolDefinition],
-    semanticdbPath: Option[os.Path]
-)
-
-private object SourceData {
-  val empty: SourceData = SourceData(Vector.empty, Vector.empty, None)
-}
-
 class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable: Option[IndexedSymbolTable] = None, ignorePatterns: Vector[String] = Vector.empty, progressListener: IndexingProgressListener = IndexingProgressListener.noop, debugSymbolTableDump: Boolean = false, slowFallbackThresholdMs: Option[Long] = None) extends StrictLogging {
 
   // One map for ALL workspace sources (keyed by path): the keySet IS the live
   // source list (no separate knownSources), semanticdbPath is the pairing,
   // occurrences/locals are the open-file data. ConcurrentHashMap so queries
   // never block on BSP-compile invalidations (no synchronized).
-  private val sourcesMap = new ConcurrentHashMap[os.Path, SourceData]()
-  // open files — separate set: an open file with zero references must stay "open"
-  private val openFiles = ConcurrentHashMap.newKeySet[os.Path]()
+  private val sourceState = new WorkspaceSourceState
 
   // debug dumps: index_sources.txt synchronous (cheap — tests rely on it being
   // fresh after invalidate); symbol_table.txt deferred to a throttled background
   // flusher (the ~13MB serialize must never run on the BSP event thread)
-  private val debugDumps = new DebugDumpWriter(workspacePath, sourcesMap, symbolTable, debugSymbolTableDump)
+  private val debugDumps = new DebugDumpWriter(workspacePath, sourceState.sources, symbolTable, debugSymbolTableDump)
 
   /** True while a BSP-compile invalidation is tearing down + rebuilding the
     * symbol table — gotoDefinitions retries once in this window (see below). */
@@ -44,31 +30,6 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   /** Set when initialize is interrupted mid-fallback — records the startup
     * failure instead of silently continuing with partial data. */
   private val startupFailed = new java.util.concurrent.atomic.AtomicBoolean(false)
-
-  /** disk (mtime, size) at the time of the last buffer refresh — lets onDidChange
-    * skip the per-keystroke re-parse: occurrences only depend on DISK content
-    * (semanticdb parse or source parse of the file on disk), so an unchanged
-    * disk file yields identical occurrences no matter how much the buffer moves. */
-  private val diskStamps = new ConcurrentHashMap[os.Path, (Long, Long)]()
-
-  /** .semanticdb path → (mtime, size) of the last successfully indexed file —
-    * invalidate skips unchanged files, so a compile no longer re-parses the
-    * whole semanticdb output (~1376 files ≈ 1.5s on the BSP thread) when
-    * nothing changed. */
-  private val semanticdbStamps = new ConcurrentHashMap[os.Path, (Long, Long)]()
-
-  /** Bounded cache of SOURCE-PARSE results for files without semanticdb (dep
-    * jars, JDK sources, unpaired workspace files). A parse costs up to seconds
-    * (resolver lookups); onDidClose drops the open-file occurrences, so a tab
-    * reopen would re-parse — this cache makes reopen instant. Keyed by disk
-    * stamp; cleared wholesale on overflow (same pattern as Fingerprint's memo). */
-  private val MaxSourceParseCacheEntries = 128
-  private final case class SourceParseCacheEntry(
-      stamp: (Long, Long),
-      occurrences: Vector[ReferenceOccurrence],
-      locals: Vector[SymbolDefinition]
-  )
-  private val sourceParseCache = new ConcurrentHashMap[os.Path, SourceParseCacheEntry]()
 
   /** Immutable snapshot of the startup semanticdb roots, published BEFORE broad
     * Pass A begins. onDidOpen's direct single-source pairing reads it while
@@ -158,41 +119,9 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     ignoreEngine.isIgnored(p, isDir = os.isDir(p))
   }
 
-  // per-path lock: serializes source parsing (refreshOpenBuffer) with the
-  // occurrence-consuming queries (definition/references/findSymbolsAt). didOpen/
-  // didChange parse on a background thread now; a request on a freshly opened
-  // file waits for its parse (≤ ~1s) instead of racing it into a transient miss.
-  private val pathLocks = new ConcurrentHashMap[os.Path, Object]()
-  private def withPathLock[T](path: os.Path)(body: => T): T =
-    pathLocks.computeIfAbsent(path, _ => new Object).synchronized(body)
-
-  /** Wait (bounded) until the open-file buffer state for `path` has been computed
-    * at least once — `diskStamps` is written at the END of refreshOpenBuffer.
-    * didOpen/didChange run on a background thread; a request can arrive before
-    * that thread even started, so the per-path lock alone is not enough (it only
-    * helps once the parse holds it). MUST be called BEFORE taking the lock —
-    * otherwise the parse can never complete (lock held by the waiter). */
-  private def awaitBufferReady(path: os.Path): Unit = {
-    var waited = 0
-    while (!diskStamps.containsKey(path) && waited < 200) {
-      Thread.sleep(10)
-      waited += 1
-    }
-  }
-
-  /** Like [[awaitBufferReady]] but for ALL currently open files — references
-    * scans every open file, so each must have its buffer state computed at
-    * least once (their didOpen parses run on background threads too). Bounded:
-    * a pathological file just times out and the scan proceeds with what it has. */
-  private def awaitAllBuffersReady(): Unit = {
-    var waited = 0
-    while (waited < 200) {
-      val pending = openFiles.asScala.exists(p => !diskStamps.containsKey(p))
-      if (!pending) return
-      Thread.sleep(10)
-      waited += 1
-    }
-  }
+  private def withPathLock[T](path: os.Path)(body: => T): T = sourceState.withPathLock(path)(body)
+  private def awaitBufferReady(path: os.Path): Unit = sourceState.awaitBufferReady(path)
+  private def awaitAllBuffersReady(): Unit = sourceState.awaitAllBuffersReady()
 
   // ── initialize ──────────────────────────────────────────────
   def initialize(roots: List[SemanticdbDirs]): Unit = {
@@ -216,8 +145,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     val pairedA = if (roots.nonEmpty) indexSemanticdbRoots(roots, report) else 0L
 
     // Pass B: source-AST extraction for files WITHOUT semanticdb.
-    val passBFiles = (scalaFiles ++ sbtFiles).filter(p => sourcesMap.get(p).semanticdbPath.isEmpty) ++
-      javaFiles.filter(p => sourcesMap.get(p).semanticdbPath.isEmpty)
+    val passBFiles = (scalaFiles ++ sbtFiles).filter(p => sourceState.sources.get(p).semanticdbPath.isEmpty) ++
+      javaFiles.filter(p => sourceState.sources.get(p).semanticdbPath.isEmpty)
     if (!runFallbackPass(passBFiles, pairedA, report)) return
 
     report(pairedA + passBFiles.size.toLong, s"Indexed $total files")
@@ -226,7 +155,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     // is done.
     catchUpOpenBuffers()
 
-    val pairedFinal = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
+    val pairedFinal = sourceState.sources.values().asScala.count(_.semanticdbPath.isDefined)
     logger.info(s"Workspace indexing finished: ${elapsedMs(tInitStart)}ms total, semanticdb-paired=$pairedFinal, fallback-extracted=${passBFiles.size}")
     recordPhaseEvent("init-done")
     debugDumps.writeDebugDump()
@@ -249,12 +178,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     val javaFiles = fileGroups.getOrElse("java", Vector.empty).toVector
     logger.info(s"Found files: scala=${scalaFiles.size}, sbt=${sbtFiles.size}, java=${javaFiles.size} (${elapsedMs(tDiscoveryStart)}ms)")
 
-    sourcesMap.clear()
-    semanticdbStamps.clear()
+    sourceState.sources.clear()
+    sourceState.semanticdbStamps.clear()
     // a file opened between the walk and the clear must not be dropped
-    openFiles.forEach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
+    sourceState.openFiles.forEach(p => sourceState.sources.putIfAbsent(p, SourceData.empty))
     val allFiles = scalaFiles.toSet ++ sbtFiles.toSet ++ javaFiles.toSet
-    allFiles.foreach(p => sourcesMap.put(p, SourceData.empty))
+    allFiles.foreach(p => sourceState.sources.put(p, SourceData.empty))
     (scalaFiles, sbtFiles, javaFiles)
   }
 
@@ -286,7 +215,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         logger.info(s"Indexed ${accepted.size} semanticdb-paired source files from ${semDir}")
       }
     }
-    val paired = sourcesMap.values().asScala.count(_.semanticdbPath.isDefined)
+    val paired = sourceState.sources.values().asScala.count(_.semanticdbPath.isDefined)
     logger.info(s"Total semanticdb-paired source files: $paired")
     logger.info(s"Semanticdb Pass A done: ${elapsedMs(tPassAStart)}ms, roots=${roots.size}, paired=$pairedTotal, definitionsIndexed=$defsTotal")
     recordPhaseEvent("pass-a-done")
@@ -372,8 +301,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     * that pairing is done. */
   private def catchUpOpenBuffers(): Unit = {
     val tCatchUpStart = System.nanoTime()
-    val openBefore = openFiles.size
-    openFiles.forEach(p => refreshOpenBuffer(p))
+    val openBefore = sourceState.openFiles.size
+    sourceState.openFiles.forEach(p => refreshOpenBuffer(p))
     logger.info(s"Open-buffer catch-up: ${elapsedMs(tCatchUpStart)}ms, refreshed=$openBefore")
     recordPhaseEvent("catch-up-done")
   }
@@ -381,12 +310,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   // ── onDidOpen/Change/Save/Close ──────────────────────────────
   def onDidOpen(path: os.Path): Unit = {
     if isIgnoredWorkspacePath(path) then return
-    openFiles.add(path)
-    sourcesMap.putIfAbsent(path, SourceData.empty)
+    sourceState.openFiles.add(path)
+    sourceState.sources.putIfAbsent(path, SourceData.empty)
     // Direct single-source semanticdb pairing against the startup root snapshot:
     // one candidate file read+parse (NOT the broad root walk). Without it, an
     // opened file waits behind ALL fallback jobs for its semanticdb occurrences.
-    if (sourcesMap.get(path).semanticdbPath.isEmpty) pairSourceDirectly(path)
+    if (sourceState.sources.get(path).semanticdbPath.isEmpty) pairSourceDirectly(path)
     // a success parses SemanticDB occurrences, a miss uses existing source parsing
     refreshOpenBuffer(path)
   }
@@ -419,21 +348,21 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
   def onDidChange(path: os.Path): Unit = {
     if isIgnoredWorkspacePath(path) then return
-    openFiles.add(path)
+    sourceState.openFiles.add(path)
     // Occurrences only depend on DISK content — skip the re-parse while the
     // disk file is unchanged (typing = no refresh; the old code re-parsed the
     // whole file's semanticdb occurrences on EVERY keystroke, serializing the
     // single lsp4j message thread).
-    if (diskStamps.get(path) != diskStampOf(path)) refreshOpenBuffer(path)
+    if (sourceState.diskStamps.get(path) != diskStampOf(path)) refreshOpenBuffer(path)
   }
 
   def onDidSave(path: os.Path): Unit = withPathLock(path) {
     if !isIgnoredWorkspacePath(path) then {
-      openFiles.add(path)
-      sourcesMap.putIfAbsent(path, SourceData.empty)
+      sourceState.openFiles.add(path)
+      sourceState.sources.putIfAbsent(path, SourceData.empty)
       // re-extract SymbolTable for this path
       symbolTable.removeByPath(path)
-      val data = sourcesMap.get(path)
+      val data = sourceState.sources.get(path)
       if (data != null && data.semanticdbPath.isDefined) {
         try {
           val defs = SemanticdbIndexing.parseDefinitions(data.semanticdbPath.get, path)
@@ -449,8 +378,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   def onDidClose(path: os.Path): Unit = {
     // A closed tab keeps its workspace-level state (semanticdbPath); only the
     // open-file occurrences/locals are emptied.
-    openFiles.remove(path)
-    sourcesMap.computeIfPresent(path, (_, sd) => sd.copy(occurrences = Vector.empty, locals = Vector.empty))
+    sourceState.openFiles.remove(path)
+    sourceState.sources.computeIfPresent(path, (_, sd) => sd.copy(occurrences = Vector.empty, locals = Vector.empty))
   }
 
   /** Files removed from disk (watcher delete events, rename old paths).
@@ -458,10 +387,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     * (semanticdb pairing + SymbolTable definitions). */
   def onFilesDeleted(paths: Set[os.Path]): Unit = {
     paths.foreach { path =>
-      openFiles.remove(path)
-      sourcesMap.remove(path)
-      diskStamps.remove(path)
-      sourceParseCache.remove(path)
+      sourceState.remove(path)
       symbolTable.removeByPath(path)
     }
     debugDumps.refresh()
@@ -473,7 +399,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   def onFilesCreated(paths: Set[os.Path]): Unit = {
     val accepted = paths.filterNot(isIgnoredWorkspacePath)
     if (accepted.isEmpty) return
-    accepted.foreach(p => sourcesMap.putIfAbsent(p, SourceData.empty))
+    accepted.foreach(p => sourceState.sources.putIfAbsent(p, SourceData.empty))
     debugDumps.refresh()
   }
 
@@ -496,7 +422,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         for (semPath <- semFiles) {
           // skip files unchanged since their last successful index — a compile
           // rewrites ALL semanticdb files, but only the changed ones matter
-          if (semanticdbStamps.get(semPath) != diskStampOf(semPath)) {
+          if (sourceState.semanticdbStamps.get(semPath) != diskStampOf(semPath)) {
             if (indexSemanticdbFile(semPath, srcRoot)) paired += 1
           }
         }
@@ -521,7 +447,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             setSemanticdbPath(src, semPath)
             symbolTable.removeByPath(src)
             SemanticdbIndexing.parseDefinitions(semPath, src).foreach(symbolTable.add)
-            if (openFiles.contains(src)) refreshOpenBuffer(src)
+            if (sourceState.openFiles.contains(src)) refreshOpenBuffer(src)
             paired = true
           case Some(src) =>
             logger.debug(s"Source inside nested git repo, skipping semanticdb pair: $src")
@@ -531,7 +457,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       }
       // only record the stamp after a successful parse — a transient failure
       // stays un-stamped and is retried on the next invalidate
-      semanticdbStamps.put(semPath, diskStampOf(semPath))
+      sourceState.semanticdbStamps.put(semPath, diskStampOf(semPath))
       testHooks.semanticdbIndexCount.incrementAndGet()
       paired
     } catch {
@@ -540,7 +466,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   }
 
   private def setSemanticdbPath(src: os.Path, semPath: os.Path): Unit =
-    sourcesMap.compute(src, (_, old) => {
+    sourceState.sources.compute(src, (_, old) => {
       val current = if (old == null) SourceData.empty else old
       current.copy(semanticdbPath = Some(semPath))
     })
@@ -551,7 +477,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     withPathLock(path) {
       val result = Vector.newBuilder[String]
 
-      val data = sourcesMap.get(path)
+      val data = sourceState.sources.get(path)
       // Probe ref occurrences (refs only — defs live in SymbolTable / open-file locals)
       val occs = if (data == null) Vector.empty else data.occurrences
       val enclosingRefs = occs.filter(o => isInsideRange(line, char, o.range))
@@ -594,7 +520,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   private def resolveDefinitions(path: os.Path, line: Int, char: Int, depCandidates: List[os.Path]): Option[Vector[SymbolDefinition]] = {
     awaitBufferReady(path)
     withPathLock(path) {
-      val data = sourcesMap.get(path)
+      val data = sourceState.sources.get(path)
       // All occurrences are references (defs live in SymbolTable / open-file locals).
       val references = if (data == null) Vector.empty else data.occurrences
       val localDefs = if (data == null) Vector.empty else data.locals
@@ -633,8 +559,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         val results = Vector.newBuilder[SymbolDefinition]
 
         // Scan ref occurrences across all open files
-        for (openPath <- openFiles.asScala) {
-          val data = sourcesMap.get(openPath)
+        for (openPath <- sourceState.openFiles.asScala) {
+          val data = sourceState.sources.get(openPath)
           val occs = if (data == null) Vector.empty else data.occurrences
           for (occ <- occs if targetSymbols.contains(occ.symbol)) {
             results += SymbolDefinition(
@@ -649,8 +575,8 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
         // If includeDeclaration, append the def site from SymbolTable or locals
         if (includeDeclaration) {
-          val openLocals = openFiles.asScala.iterator.flatMap { p =>
-            val d = sourcesMap.get(p)
+          val openLocals = sourceState.openFiles.asScala.iterator.flatMap { p =>
+            val d = sourceState.sources.get(p)
             if (d == null) Iterator.empty else d.locals.iterator
           }.toVector
           for (sym <- targetSymbols) {
@@ -679,14 +605,14 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   }
 
   private def refreshOpenBuffer(path: os.Path): Unit = withPathLock(path) {
-    if (openFiles.contains(path)) {
+    if (sourceState.openFiles.contains(path)) {
       withSourceStream(path) { is =>
         val (occs, locals) = occurrencesFor(path, is)
-        sourcesMap.compute(path, (_, old) => {
+        sourceState.sources.compute(path, (_, old) => {
           val base = if (old == null) SourceData.empty else old
           base.copy(occurrences = occs, locals = locals)
         })
-        diskStamps.put(path, diskStampOf(path))
+        sourceState.diskStamps.put(path, diskStampOf(path))
         testHooks.bufferRefreshCount.incrementAndGet()
       }
     }
@@ -696,7 +622,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     * available (gap-merged with source-parse at uncovered positions), full
     * source-parse on partial semanticdb or no pairing. */
   private def occurrencesFor(path: os.Path, is: java.io.InputStream): (Vector[ReferenceOccurrence], Vector[SymbolDefinition]) = {
-    val current = sourcesMap.get(path)
+    val current = sourceState.sources.get(path)
     val semPathOpt = if (current == null) None else current.semanticdbPath
     semPathOpt match {
       case Some(semPath) =>
@@ -736,14 +662,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   /** Stamp-cached source parse (shared by the no-semanticdb path and gap-merge). */
   private def sourceParseCached(path: os.Path, is: java.io.InputStream): ResolvedFile = {
     val stamp = diskStampOf(path)
-    val cached = sourceParseCache.get(path)
-    if (cached != null && cached.stamp == stamp) ResolvedFile(cached.occurrences, cached.locals)
-    else {
+    sourceState.cachedParse(path, stamp).getOrElse {
       val rf = sourceResolve(path, is)
       // bounded recent-files cache: tab close/reopen of a source-parsed
       // file (deps, JDK, unpaired workspace files) skips the re-parse
-      if (sourceParseCache.size() >= MaxSourceParseCacheEntries) sourceParseCache.clear()
-      sourceParseCache.put(path, SourceParseCacheEntry(stamp, rf.occurrences, rf.locals))
+      sourceState.cacheParse(path, stamp, rf)
       rf
     }
   }
