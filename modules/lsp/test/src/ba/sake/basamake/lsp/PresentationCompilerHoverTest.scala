@@ -117,6 +117,37 @@ class PresentationCompilerHoverTest extends FunSuite {
     }
   }
 
+  test("symbol search preserves indentation in Scaladoc code examples") {
+    val root = os.temp.dir()
+    val source = root / "Documented.scala"
+    val text = """object Main:
+      |  /**
+      |   * {{{
+      |   *   if (prime)
+      |   *     Console.println("yes")
+      |   *   else
+      |   *     Console.err.println("no")
+      |   * }}}
+      |   */
+      |  val answer = 42
+      |""".stripMargin
+    os.write(source, text)
+    val symbols = new InMemorySymbolTable
+    symbols.add(SymbolDefinition("_empty_/Main.answer.", "answer", false, Range(9, 6, 9, 12), source))
+    val renderer = MtagsScaladocMarkdown()
+    val search = new PresentationCompilerSymbolSearch(new WorkspaceIndex(os.pwd, symbols), Nil, renderer)
+    try {
+      val docs = search.documentation("_empty_/Main.answer.", null, scala.meta.pc.ContentType.MARKDOWN)
+        .toScala
+        .map(_.docstring())
+      assert(docs.exists(_.contains("```\nif (prime)")), clues(docs))
+      assert(docs.exists(_.contains("  Console.println(\"yes\")")), clues(docs))
+    } finally {
+      renderer.close()
+      os.remove.all(root)
+    }
+  }
+
   test("completion reports members from the target-matched Scala 3 compiler") {
     val target = ScalaPresentationTarget(
       id = "scala-3-completion-poc",

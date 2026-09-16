@@ -3,6 +3,7 @@ package ba.sake.basamake.lsp
 import java.net.URI
 import java.net.URLClassLoader
 import java.util.Optional
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.*
 import org.eclipse.lsp4j.{Location, Position, Range}
@@ -71,7 +72,10 @@ private[lsp] final class PresentationCompilerSymbolSearch(
     else {
       val content = before.substring(start + 3, end)
         .linesIterator
-        .map(_.trim.stripPrefix("*").stripPrefix(" "))
+        // Strip only the Scaladoc decoration. Leading whitespace after `*` is
+        // meaningful inside `{{{ ... }}}` examples and must reach the Markdown
+        // renderer intact.
+        .map(_.replaceFirst("""^\s*\* ?""", ""))
         .mkString("\n")
         .trim
       Option.when(content.nonEmpty)(content)
@@ -100,6 +104,7 @@ private[lsp] final class MtagsScaladocMarkdown private (
 
 private[lsp] object MtagsScaladocMarkdown {
   private val MtagsVersion = "1.6.2"
+  private val CodeBlock = """(?s)\{\{\{\R?(.*?)\R?\}\}\}""".r
 
   def apply(): MtagsScaladocMarkdown = {
     try {
@@ -115,10 +120,37 @@ private[lsp] object MtagsScaladocMarkdown {
       val emptyMap = mapModule.getMethod("empty").invoke(mapModule.getField("MODULE$").get(null))
       val scalaMap = Class.forName("scala.collection.Map", true, loader)
       val fromDocstring = generator.getMethod("fromDocstring", classOf[String], scalaMap)
-      new MtagsScaladocMarkdown(raw => fromDocstring.invoke(null, raw, emptyMap).asInstanceOf[String], Some(loader))
+      val render = (raw: String) => fromDocstring.invoke(null, raw, emptyMap).asInstanceOf[String]
+      new MtagsScaladocMarkdown(raw => renderWithCodeBlocks(raw, render), Some(loader))
     } catch {
       case _: Throwable => new MtagsScaladocMarkdown(identity, None)
     }
+  }
+
+  /** Mtags renders ScalaDoc examples as Markdown fences but drops indentation
+    * inside their bodies. Protect the bodies while it renders the surrounding
+    * ScalaDoc, then put back a normal dedented Markdown code block. */
+  private def renderWithCodeBlocks(raw: String, render: String => String): String = {
+    val blocks = ArrayBuffer.empty[(String, String)]
+    val protectedDoc = CodeBlock.replaceAllIn(raw, m => {
+      val marker = s"BASAMAKECODEBLOCK${blocks.size}"
+      blocks.append(marker -> fencedCode(m.group(1)))
+      marker
+    })
+    blocks.foldLeft(render(protectedDoc)) { case (markdown, (marker, block)) =>
+      markdown.replace(marker, block)
+    }
+  }
+
+  private def fencedCode(raw: String): String = {
+    val lines = raw.linesIterator.toList
+    val indentation = lines.iterator
+      .filter(_.trim.nonEmpty)
+      .map(_.takeWhile(_.isWhitespace).length)
+      .minOption
+      .getOrElse(0)
+    val code = lines.map(_.drop(indentation)).mkString("\n").trim
+    s"```\n$code\n```"
   }
 
 }
