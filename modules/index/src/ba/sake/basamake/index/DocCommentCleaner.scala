@@ -10,15 +10,13 @@ package ba.sake.basamake.index
   * `@return`, ...) are passed through as-is — they read fine as plain text. */
 object DocCommentCleaner {
 
+  private val ScalaDocCodeBlock = """(?s)\{\{\{\R?(.*?)\R?\}\}\}""".r
+
   def clean(raw: String): String = {
     val body = stripFences(raw)
-    val stripped = body.split("\n", -1).iterator.map { line =>
-      val t = line.trim
-      if (t.startsWith("*")) {
-        val rest = t.drop(1)
-        if (rest.startsWith(" ")) rest.drop(1) else rest
-      } else line
-    }.mkString("\n")
+    val stripped = body.split("\n", -1).iterator
+      .map(_.replaceFirst("""^\s*\* ?""", ""))
+      .mkString("\n")
     cleanupMarkdown(stripped)
   }
 
@@ -30,7 +28,7 @@ object DocCommentCleaner {
   }
 
   private def cleanupMarkdown(text: String): String = {
-    var s = text
+    var s = renderScalaDocCodeBlocks(text)
     // {@code X} / {@literal X} → X
     s = s.replaceAll("""\{@(?:code|literal)\s+([^}]*)\}""", "$1")
     // {@link X} / {@link X label} / {@value X} → label, else last name segment
@@ -44,5 +42,18 @@ object DocCommentCleaner {
     // collapse 3+ blank lines
     s = s.replaceAll("""\n{3,}""", "\n\n")
     s.linesIterator.map(_.stripTrailing).mkString("\n").trim
+  }
+
+  private def renderScalaDocCodeBlocks(text: String): String =
+    ScalaDocCodeBlock.replaceAllIn(text, m => s"```\n${dedent(m.group(1))}\n```")
+
+  private def dedent(text: String): String = {
+    val lines = text.linesIterator.toList
+    val indentation = lines.iterator
+      .filter(_.trim.nonEmpty)
+      .map(_.takeWhile(_.isWhitespace).length)
+      .minOption
+      .getOrElse(0)
+    lines.map(_.drop(indentation)).mkString("\n").trim
   }
 }

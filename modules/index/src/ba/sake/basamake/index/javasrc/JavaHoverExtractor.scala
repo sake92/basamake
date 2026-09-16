@@ -188,8 +188,8 @@ object JavaHoverExtractor {
   // ── javadoc extraction ───────────────────────────────────────
 
   private def javadocOf(n: Node): Option[String] = {
-    try {
-      n.getComment.toScala.collect { case jc: JavadocComment =>
+    n.getComment.toScala.collect { case jc: JavadocComment =>
+      try {
         val j = jc.parse()
         val desc = j.getDescription.toText.trim
         val blocks = j.getBlockTags.asScala.map { t =>
@@ -200,9 +200,12 @@ object JavaHoverExtractor {
           }
         }.mkString("\n")
         List(desc, blocks).filter(_.nonEmpty).mkString("\n\n")
-      }.filter(_.nonEmpty)
-    } catch {
-      case NonFatal(_) => None
-    }
+      } catch {
+        // JavaParser may not yet understand newer Javadoc tags (notably JDK
+        // 18's {@snippet ...}). Keep the useful prose instead of dropping the
+        // entire hover description.
+        case NonFatal(_) => DocCommentCleaner.clean(jc.getContent)
+      }
+    }.filter(_.nonEmpty)
   }
 }

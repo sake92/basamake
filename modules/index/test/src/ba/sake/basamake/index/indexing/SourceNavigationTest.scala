@@ -89,6 +89,31 @@ class SourceNavigationTest extends FunSuite, TestCacheRoot {
     }
   }
 
+  test("Scala dep file: hover works at a declaration site") {
+    val jarDir = os.temp.dir(prefix = "dep-hover-scala-")
+    val ws = os.temp.dir(prefix = "dep-hover-ws-")
+    val jar = writeJar(jarDir, "lib-sources.jar", List(
+      "com/example/Library.scala" ->
+        """package com.example
+          |object Library {
+          |  /** The answer. */
+          |  val answer = 42
+          |}
+          |""".stripMargin
+    ))
+    try {
+      val (idx, deps, file) = openDepFile(jar, "com/example/Library.", ws)
+      val text = os.read(file)
+      val (line, char) = TestPositions.at(text, "val (?<p>answer)")
+      val hover = HoverProvider(idx).hover(file, line, char, deps.candidatesForPath(file))
+      assert(hover.exists(_.signature == "val answer"), s"expected declaration hover, got $hover")
+      assertEquals(hover.flatMap(_.doc), Some("The answer."))
+    } finally {
+      os.remove.all(jarDir); os.remove.all(ws)
+      os.remove.all(testCacheRoot / os.RelPath(Fingerprint.fromJarPath(jar)))
+    }
+  }
+
   // ── package-segment cursors → package objects ─────────────────
 
   /** Workspace fixture: package object + a file importing from that package. */

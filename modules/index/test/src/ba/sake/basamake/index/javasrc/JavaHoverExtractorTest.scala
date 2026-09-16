@@ -128,4 +128,17 @@ class JavaHoverExtractorTest extends FunSuite {
     val code = "class A {\n  /** Uses {@link java.lang.String#valueOf}. */\n  public void foo() { }\n}"
     assertEquals(extractAt(code, "foo", "public void foo").map(_._2), Some(Some("Uses valueOf.")))
   }
+
+  test("newer Javadoc tags fall back to a cleaned raw comment") {
+    val code = """/**
+      | * Reads data from the stream.
+      | * {@snippet lang=java :
+      | *   var reader = new Reader();
+      | * }
+      | */
+      |public class Reader {}
+      |""".stripMargin
+    val res = extractAt(code, "Reader", "public class Reader")
+    assert(res.flatMap(_._2).exists(_.contains("Reads data from the stream.")), clues(res))
+  }
 }

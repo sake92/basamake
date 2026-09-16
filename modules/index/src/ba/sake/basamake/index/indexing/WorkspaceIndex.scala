@@ -312,6 +312,13 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     if isIgnoredWorkspacePath(path) then return
     sourceState.openFiles.add(path)
     sourceState.sources.putIfAbsent(path, SourceData.empty)
+    // Dependency/JDK sources live outside the workspace and therefore never
+    // pass through startup extraction. Add their declarations when opened so
+    // hover works at definition sites as well as at references.
+    if !path.startsWith(workspacePath) then {
+      symbolTable.removeByPath(path)
+      withSourceStream(path)(is => extractDefinitions(path, is))
+    }
     // Direct single-source semanticdb pairing against the startup root snapshot:
     // one candidate file read+parse (NOT the broad root walk). Without it, an
     // opened file waits behind ALL fallback jobs for its semanticdb occurrences.

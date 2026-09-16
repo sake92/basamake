@@ -53,4 +53,24 @@ class DocCommentCleanerTest extends FunSuite {
     val raw = "/**\n * a\n *\n *\n *\n * b\n */"
     assertEquals(DocCommentCleaner.clean(raw), "a\n\nb")
   }
+
+  test("Scaladoc code blocks become indentation-preserving Markdown fences") {
+    val raw = """/**
+      | * {{{
+      | *   if (prime)
+      | *     Console.println("yes")
+      | *   else
+      | *     Console.err.println("no")
+      | * }}}
+      | */""".stripMargin
+    assertEquals(
+      DocCommentCleaner.clean(raw),
+      """```
+        |if (prime)
+        |  Console.println("yes")
+        |else
+        |  Console.err.println("no")
+        |```""".stripMargin
+    )
+  }
 }
