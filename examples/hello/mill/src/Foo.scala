@@ -13,6 +13,9 @@ object Foo {
   def main(args: Array[String]): Unit = {
     println("Foo.value: " + Foo.value)
 
+    val lista = List(1, 2, 3)
+    println("Lista: " + lista.map(_ * 2))
+
     Console.flush()
   }
 }
