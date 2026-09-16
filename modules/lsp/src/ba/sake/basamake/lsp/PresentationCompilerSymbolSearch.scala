@@ -11,16 +11,18 @@ import coursierapi.{Dependency, Fetch}
 import ba.sake.basamake.index.{SymbolDefinition, SymbolUtils}
 import ba.sake.basamake.index.indexing.WorkspaceIndex
 
-/** The presentation compiler's smallest useful view of Basamake's workspace.
-  * It supplies definition locations and Scaladoc for indexed workspace symbols;
-  * dependency-source and Javadoc lookup remain responsibilities of a future
-  * source-archive search. */
+/** The presentation compiler's source-aware view of one BSP target. It supplies
+  * definition locations and documentation for workspace symbols and for the
+  * target-scoped third-party source jars already managed by `IndexedSymbolTable`.
+  * Candidate scoping is deliberate: a symbol search must not leak a same-named
+  * class from another target into this compiler's hover result. */
 private[lsp] final class PresentationCompilerSymbolSearch(
     workspaceIndex: WorkspaceIndex,
+    dependencySources: List[os.Path],
     renderScaladoc: String => String = identity
 ) extends SymbolSearch {
   override def documentation(symbol: String, parents: ParentSymbols): Optional[SymbolDocumentation] =
-    workspaceIndex.getSymbol(symbol, Nil).flatMap(documentationFor).toJava
+    workspaceIndex.getSymbol(symbol, dependencySources).flatMap(documentationFor).toJava
 
   override def documentation(
       symbol: String,
@@ -35,7 +37,7 @@ private[lsp] final class PresentationCompilerSymbolSearch(
   }
 
   override def definition(symbol: String, source: URI): java.util.List[Location] =
-    workspaceIndex.getSymbol(symbol, Nil).map(locationFor).toList.asJava
+    workspaceIndex.getSymbol(symbol, dependencySources).map(locationFor).toList.asJava
 
   override def definitionSourceToplevels(symbol: String, source: URI): java.util.List[String] =
     java.util.List.of()

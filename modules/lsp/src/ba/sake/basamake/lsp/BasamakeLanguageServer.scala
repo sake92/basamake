@@ -55,7 +55,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
   private val scaladocMarkdown = MtagsScaladocMarkdown()
   private val presentationHover = new PresentationCompilerHover(
     workspacePath,
-    _ => new PresentationCompilerSymbolSearch(workspaceIndex, scaladocMarkdown)
+    (target, _) => new PresentationCompilerSymbolSearch(workspaceIndex, target.dependencySources, scaladocMarkdown)
   )
   /** LSP full-sync buffer text. The workspace index intentionally works from
     * disk; the presentation compiler must instead see unsaved editor contents. */
@@ -373,9 +373,11 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     CompletableFuture.supplyAsync(() => {
       val uri = params.getTextDocument.getUri
       logger.debug(s"hover: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
-      Thread.ofVirtual().start(() => {
-        bspManager.poke(uri, compile = false)
-      })
+      // This request already runs on navigationExecutor's virtual thread. Wait
+      // for the lightweight BSP handshake so the first hover can obtain its
+      // target-matched presentation compiler instead of racing it and falling
+      // through to the source-only hover path.
+      bspManager.poke(uri, compile = false)
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter
@@ -409,9 +411,9 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     CompletableFuture.supplyAsync(() => {
       val uri = params.getTextDocument.getUri
       logger.debug(s"completion: $uri at ${params.getPosition.getLine}:${params.getPosition.getCharacter}")
-      Thread.ofVirtual().start(() => {
-        bspManager.poke(uri, compile = false)
-      })
+      // Completion has no useful fallback: wait for the target handshake rather
+      // than returning an empty list while the compiler inputs are still loading.
+      bspManager.poke(uri, compile = false)
       val path = os.Path(URI.create(uri))
       val line = params.getPosition.getLine
       val char = params.getPosition.getCharacter

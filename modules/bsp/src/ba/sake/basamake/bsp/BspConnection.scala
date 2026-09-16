@@ -16,7 +16,11 @@ final case class ScalaPresentationTarget(
     scalaVersion: String,
     classpath: List[os.Path],
     options: List[String],
-    sourcePaths: List[os.Path]
+    sourcePaths: List[os.Path],
+    /** Source jars belonging to this target's resolved classpath. Kept with the
+      * compiler inputs so its SymbolSearch can fetch third-party Scaladoc without
+      * escaping the target's dependency boundary. */
+    dependencySources: List[os.Path] = Nil
 )
 
 /** One BSP connection: process + liveness.
@@ -303,7 +307,8 @@ class BspConnection (
         scalaVersion = scalaVersion,
         classpath = BspConnection.classpathOf(item),
         options = Option(item.getOptions).toList.flatMap(_.asScala),
-        sourcePaths = sourceDirsByTarget.getOrElse(tid, Nil).flatMap(BspConnection.toPath)
+        sourcePaths = sourceDirsByTarget.getOrElse(tid, Nil).flatMap(BspConnection.toPath),
+        dependencySources = dependencySourcesByTarget.getOrElse(tid, Nil)
       )
     }.toSeq.headOption
   }
