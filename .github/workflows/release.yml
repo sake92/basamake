@@ -55,16 +55,16 @@ jobs:
 
       # `main` cannot itself be a tag because it is also the branch name. Keep
       # this deliberately mutable tag as the opt-in latest development build.
-      - name: Move latest-main tag
+      - name: Move latest-snapshot tag
         if: github.ref == 'refs/heads/main'
-        run: git push --force origin "$GITHUB_SHA:refs/tags/release-main"
+        run: git push --force origin "$GITHUB_SHA:refs/tags/latest-snapshot"
 
-      - name: Update latest main release
+      - name: Update latest snapshot release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: release-main
-          name: Latest main
+          tag_name: latest-snapshot
+          name: Latest snapshot
           prerelease: true
           make_latest: false
           files: basamake.jar
