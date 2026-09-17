@@ -1,6 +1,6 @@
 package ba.sake.basamake.index.indexing
 
-import scala.meta.internal.semanticdb.{TextDocument, TextDocuments, Range => SdbRange}
+import scala.meta.internal.semanticdb.{ClassSignature, TextDocument, TextDocuments, TypeRef, Range => SdbRange}
 import com.typesafe.scalalogging.StrictLogging
 import ba.sake.basamake.index.{SymbolDefinition, SymbolUtils, ReferenceOccurrence , ResolvedFile}
 
@@ -200,6 +200,27 @@ object SemanticdbIndexing extends StrictLogging {
           SymbolDefinition(occ.symbol, shortName, isType, range, sourcePath)
         }
     }
+  }
+
+  /** Parse direct workspace inheritance edges from compiler-resolved SemanticDB
+    * metadata: member overrides and class/trait parent types. */
+  def parseInheritanceEdges(semPath: os.Path): Map[String, Set[String]] = {
+    val docs = TextDocuments.parseFrom(os.read.bytes(semPath))
+    docs.documents.iterator
+      .flatMap(_.symbols.iterator)
+      .filter(_.symbol.nonEmpty)
+      .map { info =>
+        val parents = info.signature match {
+          case signature: ClassSignature =>
+            signature.parents.iterator.collect {
+              case parent: TypeRef if parent.symbol.nonEmpty => parent.symbol
+            }.toSet
+          case _ => Set.empty[String]
+        }
+        info.symbol -> (info.overriddenSymbols.iterator.filter(_.nonEmpty).toSet ++ parents)
+      }
+      .filter(_._2.nonEmpty)
+      .toMap
   }
 
   /** Parse a `.semanticdb` file into per-occurrences list — REFS ONLY.

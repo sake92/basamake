@@ -77,6 +77,7 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     val capabilities = ServerCapabilities()
     capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
     capabilities.setDefinitionProvider(true)
+    capabilities.setImplementationProvider(true)
     capabilities.setReferencesProvider(true)
     capabilities.setHoverProvider(true)
     val completionOptions = new CompletionOptions()
@@ -349,6 +350,25 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val depCandidates = bspManager.dependencySourcesFor(uri)
       val locs = workspaceIndex.gotoDefinitions(path, line, char, depCandidates).map(toLspLocation).asJava
       logger.debug(s"definition at $line:$char → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
+      org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locs)
+    }, navigationExecutor)
+
+  override def implementation(params: ImplementationParams)
+      : CompletableFuture[org.eclipse.lsp4j.jsonrpc.messages.Either[
+        java.util.List[? <: Location],
+        java.util.List[? <: LocationLink]
+      ]] =
+    CompletableFuture.supplyAsync(() => {
+      val uri = params.getTextDocument.getUri
+      val line = params.getPosition.getLine
+      val char = params.getPosition.getCharacter
+      logger.debug(s"implementation: $uri at $line:$char")
+      Thread.ofVirtual().start(() => {
+        bspManager.poke(uri, compile = false)
+      })
+      val path = os.Path(URI.create(uri))
+      val locs = workspaceIndex.implementations(path, line, char).map(toLspLocation).asJava
+      logger.debug(s"implementation at $line:$char → ${locs.size()} location(s): ${locs.asScala.map(_.getUri).mkString(", ")}")
       org.eclipse.lsp4j.jsonrpc.messages.Either.forLeft(locs)
     }, navigationExecutor)
 
