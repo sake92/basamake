@@ -1,3 +1,4 @@
+
 # basamake
 
 Minimalistic Scala LSP for fast navigation, compiler-backed editing help, and build diagnostics.
