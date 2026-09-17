@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -51,7 +53,26 @@ jobs:
           cp .deder/out/modules-lsp/assembly/out.jar basamake.jar
           ls -lh basamake.jar
 
+      # `main` cannot itself be a tag because it is also the branch name. Keep
+      # this deliberately mutable tag as the opt-in latest development build.
+      - name: Move latest-main tag
+        if: github.ref == 'refs/heads/main'
+        run: git push --force origin "$GITHUB_SHA:refs/tags/release-main"
+
+      - name: Update latest main release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-main
+          name: Latest main
+          prerelease: true
+          make_latest: false
+          files: basamake.jar
+          overwrite_files: true
+          body: Latest successful build from the `main` branch. This JAR is replaced on every push to `main`.
+
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: basamake.jar
