@@ -2,7 +2,7 @@ package ba.sake.basamake.index.indexing
 
 import munit.FunSuite
 import ba.sake.basamake.index.*
-import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
+import scala.meta.internal.semanticdb.{Language, Schema, SymbolInformation, TextDocument, TextDocuments, Range => SdbRange, SymbolOccurrence}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 class WorkspaceIndexTest extends FunSuite {
@@ -55,6 +55,76 @@ class WorkspaceIndexTest extends FunSuite {
       val refs = idx.references(cur, l, c, includeDeclaration = true)
       val got = refs.map(_.path.last).toSet
       assert(expectedPathsLast.subsetOf(got), s"expected refs in $expectedPathsLast for $cursorFile, got $got")
+    } finally os.remove.all(root)
+  }
+
+  test("implementations returns transitive SemanticDB overrides and drops recompiled edges") {
+    val root = os.temp.dir(prefix = "workspace-implementations")
+    try {
+      val semDir = root / "target" / "semanticdb"
+      val srcDir = root / "src"
+      os.makeDir.all(srcDir)
+      os.makeDir.all(semDir / "META-INF" / "semanticdb" / "src")
+
+      val baseText = "trait Base:\n  def run(): Unit\n"
+      val midText = "class Mid extends Base:\n  override def run(): Unit = ()\n"
+      val leafText = "class Leaf extends Mid:\n  override def run(): Unit = ()\n"
+      val base = srcDir / "Base.scala"
+      val mid = srcDir / "Mid.scala"
+      val leaf = srcDir / "Leaf.scala"
+      os.write(base, baseText)
+      os.write(mid, midText)
+      os.write(leaf, leafText)
+
+      def doc(uri: String, text: String, owner: String, overridden: List[String]): TextDocument = {
+        val runStart = if (owner == "_empty_/Base#") 6 else 15
+        TextDocument(
+          schema = Schema.SEMANTICDB4,
+          uri = uri,
+          text = text,
+          language = Language.SCALA,
+          symbols = List(SymbolInformation(symbol = owner + "run().", overriddenSymbols = overridden)),
+          occurrences = List(
+            SymbolOccurrence(symbol = owner, range = Some(SdbRange(0, 6, 0, 10)), role = SymbolOccurrence.Role.DEFINITION),
+            SymbolOccurrence(symbol = owner + "run().", range = Some(SdbRange(1, runStart, 1, runStart + 3)), role = SymbolOccurrence.Role.DEFINITION)
+          )
+        )
+      }
+
+      def writeDoc(name: String, document: TextDocument): Unit =
+        os.write.over(semDir / "META-INF" / "semanticdb" / "src" / s"$name.semanticdb", TextDocuments(List(document)).toByteArray)
+
+      writeDoc("Base", doc("src/Base.scala", baseText, "_empty_/Base#", Nil))
+      writeDoc("Mid", doc("src/Mid.scala", midText, "_empty_/Mid#", List("_empty_/Base#run().")))
+      writeDoc("Leaf", doc("src/Leaf.scala", leafText, "_empty_/Leaf#", List("_empty_/Mid#run().")))
+
+      val idx = new WorkspaceIndex(root, new InMemorySymbolTable)
+      idx.initialize(List(SemanticdbDirs(root, semDir)))
+      val initial = idx.implementations(base, 1, 6).map(_.symbol).toSet
+      assertEquals(initial, Set("_empty_/Mid#run().", "_empty_/Leaf#run()."))
+
+      writeDoc("Leaf", doc("src/Leaf.scala", leafText, "_empty_/Leaf#", Nil))
+      idx.invalidate(List(SemanticdbDirs(root, semDir)))
+      val afterRecompile = idx.implementations(base, 1, 6).map(_.symbol).toSet
+      assertEquals(afterRecompile, Set("_empty_/Mid#run()."))
+    } finally os.remove.all(root)
+  }
+
+  test("implementations reads overriddenSymbols from compiler-generated SemanticDB") {
+    val root = os.temp.dir(prefix = "workspace-real-implementations")
+    try {
+      val base = root / "Base.scala"
+      val implementation = root / "Implementation.scala"
+      os.write(base, "trait Base:\n  def run(): Unit\n")
+      os.write(implementation, "class Implementation extends Base:\n  override def run(): Unit = ()\n")
+      val semanticdb = SemanticdbFixture.compile(root)
+
+      val idx = new WorkspaceIndex(root, new InMemorySymbolTable)
+      idx.initialize(List(semanticdb))
+      val methodResults = idx.implementations(base, 1, 6)
+      assertEquals(methodResults.map(_.path).toSet, Set(implementation))
+      val typeResults = idx.implementations(base, 0, 6)
+      assertEquals(typeResults.map(_.path).toSet, Set(implementation))
     } finally os.remove.all(root)
   }
 

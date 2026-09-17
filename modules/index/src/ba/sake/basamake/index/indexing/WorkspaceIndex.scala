@@ -17,6 +17,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   // occurrences/locals are the open-file data. ConcurrentHashMap so queries
   // never block on BSP-compile invalidations (no synchronized).
   private val sourceState = new WorkspaceSourceState
+  private val inheritanceIndex = new InheritanceIndex
 
   // debug dumps: index_sources.txt synchronous (cheap — tests rely on it being
   // fresh after invalidate); symbol_table.txt deferred to a throttled background
@@ -180,6 +181,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
     sourceState.sources.clear()
     sourceState.semanticdbStamps.clear()
+    inheritanceIndex.clear()
     // a file opened between the walk and the clear must not be dropped
     sourceState.openFiles.forEach(p => sourceState.sources.putIfAbsent(p, SourceData.empty))
     val allFiles = scalaFiles.toSet ++ sbtFiles.toSet ++ javaFiles.toSet
@@ -207,8 +209,12 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         rejected.keySet.foreach { src =>
           logger.debug(s"Source inside nested git repo, skipping semanticdb pair: $src")
           symbolTable.removeByPath(src)
+          inheritanceIndex.remove(src)
         }
-        accepted.foreach { case (src, semPath) => setSemanticdbPath(src, semPath) }
+        accepted.foreach { case (src, semPath) =>
+          setSemanticdbPath(src, semPath)
+          replaceInheritance(src, semPath)
+        }
         pairedTotal += accepted.size
         defsTotal += res.definitionsIndexed
         report(pairedTotal, s"semanticdb ${accepted.size} files")
@@ -342,6 +348,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
           SemanticdbIndexing.pairSourceFromRoot(path, root.sourceRootDir, root.semanticdbDir, workspacePath, symbolTable) match {
             case Some(semPath) =>
               setSemanticdbPath(path, semPath)
+              replaceInheritance(path, semPath)
               testHooks.directPairCount.incrementAndGet()
               recordPhaseEvent(s"direct-pair:$path")
               logger.info(s"Direct semanticdb pairing: $path <- $semPath (${elapsedMs(t0)}ms)")
@@ -374,8 +381,10 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         try {
           val defs = SemanticdbIndexing.parseDefinitions(data.semanticdbPath.get, path)
           defs.foreach(symbolTable.add)
+          replaceInheritance(path, data.semanticdbPath.get)
         } catch { case _: Exception => () }
       } else if (path.ext == "scala" || path.ext == "sbt" || path.ext == "java") {
+        inheritanceIndex.remove(path)
         withSourceStream(path)(is => extractDefinitions(path, is))
       }
       refreshOpenBuffer(path)
@@ -396,6 +405,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     paths.foreach { path =>
       sourceState.remove(path)
       symbolTable.removeByPath(path)
+      inheritanceIndex.remove(path)
     }
     debugDumps.refresh()
   }
@@ -454,6 +464,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
             setSemanticdbPath(src, semPath)
             symbolTable.removeByPath(src)
             SemanticdbIndexing.parseDefinitions(semPath, src).foreach(symbolTable.add)
+            replaceInheritance(src, semPath)
             if (sourceState.openFiles.contains(src)) refreshOpenBuffer(src)
             paired = true
           case Some(src) =>
@@ -477,6 +488,11 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       val current = if (old == null) SourceData.empty else old
       current.copy(semanticdbPath = Some(semPath))
     })
+
+  private def replaceInheritance(sourcePath: os.Path, semPath: os.Path): Unit = {
+    try inheritanceIndex.replace(sourcePath, SemanticdbIndexing.parseInheritanceEdges(semPath))
+    catch { case e: Exception => logger.warn(s"Failed to parse inheritance metadata from $semPath: ${e.getMessage}") }
+  }
 
   // ── queries ─────────────────────────────────────────────────
   def findSymbolsAt(path: os.Path, line: Int, char: Int): Vector[String] = {
@@ -596,6 +612,18 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
         results.result().distinct
       }
     }
+  }
+
+  /** Workspace implementations of the compiler-resolved symbol under cursor.
+    * Only SemanticDB-paired workspace files contribute override edges; source
+    * parsing intentionally does not guess at Scala/Java inheritance semantics. */
+  def implementations(path: os.Path, line: Int, char: Int): Vector[SymbolDefinition] = {
+    val targetSymbols = findSymbolsAt(path, line, char).toSet
+    targetSymbols.iterator
+      .flatMap(inheritanceIndex.implementationsOf)
+      .flatMap(symbolTable.get)
+      .toVector
+      .distinct
   }
 
   // ── internal helpers ─────────────────────────────────────────

@@ -57,6 +57,20 @@ class BasamakeLanguageServerTest extends FunSuite {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // implementation capability
+  // ═══════════════════════════════════════════════════════════════
+
+  test("initialize advertises the standard implementation provider") {
+    val root = copyFixture("nopackages", "lsp-implementation-capability")
+    try {
+      val server = new BasamakeLanguageServer(root)
+      server.connect(new TestLanguageClient)
+      val result = server.initialize(new InitializeParams()).get(10, TimeUnit.SECONDS)
+      assert(result.getCapabilities.getImplementationProvider.getLeft.booleanValue())
+    } finally os.remove.all(root)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // rename + watched files handling
   // ═══════════════════════════════════════════════════════════════
 
