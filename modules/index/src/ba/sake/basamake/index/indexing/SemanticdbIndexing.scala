@@ -40,7 +40,7 @@ object SemanticdbIndexing extends StrictLogging {
       readUri(semPath).foreach { uri =>
         resolveSourcePath(semPath, uri, sourceRoot, workspaceRoot) match {
           case Some(src) => definitionsIndexed += pairAndIndex(semPath, src, symbolTable, result)
-          case None => logger.warn(s"No source match for $semPath (uri=$uri, sourceRoot=$sourceRoot)")
+          case None => logger.debug(s"No source match for $semPath (uri=$uri, sourceRoot=$sourceRoot)")
         }
       }
     }

@@ -79,6 +79,12 @@ object BspHandshake extends StrictLogging {
       logger.debug("Requesting workspaceBuildTargets...")
       val targetsResult = remoteProxy.workspaceBuildTargets().get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       val targetIds = targetsResult.getTargets.asScala.map(_.getId).toList
+      // sbt's Scala-only BSP does not answer javacOptions, even with MethodNotFound.
+      // Query each language extension only for targets advertising that language.
+      def targetsFor(language: String): List[BuildTargetIdentifier] =
+        targetsResult.getTargets.asScala.filter(t => Option(t.getLanguageIds).exists(_.contains(language))).map(_.getId).toList
+      val scalaTargets = targetsFor("scala")
+      val javaTargets = targetsFor("java")
       logger.debug(s"Found ${targetIds.size} build targets: ${targetIds.map(_.getUri).mkString(", ")}")
 
       logger.debug("Requesting buildTargetSources...")
@@ -98,8 +104,8 @@ object BspHandshake extends StrictLogging {
       // Query language-specific options for SemanticDB target dirs. Either
       // extension can be unsupported; source-only indexing remains available.
       logger.debug("Requesting buildTargetScalacOptions...")
-      val scalacOptionsResult = try {
-        remoteProxy.buildTargetScalacOptions(new ScalacOptionsParams(targetIds.asJava))
+      val scalacOptionsResult = if (scalaTargets.isEmpty) new ScalacOptionsResult(java.util.Collections.emptyList()) else try {
+        remoteProxy.buildTargetScalacOptions(new ScalacOptionsParams(scalaTargets.asJava))
           .get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       } catch {
         case e: Exception =>
@@ -109,8 +115,8 @@ object BspHandshake extends StrictLogging {
       logger.debug("buildTargetScalacOptions OK")
 
       logger.debug("Requesting buildTargetJavacOptions...")
-      val javacOptionsResult = try {
-        remoteProxy.buildTargetJavacOptions(new JavacOptionsParams(targetIds.asJava))
+      val javacOptionsResult = if (javaTargets.isEmpty) new JavacOptionsResult(java.util.Collections.emptyList()) else try {
+        remoteProxy.buildTargetJavacOptions(new JavacOptionsParams(javaTargets.asJava))
           .get(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
       } catch {
         case e: Exception =>
