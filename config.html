@@ -19,26 +19,27 @@
  </head>
  <body>
   <header class="pico container">
-   <nav>
-    <ul>
-     <li><a href="https://sake92.github.io/basamake/">Home</a></li>
-    </ul>
-    <ul>
-     <li>
-      <form action="https://sake92.github.io/basamake/search/results.html" method="GET">
-       <input name="q" type="search" placeholder="Search">
-      </form>
-     </li>
-    </ul>
-    <ul></ul>
+   <nav aria-label="Main navigation">
+    <a href="https://sake92.github.io/basamake/">Basamake Documentation</a>
+    <div></div>
+    <form action="https://sake92.github.io/basamake/search/results.html" method="get" role="search">
+     <input name="q" type="search" placeholder="Search" aria-label="Search this site">
+    </form>
    </nav>
   </header>
+  <script>
+for (const link of document.querySelectorAll('body > header > nav > div > a')) {
+    const path = new URL(link.href).pathname.replace(/\/$/, '');
+    const current = window.location.pathname;
+    if (current === path || current.startsWith(path + '/')) link.setAttribute('aria-current', 'page');
+}
+</script>
   <main class="pico container">
    <div class="grid">
     <div>
-     <details>
-      <summary>Table of Contents</summary>
-      <div>
+     <details open>
+      <summary>On this page</summary>
+      <nav aria-label="Table of contents">
        <ul>
         <li><a href="#configuration">Configuration</a>
          <ul>
@@ -47,9 +48,8 @@
           <li><a href="#logs">Logs</a></li>
          </ul></li>
        </ul>
-      </div>
+      </nav>
      </details>
-     <hr>
     </div>
     <div></div>
     <div></div>
