@@ -98,7 +98,7 @@ local const lspModules =
         // Presentation compilers are resolved per BSP target, not bundled with
         // the server: Scala 2 uses mtags and Scala 3 uses its compiler artifact.
         "io.get-coursier:interface:1.0.28"
-        "org.scalameta:mtags-interfaces:1.6.2"
+        "org.scalameta:mtags-interfaces:1.6.7"
       }
     }
     testTemplate = (template.asTest()) {

@@ -37,7 +37,7 @@ private[lsp] final class PresentationCompilerHover(
           .map(_.toLsp)
       } catch {
         case e: Throwable =>
-          logger.debug(s"Presentation hover failed for ${target.id} (Scala ${target.scalaVersion}): ${e.getMessage}")
+          logger.debug(s"Presentation hover failed for ${target.id} (Scala ${target.scalaVersion})", e)
           None
       }
     }
@@ -57,7 +57,7 @@ private[lsp] final class PresentationCompilerHover(
           .get(5, TimeUnit.SECONDS))
       } catch {
         case e: Throwable =>
-          logger.debug(s"Presentation completion failed for ${target.id} (Scala ${target.scalaVersion}): ${e.getMessage}")
+          logger.debug(s"Presentation completion failed for ${target.id} (Scala ${target.scalaVersion})", e)
           None
       }
     }

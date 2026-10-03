@@ -148,26 +148,31 @@ class PresentationCompilerHoverTest extends FunSuite {
     }
   }
 
-  test("completion reports members from the target-matched Scala 3 compiler") {
-    val target = ScalaPresentationTarget(
-      id = "scala-3-completion-poc",
-      scalaVersion = "3.7.4",
-      classpath = List(scalaLibrary),
-      options = Nil,
-      sourcePaths = Nil
-    )
-    val hover = new PresentationCompilerHover(os.pwd)
-    try {
-      val result = hover.complete(
-        target,
-        URI.create("file:///PresentationCompilerCompletionPoc.scala"),
-        "object Main:\n  val answer = 42\n  ans\n",
-        line = 2,
-        character = 5
+  List("3.7.4", "3.9.0").foreach { version =>
+    test(s"completion reports members from the target-matched Scala $version compiler") {
+      val libraries = coursierapi.Fetch.create()
+        .addDependencies(coursierapi.Dependency.of("org.scala-lang", "scala3-library_3", version))
+        .fetch().asScala.toList.map(file => os.Path(file.toPath))
+      val target = ScalaPresentationTarget(
+        id = "scala-3-completion-poc",
+        scalaVersion = version,
+        classpath = libraries,
+        options = Nil,
+        sourcePaths = Nil
       )
-      val labels = result.toList.flatMap(_.getItems.asScala).map(_.getLabel)
-      assert(labels.exists(_.startsWith("answer")), s"completion labels did not contain answer: $labels")
-    } finally hover.shutdown()
+      val hover = new PresentationCompilerHover(os.pwd)
+      try {
+        val result = hover.complete(
+          target,
+          URI.create("file:///PresentationCompilerCompletionPoc.scala"),
+          "object Main:\n  val answer = 42\n  ans\n",
+          line = 2,
+          character = 5
+        )
+        val labels = result.toList.flatMap(_.getItems.asScala).map(_.getLabel)
+        assert(labels.exists(_.startsWith("answer")), s"completion labels did not contain answer: $labels")
+      } finally hover.shutdown()
+    }
   }
 
   private def writeSourceJar(jar: os.Path, entry: String, content: String): Unit = {

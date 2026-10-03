@@ -16,12 +16,15 @@ object BspWarmStart extends StrictLogging {
     if (!os.exists(bspDir) || !os.isDir(bspDir)) return (Nil, Nil)
     try {
       val dataFiles = os.walk(bspDir, maxDepth = 2).filter(_.last == "data.json")
+      val overrides = ba.sake.basamake.config.BasamakeConfig.load(workspaceRoot).bspOverrides
       var roots = List.empty[SemanticdbDirs]
       var warmDeps = List.empty[(os.Path, List[os.Path])]
       dataFiles.foreach { f =>
         try {
           val data = os.read(f).parseJson[BspTargetData]
-          data.targets.foreach { t =>
+          val bspFile = workspaceRoot / os.RelPath(data.bspFile)
+          val enabled = overrides.find(_.bspFile == data.bspFile).forall(_.enabled)
+          if (os.isFile(bspFile) && enabled) data.targets.foreach { t =>
             roots = SemanticdbDirs(t.sourceRootDir, t.semanticdbDir) :: roots
             val deps = t.dependencySources.flatMap(s => try Some(os.Path(s)) catch { case _: Exception => None })
             if (deps.nonEmpty) warmDeps = (t.sourceRootDir, deps) :: warmDeps
