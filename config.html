@@ -66,15 +66,29 @@ for (const link of document.querySelectorAll('body > header > nav > div > a')) {
   <span class="hljs-attr">"ignorePatterns"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">"generated/"</span><span class="hljs-punctuation">]</span>
 <span class="hljs-punctuation">}</span>
 </code></pre>
-   <p>When Basamake starts, it automatically adds an enabled override for every discovered <code>.bsp/*.json</code>, using the standard timeouts (<code>600</code> seconds for compile and <code>120</code> seconds for handshake). Existing overrides are preserved. New BSP files discovered later are added automatically as well.</p>
+   <p>When Basamake starts, it automatically adds an enabled override for every discovered <code>.bsp/*.json</code>, using the standard timeouts (<code>600</code> seconds for compile and <code>300</code> seconds for handshake). Existing overrides are preserved. New BSP files discovered later are added automatically as well.</p>
    <h2 id="bspoverrides">bspOverrides<a href="#bspoverrides" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <p>Per-connection overrides, matched by the <code>.bsp/*.json</code> path relative to the workspace root:</p>
    <ul>
     <li><code>enabled: false</code> — disable a connection entirely (stops its process, clears its diagnostics, removes routing); <code>true</code> re-enables it (still lazily started)</li>
+    <li><code>autoCompile: false</code> — keep the BSP connection and target metadata, but disable Basamake-triggered compilation on file opens, saves, renames and filesystem changes; default <code>true</code></li>
     <li><code>compileTimeoutSec</code> — compile timeout per connection, default <code>600</code> (10 minutes)</li>
     <li><code>handshakeTimeoutSec</code> — startup/handshake timeout, default <code>300</code></li>
    </ul>
-   <p>Overrides apply at startup and reactively when <code>.bsp/*.json</code> files change on disk.</p>
+   <p><code>autoCompile</code> changes in <code>.basamake/config.json</code> apply to running connections without restarting them. Pending builds are discarded when it is disabled; an already running build may finish. Re-enabling takes effect on the next normal compile trigger.</p>
+   <p>An external-build configuration keeps the connection enabled:</p>
+   <pre><code class="language-json hljs" data-highlighted="yes"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">"bspOverrides"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">"bspFile"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">".bsp/sbt.json"</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">"enabled"</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">true</span></span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">"autoCompile"</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">false</span></span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+</code></pre>
+   <p>The BSP configuration must exist, but no initial Basamake compile is required: the connection imports target metadata without compiling. Navigation follows changes in the SemanticDB output directories reported by BSP. External builds must generate SemanticDB for this refresh to work; after output is cleaned, Basamake falls back to source parsing until SemanticDB is generated again.</p>
+   <p>Basamake no longer triggers builds that produce compiler diagnostics in this mode. Diagnostics emitted by the connected BSP server are still forwarded; SemanticDB files themselves do not contain diagnostics.</p>
    <h2 id="ignorepatterns">ignorePatterns<a href="#ignorepatterns" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <p>Extra ignore patterns in gitignore syntax, relative to the project root. They are merged <em>after</em> <code>.gitignore</code> rules, so they can add or negate entries (e.g. un-ignore a folder that <code>.gitignore</code> skips).</p>
    <h2 id="logs">Logs<a href="#logs" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
