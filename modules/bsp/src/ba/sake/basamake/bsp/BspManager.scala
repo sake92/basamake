@@ -49,7 +49,13 @@ class BspManager (
     },
     onConfigChanged = () => {
       configState = BasamakeConfig.load(workspaceRoot)
-    }
+      connections.values().asScala.foreach { conn =>
+        val enabled = configState.bspOverrides.find(_.bspFile == relativeBspPath(conn.spec.path))
+          .flatMap(_.autoCompile).getOrElse(true)
+        conn.setAutoCompile(enabled)
+      }
+    },
+    onSemanticdbChanged = roots => onAfterCompile(roots)
   )
 
   // Diagnostics: uri → (targetId → List[Diagnostic])
@@ -84,6 +90,7 @@ class BspManager (
     knownBspFiles = discovered.map(_.path).toSet
     for (spec <- discovered) applyOverrides(spec).foreach(attachConnection)
 
+    refreshSemanticdbWatches()
     bspWatcher.start()
   }
 
@@ -306,9 +313,18 @@ class BspManager (
     logToClient(org.eclipse.lsp4j.MessageType.Info,
       s"Connecting to build server: ${spec.content.name}")
 
-  override def onConnectionSucceeded(spec: BspConnectionSpec, targetCount: Int): Unit =
+  override def onConnectionSucceeded(spec: BspConnectionSpec, targetCount: Int): Unit = {
+    refreshSemanticdbWatches()
     logToClient(org.eclipse.lsp4j.MessageType.Info,
       s"Connected to ${spec.content.name} — $targetCount build target(s)")
+  }
+
+  private def refreshSemanticdbWatches(): Unit = {
+    if (!shuttingDown.get()) {
+      try bspWatcher.setSemanticdbRoots(connections.values().asScala.toList.flatMap(_.semanticdbRoots).distinct)
+      catch { case e: Exception => logger.warn(s"Failed to register SemanticDB watches: ${e.getMessage}", e) }
+    }
+  }
 
   override def onConnectionFailed(spec: BspConnectionSpec, error: String): Unit =
     logToClient(org.eclipse.lsp4j.MessageType.Error,
@@ -370,11 +386,11 @@ class BspManager (
               if (!sameContent) {
                 logger.info(s"BSP config modified: $p — content changed, detach + re-attach")
                 detachConnection(connId)
-                attachConnection(spec)
+                applyOverrides(spec).foreach(attachConnection)
               } else {
                 logger.debug(s"BSP config modified: $p — content unchanged, skip re-attach")
               }
-            case None => attachConnection(spec)
+            case None => applyOverrides(spec).foreach(attachConnection)
           }
         }
       } catch {
@@ -410,6 +426,7 @@ class BspManager (
       val bspDir = conn.spec.path.toNIO.getParent
       router.unregisterBspRoot(bspDir, connId)
       conn.shutdown()
+      refreshSemanticdbWatches()
     }
   }
 
@@ -420,6 +437,7 @@ class BspManager (
     connections.put(id, conn)
     val bspDir = specWithRoot.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
+    refreshSemanticdbWatches()
   }
 
   private def applyOverrides(spec: BspConnectionSpec): Option[BspConnectionSpec] = {
@@ -430,7 +448,8 @@ class BspManager (
         if (ov.enabled) {
           val merged = spec.copy(
             compileTimeoutSec = ov.compileTimeoutSec.getOrElse(spec.compileTimeoutSec),
-            handshakeTimeoutSec = ov.handshakeTimeoutSec.getOrElse(spec.handshakeTimeoutSec)
+            handshakeTimeoutSec = ov.handshakeTimeoutSec.getOrElse(spec.handshakeTimeoutSec),
+            autoCompile = ov.autoCompile.getOrElse(true)
           )
           logger.debug(s"Override applied for $relPath: compileTimeoutSec=${merged.compileTimeoutSec}, handshakeTimeoutSec=${merged.handshakeTimeoutSec}")
           Some(merged)

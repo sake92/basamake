@@ -332,6 +332,36 @@ class WorkspaceIndexInvalidateTest extends FunSuite {
     } finally os.remove.all(root)
   }
 
+  test("invalidate does not stamp a compiler replacement as already indexed") {
+    val root = buildSbtLikeFixture()
+    val semDir = semanticdbDirOf(root)
+    val utils = root / "src" / "main" / "scala" / "utils.scala"
+    val output = semDir / "META-INF" / "semanticdb" / "src" / "main" / "scala" / "utils.scala.semanticdb"
+    val replacement = TextDocuments(List(TextDocument(schema = Schema.SEMANTICDB4,
+      uri = "src/main/scala/utils.scala", language = Language.SCALA,
+      occurrences = List(SymbolOccurrence(symbol = "_empty_/ReplacementFromCompiler.",
+        range = Some(SdbRange(0, 7, 0, 12)), role = SymbolOccurrence.Role.DEFINITION))))).toByteArray
+    val replaceDuringIndexing = new java.util.concurrent.atomic.AtomicBoolean(false)
+    val table = new InMemorySymbolTable {
+      override def add(sd: SymbolDefinition): Unit = {
+        super.add(sd)
+        if (sd.path == utils && replaceDuringIndexing.compareAndSet(true, false)) {
+          // Deterministic external write between reading definitions and recording the stamp.
+          os.write.over(output, replacement)
+        }
+      }
+    }
+    val index = new WorkspaceIndex(root, table)
+    try {
+      index.initialize(Nil)
+      replaceDuringIndexing.set(true)
+      index.invalidate(List(SemanticdbDirs(root, semDir)))
+      index.invalidate(List(SemanticdbDirs(root, semDir)))
+      assert(table.get("_empty_/ReplacementFromCompiler.").isDefined)
+      assert(table.get("_empty_/utils.getMsg().").isEmpty)
+    } finally os.remove.all(root)
+  }
+
   test("invalidate re-indexes only changed .semanticdb files") {
     val root = buildSbtLikeFixture()
     try {

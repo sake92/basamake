@@ -27,6 +27,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
   /** True while a BSP-compile invalidation is tearing down + rebuilding the
     * symbol table — gotoDefinitions retries once in this window (see below). */
   @volatile private var invalidating = false
+  private val invalidationLock = new java.util.concurrent.locks.ReentrantLock()
 
   /** Set when initialize is interrupted mid-fallback — records the startup
     * failure instead of silently continuing with partial data. */
@@ -422,18 +423,32 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
 
   // ── invalidate (BSP compile callback) ────────────────────────
 
-  /** Re-index `.semanticdb` files after a BSP compile.
-    * Called from BspConnection.compile's onAfterCompile callback via BspManager.
-    * Uses per-target (sourceRootDir, semanticdbDir) pairs for direct URI resolution
-    * — no climbing. Additive — does not touch existing per-file paths. */
+  /** Refresh changed SemanticDB output after BSP or external compilation.
+    * Missing output drops its pairing and restores source-based indexing. */
   def invalidate(roots: List[SemanticdbDirs]): Unit = {
     if (roots.isEmpty) return
     logger.info(s"Invalidating workspace index (${roots.size} semanticdb root(s))")
+    invalidationLock.lock()
     invalidating = true
     try {
+      sourceState.sources.asScala.toList.foreach { case (src, data) =>
+        data.semanticdbPath.filter(sem => roots.exists(r => sem.startsWith(r.semanticdbDir)) && !os.isFile(sem)).foreach { sem =>
+          withPathLock(src) {
+            sourceState.semanticdbStamps.remove(sem)
+            sourceState.sources.computeIfPresent(src, (_, current) => current.copy(semanticdbPath = None))
+            symbolTable.removeByPath(src)
+            inheritanceIndex.remove(src)
+            if (os.isFile(src) && !isIgnoredWorkspacePath(src)) {
+              withSourceStream(src)(is => extractDefinitions(src, is))
+              refreshOpenBuffer(src)
+            } else sourceState.remove(src)
+          }
+        }
+      }
       for (root <- roots if os.exists(root.sourceRootDir) && os.exists(root.semanticdbDir) && !ignoreEngine.isInsideNestedRepo(root.sourceRootDir)) {
         val srcRoot = root.sourceRootDir
         val semDir = root.semanticdbDir
+        // ponytail: scan affected output roots; switch to per-file refresh if large builds make this costly.
         val semFiles = os.walk(semDir).filter(_.ext == "semanticdb").toList
         var paired = 0
         for (semPath <- semFiles) {
@@ -447,6 +462,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       }
     } finally {
       invalidating = false
+      invalidationLock.unlock()
     }
     debugDumps.refresh()
   }
@@ -456,17 +472,22 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
     * @return true if the file was paired with a source */
   private def indexSemanticdbFile(semPath: os.Path, sourceRoot: os.Path): Boolean = {
     try {
+      // A writer may replace the output while we parse. Record the stamp from
+      // BEFORE the read so a later event cannot mistake that replacement for
+      // the bytes we just indexed.
+      val stamp = diskStampOf(semPath)
       val docs = scala.meta.internal.semanticdb.TextDocuments.parseFrom(os.read.bytes(semPath))
       var paired = false
       for (doc <- docs.documents.toVector if doc.uri.nonEmpty) {
         SemanticdbIndexing.resolveSourcePath(semPath, doc.uri, sourceRoot, workspacePath) match {
-          case Some(src) if !ignoreEngine.isInsideNestedRepo(src) =>
+          case Some(src) if !ignoreEngine.isInsideNestedRepo(src) => withPathLock(src) {
             setSemanticdbPath(src, semPath)
             symbolTable.removeByPath(src)
             SemanticdbIndexing.parseDefinitions(semPath, src).foreach(symbolTable.add)
             replaceInheritance(src, semPath)
             if (sourceState.openFiles.contains(src)) refreshOpenBuffer(src)
             paired = true
+          }
           case Some(src) =>
             logger.debug(s"Source inside nested git repo, skipping semanticdb pair: $src")
           case None =>
@@ -475,7 +496,7 @@ class WorkspaceIndex(workspacePath: os.Path, symbolTable: SymbolTable, depsTable
       }
       // only record the stamp after a successful parse — a transient failure
       // stays un-stamped and is retried on the next invalidate
-      sourceState.semanticdbStamps.put(semPath, diskStampOf(semPath))
+      sourceState.semanticdbStamps.put(semPath, stamp)
       testHooks.semanticdbIndexCount.incrementAndGet()
       paired
     } catch {
