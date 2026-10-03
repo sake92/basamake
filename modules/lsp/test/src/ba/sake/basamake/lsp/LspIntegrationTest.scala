@@ -27,6 +27,65 @@ class LspIntegrationTest extends FunSuite {
        |    println(Utils.message)
        |""".stripMargin
 
+  test("autoCompile=false imports BSP targets, follows external SemanticDB, and re-enables without reconnecting") {
+    import ba.sake.basamake.bsp.BspTargetData
+    import ba.sake.tupson.{given, *}
+    import scala.meta.internal.semanticdb.{Language, Schema, TextDocument, TextDocuments, SymbolOccurrence, Range => SdbRange}
+
+    val root = BspProjectFixture.prepare("simple", "lsp-e2e-external-build")
+    val config = root / ".basamake" / "config.json"
+    def writeConfig(enabled: Boolean): Unit = os.write.over(config,
+      s"""{"enableJdkIndexing":false,"depsCacheRoot":"${root / "deps-cache"}","bspOverrides":[{"bspFile":".bsp/scala-cli.json","enabled":true,"autoCompile":$enabled}]}""")
+    writeConfig(false)
+    val main = "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.message)\n"
+    os.write.over(root / "Main.scala", main)
+    val client = LspTestClient.start(root)
+    try {
+      client.initialize()
+      client.open("Main.scala")
+      client.open("Utils.scala")
+      client.awaitUntil(ColdStartTimeoutSec, pollMs = 100) {
+        client.loggedMessages.count(_.getMessage.startsWith("Connected to"))
+      }(_ == 1)
+      val dataFiles = client.awaitUntil(30, pollMs = 100) {
+        os.walk(root / ".basamake" / "bsp").filter(_.last == "data.json")
+      }(_.nonEmpty)
+      assert(dataFiles.nonEmpty, "cold handshake persists metadata without a compile")
+      val data = os.read(dataFiles.head).parseJson[BspTargetData]
+      val target = data.targets.head
+      assert(client.goToDefinition("Main.scala", 2, 18).isEmpty, "ext.message has no source-only definition")
+      client.replaceAndSave("Main.scala", main)
+
+      // Simulate output published by an external compiler in the real BSP target's directory.
+      val sourceRoot = target.sourceRootDir
+      val semDir = target.semanticdbDir
+      val doc = TextDocument(schema = Schema.SEMANTICDB4,
+        uri = (root / "Main.scala").relativeTo(sourceRoot).toString, text = main, language = Language.SCALA,
+        occurrences = List(SymbolOccurrence(symbol = "_empty_/Utils.message().",
+          range = Some(SdbRange(2, 16, 2, 23)), role = SymbolOccurrence.Role.REFERENCE)))
+      val output = semDir / "META-INF" / "semanticdb" / "Main.scala.semanticdb"
+      os.write.over(output, TextDocuments(List(doc)).toByteArray, createFolders = true)
+      client.awaitUntil(30, pollMs = 100) {
+        client.goToDefinition("Main.scala", 2, 18)
+      }(_.exists(loc => os.Path(java.net.URI.create(loc.getUri)).last == "Utils.scala"))
+      assert(!client.loggedMessages.exists(_.getMessage.startsWith("Compiled")), clues(client.loggedMessages.map(_.getMessage)))
+      os.remove(output)
+      client.awaitUntil(30, pollMs = 100) { client.goToDefinition("Main.scala", 2, 18) }(_.isEmpty)
+
+      writeConfig(true)
+      Thread.sleep(1000) // allow the real config watcher to apply the live setting
+      client.replaceAndSave("Main.scala", os.read(os.pwd / "test" / "resources" / "projects" / "simple" / "Main.scala"))
+      client.awaitDiagnostics("Main.scala", _.isEmpty, timeoutSec = ColdStartTimeoutSec, minPublishCount = 1)
+      client.awaitUntil(ColdStartTimeoutSec, pollMs = 100) {
+        client.loggedMessages.exists(_.getMessage.startsWith("Compiled"))
+      }(identity)
+      assertEquals(client.loggedMessages.count(_.getMessage.startsWith("Connected to")), 1, "toggle preserves the BSP process")
+    } finally {
+      client.close()
+      os.remove.all(root)
+    }
+  }
+
   test("open → BSP → compile → error → fix → recompile → clear → definition") {
     val root = BspProjectFixture.prepare("errors", "lsp-e2e-errors")
     val client = LspTestClient.start(root)

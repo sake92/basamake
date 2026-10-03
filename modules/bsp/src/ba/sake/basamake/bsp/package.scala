@@ -18,7 +18,8 @@ final case class BspConnectionSpec(
     path: os.Path,
     compileTimeoutSec: Long = BspOverride.defaultCompileTimeoutSec,
     handshakeTimeoutSec: Long = BspOverride.defaultHandshakeTimeoutSec,
-    workspaceRoot: os.Path
+    workspaceRoot: os.Path,
+    autoCompile: Boolean = true
 ) {
   val workingDir: os.Path = path / os.up / os.up
 }

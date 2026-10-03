@@ -44,6 +44,16 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(BasamakeConfig.load(proj).offerInstallBlacklist, List("a/b/c/build.mill", "build.sbt"))
   }
 
+  test("autoCompile is optional, defaults on, and preserves explicit false") {
+    val proj = root / "auto-compile"
+    os.write(proj / ".basamake" / "config.json",
+      """{"bspOverrides":[{"bspFile":".bsp/old.json","enabled":true},{"bspFile":".bsp/sbt.json","enabled":true,"autoCompile":false}]}""",
+      createFolders = true)
+    val cfg = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/old.json", ".bsp/sbt.json", ".bsp/new.json"))
+    assertEquals(cfg.bspOverrides.map(_.autoCompile.getOrElse(true)), List(true, false, true))
+    assertEquals(BasamakeConfig.load(proj), cfg)
+  }
+
   test("ensureBspDefaults: writes missing defaults without overwriting user values") {
     val proj = root / "default-template"
     os.makeDir.all(proj)
@@ -52,8 +62,8 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(
       cfg.bspOverrides,
       List(
-        BspOverride(".bsp/mill.json", true, Some(600), Some(300)),
-        BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300))
+        BspOverride(".bsp/mill.json", true, Some(600), Some(300), Some(true)),
+        BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300), Some(true))
       )
     )
 
@@ -61,7 +71,7 @@ class BasamakeConfigTest extends FunSuite {
       """{"bspOverrides":[{"bspFile":".bsp/mill.json","enabled":false,"compileTimeoutSec":42}],"ignorePatterns":["keep/"]}""")
     val updated = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/mill.json", "app/.bsp/sbt.json"))
     assertEquals(updated.bspOverrides.head, BspOverride(".bsp/mill.json", false, Some(42), None))
-    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300)))
+    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300), Some(true)))
     assertEquals(updated.ignorePatterns, List("keep/"))
   }
 }

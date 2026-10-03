@@ -86,6 +86,8 @@ final class LspTestClient private (
   def awaitCompileSucceeded(timeoutSec: Long = 120): Unit =
     client.awaitCompileSucceeded(timeoutSec)
 
+  def loggedMessages: List[MessageParams] = client.loggedMessages
+
   /** Go-to-definition at (line, character) — both 0-based. */
   def goToDefinition(relPath: String, line: Int, char: Int): List[Location] =
     measure("goto definition") {

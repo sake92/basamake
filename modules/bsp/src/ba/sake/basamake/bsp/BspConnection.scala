@@ -69,7 +69,33 @@ class BspConnection (
   /** Compile target IDs that arrived during spawn. Dedup via addIfAbsent. */
   private val pendingCompileTargetIds = new CopyOnWriteArrayList[BuildTargetIdentifier]()
   /** Targets with a scheduled-but-not-started compile — the debounce/coalesce set. */
-  private val pendingCompileTargets = new ConcurrentHashMap[BuildTargetIdentifier, java.lang.Boolean]()
+  private val pendingCompileTargets = new ConcurrentHashMap[BuildTargetIdentifier, java.lang.Long]()
+  @volatile private var autoCompile = spec.autoCompile
+  private val compileGeneration = new java.util.concurrent.atomic.AtomicLong()
+  private lazy val cachedSemanticdbRoots: List[SemanticdbDirs] = {
+    val dataFile = spec.workspaceRoot / ".basamake" / "bsp" / BspConnectionSpec.dirName(spec) / "data.json"
+    try {
+      if (os.isFile(dataFile)) os.read(dataFile).parseJson[BspTargetData].targets
+        .map(t => SemanticdbDirs(t.sourceRootDir, t.semanticdbDir))
+      else Nil
+    } catch { case e: Exception => logger.debug(s"Failed to load SemanticDB roots: ${e.getMessage}"); Nil }
+  }
+
+  def semanticdbRoots: List[SemanticdbDirs] = {
+    if (semanticdbDirByTarget.isEmpty) cachedSemanticdbRoots
+    else semanticdbDirByTarget.toList.map { case (tid, dir) =>
+      SemanticdbDirs(sourceRootDirByTarget.getOrElse(tid, spec.workspaceRoot), dir)
+    }
+  }
+
+  private[bsp] def setAutoCompile(enabled: Boolean): Unit = {
+    if (autoCompile != enabled) {
+      autoCompile = enabled
+      compileGeneration.incrementAndGet()
+      pendingCompileTargetIds.clear()
+      pendingCompileTargets.clear()
+    }
+  }
   /** Serializes compiles on this connection (sbt can only run one build at a time). */
   private val compileExecutor = Executors.newSingleThreadScheduledExecutor((r: Runnable) => {
     val t = new Thread(r, "basamake-bsp-compile")
@@ -151,6 +177,7 @@ class BspConnection (
     * of didOpen/didSave/watcher events collapses into a single build. */
   def requestCompile(uri: String): Unit = {
     if (closed) return
+    if (!autoCompile) { poke(); return }
     if (!alive) {
       if (spawning) {
         val tids = selectTargets(uri)
@@ -166,15 +193,16 @@ class BspConnection (
   }
 
   private def scheduleCompiles(targetIds: List[BuildTargetIdentifier]): Unit = {
+    val generation = java.lang.Long.valueOf(compileGeneration.get())
     targetIds.foreach { tid =>
-      if (!closed && pendingCompileTargets.putIfAbsent(tid, java.lang.Boolean.TRUE) == null) {
+      if (!closed && autoCompile && pendingCompileTargets.putIfAbsent(tid, generation) == null) {
         logger.info(s"Compile scheduled (debounced): ${tid.getUri} in ${debounceMs}ms")
         try {
           compileExecutor.schedule(new Runnable {
             override def run(): Unit = {
               // removed BEFORE compiling, so a poke during the in-flight compile
               // re-schedules exactly one follow-up (and further pokes coalesce into it)
-              pendingCompileTargets.remove(tid)
+              if (!pendingCompileTargets.remove(tid, generation) || generation.longValue() != compileGeneration.get() || !autoCompile || closed) return
               if (!alive) {
                 // connection died between schedule and fire — back to the spawn queue
                 if (!closed) {
@@ -187,14 +215,14 @@ class BspConnection (
             }
           }, debounceMs, TimeUnit.MILLISECONDS)
         } catch {
-          case _: RejectedExecutionException => pendingCompileTargets.remove(tid)
+          case _: RejectedExecutionException => pendingCompileTargets.remove(tid, generation)
         }
       }
     }
   }
 
   private def compileTargets(targetIds: List[BuildTargetIdentifier]): Unit = {
-    if (targetIds.nonEmpty) {
+    if (!closed && autoCompile && targetIds.nonEmpty) {
       val startTime = System.currentTimeMillis()
       val idsStr = targetIds.map(_.getUri).mkString(", ")
       logger.info(s"Compile start: $idsStr")

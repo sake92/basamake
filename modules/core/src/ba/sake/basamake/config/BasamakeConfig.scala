@@ -60,7 +60,8 @@ object BasamakeConfig {
             bspFile = bspFile,
             enabled = true,
             compileTimeoutSec = Some(BspOverride.defaultCompileTimeoutSec),
-            handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec)
+            handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec),
+            autoCompile = Some(true)
           ))
         val updated = if (missing.isEmpty) cfg else cfg.copy(bspOverrides = cfg.bspOverrides ++ missing)
         if (missing.nonEmpty || !os.exists(configPath)) {
@@ -121,7 +122,8 @@ final case class BspOverride(
     bspFile: String,
     enabled: Boolean = true,
     compileTimeoutSec: Option[Long] = None,   // default 600s (10 min)
-    handshakeTimeoutSec: Option[Long] = None  // default 300s
+    handshakeTimeoutSec: Option[Long] = None, // default 300s
+    autoCompile: Option[Boolean] = None     // default true; keep BSP metadata when false
 ) derives JsonRW
 
 object BspOverride {
