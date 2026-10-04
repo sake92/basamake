@@ -1,39 +1,22 @@
 package ba.sake.basamake.bsp
 
 import munit.FunSuite
+import com.google.gson.JsonParser
+import java.io.{BufferedInputStream, ByteArrayOutputStream}
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.{Files, Path, StandardOpenOption}
+import scala.collection.mutable
 
 class BspHandshakeTest extends FunSuite {
 
   test("Scala-only BSP handshake never requests Java options") {
     val root = os.temp.dir(prefix = "bsp-handshake-")
-    val script = root / "server.py"
     os.makeDir.all(root / ".bsp")
-    os.write(script, """import json, sys
-while True:
-    headers = {}
-    while True:
-        line = sys.stdin.buffer.readline()
-        if not line: sys.exit(0)
-        if line == b'\r\n': break
-        key, value = line.decode().split(':', 1)
-        headers[key.lower()] = value.strip()
-    request = json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
-    method = request['method']
-    with open('requests.txt', 'a') as log: log.write(method + '\n')
-    if 'id' not in request: continue
-    if method == 'build/initialize':
-        result = {'displayName':'fake', 'version':'1', 'bspVersion':'2.1.0', 'capabilities':{}}
-    elif method == 'workspace/buildTargets':
-        result = {'targets':[{'id':{'uri':'file:///test#main'}, 'tags':[], 'languageIds':['scala'], 'dependencies':[], 'capabilities':{'canCompile':True}}]}
-    else:
-        result = {'items':[]}
-    data = json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}).encode()
-    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(data)).encode() + data)
-    sys.stdout.buffer.flush()
-""")
     var process: Option[java.lang.Process] = None
     try {
-      val spec = BspConnectionSpec(BspDiscoveryFile("fake", List("python3", script.toString)),
+      val java = os.Path(System.getProperty("java.home")) / "bin" / "java"
+      val spec = BspConnectionSpec(BspDiscoveryFile("fake", List(java.toString, "-cp", System.getProperty("java.class.path"),
+        "ba.sake.basamake.bsp.BspHandshakeFakeServer", (root / "requests.txt").toString)),
         root / ".bsp" / "fake.json", handshakeTimeoutSec = 5, workspaceRoot = root)
       val result = BspHandshake.execute(spec, new BspEvents {
         def onDiagnostics(p: ch.epfl.scala.bsp4j.PublishDiagnosticsParams, connId: BspConnectionId): Unit = ()
@@ -94,5 +77,47 @@ while True:
 
   test("describeHandshakeFailure: null message → exception class name (not 'null')") {
     assertEquals(BspHandshake.describeHandshakeFailure(new RuntimeException(), 120, fakeLogDir, fakeBspFile), "RuntimeException")
+  }
+}
+
+object BspHandshakeFakeServer {
+  def main(args: Array[String]): Unit = {
+    val in = new BufferedInputStream(System.in)
+    val log = Path.of(args(0))
+    while (true) {
+      val headers = mutable.Map.empty[String, String]
+      var line = readLine(in)
+      while (line != null && line.nonEmpty) {
+        val Array(key, value) = line.split(":", 2)
+        headers += key.toLowerCase -> value.trim
+        line = readLine(in)
+      }
+      if (line == null) return
+
+      val request = JsonParser.parseString(new String(in.readNBytes(headers("content-length").toInt), UTF_8)).getAsJsonObject
+      val method = request.get("method").getAsString
+      Files.writeString(log, method + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+      if (request.has("id")) {
+        val result = method match {
+          case "build/initialize" => """{"displayName":"fake","version":"1","bspVersion":"2.1.0","capabilities":{}}"""
+          case "workspace/buildTargets" => """{"targets":[{"id":{"uri":"file:///test#main"},"tags":[],"languageIds":["scala"],"dependencies":[],"capabilities":{"canCompile":true}}]}"""
+          case _ => """{"items":[]}"""
+        }
+        val response = s"""{"jsonrpc":"2.0","id":${request.get("id")},"result":$result}""".getBytes(UTF_8)
+        System.out.write(s"Content-Length: ${response.length}\r\n\r\n".getBytes(UTF_8))
+        System.out.write(response)
+        System.out.flush()
+      }
+    }
+  }
+
+  private def readLine(in: BufferedInputStream): String = {
+    val bytes = new ByteArrayOutputStream
+    var next = in.read()
+    while (next != -1 && next != '\n') {
+      if (next != '\r') bytes.write(next)
+      next = in.read()
+    }
+    if (next == -1 && bytes.size == 0) null else bytes.toString(UTF_8)
   }
 }
