@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Fields and defaults for .basamake/config.json">
+  <title> Configuration | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav aria-label="Main navigation">
+    <a href="https://sake92.github.io/basamake/">Basamake Documentation</a>
+    <div>
+     <a href="https://sake92.github.io/basamake/tutorials">Tutorials</a> <a href="https://sake92.github.io/basamake/how-tos">How-to Guides</a> <a href="https://sake92.github.io/basamake/reference">Reference</a> <a href="https://sake92.github.io/basamake/explanation">Explanation</a>
+    </div>
+    <form action="https://sake92.github.io/basamake/search/results.html" method="get" role="search">
+     <input name="q" type="search" placeholder="Search" aria-label="Search this site">
+    </form>
+   </nav>
+  </header>
+  <script>
+for (const link of document.querySelectorAll('body > header > nav > div > a')) {
+    const path = new URL(link.href).pathname.replace(/\/$/, '');
+    const current = window.location.pathname;
+    if (current === path || current.startsWith(path + '/')) link.setAttribute('aria-current', 'page');
+}
+</script>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details open>
+      <summary>On this page</summary>
+      <nav aria-label="Table of contents">
+       <ul>
+        <li><a href="#configuration">Configuration</a>
+         <ul>
+          <li><a href="#bspoverrides">bspOverrides</a>
+           <ul>
+            <li><a href="#autocompile">autoCompile</a></li>
+           </ul></li>
+          <li><a href="#other-properties">Other properties</a></li>
+          <li><a href="#automatic-bsp-installation">Automatic BSP installation</a></li>
+          <li><a href="#ignorepatterns">ignorePatterns</a></li>
+          <li><a href="#generated-files">Generated files</a></li>
+         </ul></li>
+       </ul>
+      </nav>
+     </details>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="configuration">Configuration<a href="#configuration" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <p>Basamake uses the optional <code>.basamake/config.json</code> file in the workspace root.</p>
+   <pre><code class="language-json hljs" data-highlighted="yes"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">"bspOverrides"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
+    <span class="hljs-punctuation">{</span>
+      <span class="hljs-attr">"bspFile"</span><span class="hljs-punctuation">:</span> <span class="hljs-string">".bsp/sbt.json"</span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">"enabled"</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">true</span></span><span class="hljs-punctuation">,</span>
+      <span class="hljs-attr">"autoCompile"</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">true</span></span>
+    <span class="hljs-punctuation">}</span>
+  <span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">"ignorePatterns"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-punctuation">]</span><span class="hljs-punctuation">,</span>
+  <span class="hljs-attr">"offerInstallBlacklist"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+</code></pre>
+   <h2 id="bspoverrides"><code>bspOverrides</code><a href="#bspoverrides" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p><code>bspOverrides</code> contains per-connection settings. Each entry is matched by its <code>.bsp/*.json</code> path relative to the workspace root.</p>
+   <table>
+    <thead>
+     <tr>
+      <th>Field</th>
+      <th>Default</th>
+      <th>Description</th>
+     </tr>
+    </thead>
+    <tbody>
+     <tr>
+      <td><code>bspFile</code></td>
+      <td>required</td>
+      <td>Path to the BSP configuration, relative to the workspace root.</td>
+     </tr>
+     <tr>
+      <td><code>enabled</code></td>
+      <td><code>true</code></td>
+      <td>Enables the connection. Disabling it stops its process, clears its diagnostics, and removes its routes.</td>
+     </tr>
+     <tr>
+      <td><code>autoCompile</code></td>
+      <td><code>true</code></td>
+      <td>Enables Basamake-triggered compilation after file opens, saves, renames, and filesystem changes.</td>
+     </tr>
+     <tr>
+      <td><code>compileTimeoutSec</code></td>
+      <td><code>600</code></td>
+      <td>Compile timeout in seconds.</td>
+     </tr>
+     <tr>
+      <td><code>handshakeTimeoutSec</code></td>
+      <td><code>300</code></td>
+      <td>Startup and handshake timeout in seconds.</td>
+     </tr>
+    </tbody>
+   </table>
+   <p>At startup, Basamake adds an enabled override with default timeouts for every discovered BSP configuration. Existing overrides are preserved. BSP configurations discovered later are also added automatically.</p>
+   <h3 id="autocompile"><code>autoCompile</code><a href="#autocompile" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h3>
+   <p><code>autoCompile</code> controls whether Basamake triggers BSP compiles after file opens, saves, renames, and filesystem changes. It defaults to <code>true</code>.</p>
+   <p>Set it to <code>false</code> for lightweight day-to-day navigation when an sbt/Basamake compile loop is getting in the way, such as when an agent changes files and repeatedly triggers sbt. The BSP connection and target metadata remain active, but Basamake does not start builds, so it does not interfere with the process that owns compilation. Pending builds are discarded; a build already in progress may finish.</p>
+   <p>With <code>autoCompile</code> disabled, the process that owns compilation must generate SemanticDB for navigation to follow its updates. If SemanticDB output is absent, navigation falls back to source parsing. Diagnostics published by the BSP server are still forwarded. Re-enabling takes effect on the next compile trigger.</p>
+   <h2 id="other-properties">Other properties<a href="#other-properties" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <table>
+    <thead>
+     <tr>
+      <th>Field</th>
+      <th>Default</th>
+      <th>Description</th>
+     </tr>
+    </thead>
+    <tbody>
+     <tr>
+      <td><code>debugSymbolTableDump</code></td>
+      <td><code>false</code></td>
+      <td>Writes the full symbol table to <code>.basamake/symbol_table.txt</code>.</td>
+     </tr>
+     <tr>
+      <td><code>debugSlowFallbackMs</code></td>
+      <td>off</td>
+      <td>Logs source-parser fallbacks slower than this many milliseconds at <code>DEBUG</code>.</td>
+     </tr>
+     <tr>
+      <td><code>enableJdkIndexing</code></td>
+      <td><code>true</code></td>
+      <td>Enables eager background indexing of JDK sources.</td>
+     </tr>
+     <tr>
+      <td><code>depsCacheRoot</code></td>
+      <td>XDG <code>~/.cache/basamake/deps</code></td>
+      <td>Overrides the dependency/JDK cache root. Relative paths resolve against the workspace root; absolute paths are used as-is.</td>
+     </tr>
+     <tr>
+      <td><code>offerInstallBlacklist</code></td>
+      <td><code>[]</code></td>
+      <td>Build-marker paths, relative to the workspace root, where the BSP-install offer was declined.</td>
+     </tr>
+    </tbody>
+   </table>
+   <h2 id="automatic-bsp-installation">Automatic BSP installation<a href="#automatic-bsp-installation" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>When a source file is opened in a Deder, sbt, or Mill project without a BSP configuration, Basamake offers to run the build tool's BSP install command: <code>deder bsp install</code>, <code>sbt bspConfig</code>, or <code>mill mill.bsp.BSP/install</code>. The <strong>Do not offer again</strong> choice adds that build marker to <code>offerInstallBlacklist</code>.</p>
+   <p>The paths are relative to the workspace root. To re-enable a prompt, remove its marker from the list:</p>
+   <pre><code class="language-json hljs" data-highlighted="yes"><span class="hljs-punctuation">{</span>
+  <span class="hljs-attr">"offerInstallBlacklist"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">"build.sbt"</span><span class="hljs-punctuation">,</span> <span class="hljs-string">"nested/deder.pkl"</span><span class="hljs-punctuation">]</span>
+<span class="hljs-punctuation">}</span>
+</code></pre>
+   <h2 id="ignorepatterns"><code>ignorePatterns</code><a href="#ignorepatterns" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p><code>ignorePatterns</code> contains gitignore-style patterns relative to the workspace root. They are applied after <code>.gitignore</code> rules, so entries may add exclusions or negate existing exclusions.</p>
+   <h2 id="generated-files">Generated files<a href="#generated-files" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <table>
+    <thead>
+     <tr>
+      <th>Path</th>
+      <th>Contents</th>
+     </tr>
+    </thead>
+    <tbody>
+     <tr>
+      <td><code>.basamake/logs/basamake.log</code></td>
+      <td>Runtime logs.</td>
+     </tr>
+     <tr>
+      <td><code>.basamake/data.json</code></td>
+      <td>Internal generated state.</td>
+     </tr>
+     <tr>
+      <td><code>.basamake/status.json</code></td>
+      <td>Internal generated status.</td>
+     </tr>
+    </tbody>
+   </table>
+   <p>Generated state files are not configuration and should not be edited.</p>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>

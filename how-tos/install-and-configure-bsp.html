@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Install the VS Code extension and connect Basamake to deder, sbt, Scala CLI, or Mill">
+  <title> Install Basamake and configure BSP | Basamake Documentation </title>
+  <link rel="shortcut icon" href="https://sake92.github.io/basamake/images/favicon.png" type="image/png">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css" media="(prefers-color-scheme: dark)" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-light.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.conditional.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/default.css">
+  <link rel="stylesheet" href="https://sake92.github.io/basamake/styles/main.css">
+ </head>
+ <body>
+  <header class="pico container">
+   <nav aria-label="Main navigation">
+    <a href="https://sake92.github.io/basamake/">Basamake Documentation</a>
+    <div>
+     <a href="https://sake92.github.io/basamake/tutorials">Tutorials</a> <a href="https://sake92.github.io/basamake/how-tos">How-to Guides</a> <a href="https://sake92.github.io/basamake/reference">Reference</a> <a href="https://sake92.github.io/basamake/explanation">Explanation</a>
+    </div>
+    <form action="https://sake92.github.io/basamake/search/results.html" method="get" role="search">
+     <input name="q" type="search" placeholder="Search" aria-label="Search this site">
+    </form>
+   </nav>
+  </header>
+  <script>
+for (const link of document.querySelectorAll('body > header > nav > div > a')) {
+    const path = new URL(link.href).pathname.replace(/\/$/, '');
+    const current = window.location.pathname;
+    if (current === path || current.startsWith(path + '/')) link.setAttribute('aria-current', 'page');
+}
+</script>
+  <main class="pico container">
+   <div class="grid">
+    <div>
+     <details open>
+      <summary>On this page</summary>
+      <nav aria-label="Table of contents">
+       <ul>
+        <li><a href="#install-basamake-and-configure-bsp">Install Basamake and configure BSP</a>
+         <ul>
+          <li><a href="#install-the-vs-code-extension">Install the VS Code extension</a></li>
+          <li><a href="#auto-install-bsp-config">Auto install BSP config</a></li>
+          <li><a href="#manually-install-bsp-config">Manually install BSP config</a></li>
+          <li><a href="#check-logs">Check logs</a></li>
+         </ul></li>
+       </ul>
+      </nav>
+     </details>
+    </div>
+    <div></div>
+    <div></div>
+   </div>
+   <h1 id="install-basamake-and-configure-bsp">Install Basamake and configure BSP<a href="#install-basamake-and-configure-bsp" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
+   <p>This guide shows how to install Basamake and connect an existing project to its build tool.</p>
+   <h2 id="install-the-vs-code-extension">Install the VS Code extension<a href="#install-the-vs-code-extension" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Download the latest VSIX from the <a href="https://github.com/sake92/basamake-vscode/releases">Basamake VS Code releases page</a>, then choose <strong>Extensions → ... → Install from VSIX</strong> in VS Code.</p>
+   <p>The <a href="https://github.com/sake92/basamake-vscode/releases#release-main">snapshot release</a> contains the latest changes.</p>
+   <p>If Metals is installed, select <strong>Basamake</strong> when VS Code asks which language server to use for <code>.scala</code> and <code>.sbt</code> files.</p>
+   <h2 id="auto-install-bsp-config">Auto install BSP config<a href="#auto-install-bsp-config" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>When you open a source file in a Deder, sbt, or Mill project that has no BSP configuration, Basamake asks whether it should run that build tool's BSP install command (<code>deder bsp install</code>, <code>sbt bspConfig</code>, or <code>mill mill.bsp.BSP/install</code>). Choose <strong>Install</strong> to create the configuration and connect it automatically.</p>
+   <p>Choose <strong>Do not offer again</strong> to disable the prompt for that build marker. The choice is stored in <code>offerInstallBlacklist</code>; remove the marker from that list to make Basamake ask again.</p>
+   <h2 id="manually-install-bsp-config">Manually install BSP config<a href="#manually-install-bsp-config" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Run the command for the project's build tool from the project directory:</p>
+   <table>
+    <thead>
+     <tr>
+      <th>Build tool</th>
+      <th>Command</th>
+     </tr>
+    </thead>
+    <tbody>
+     <tr>
+      <td>sbt</td>
+      <td><code>sbt bspConfig</code></td>
+     </tr>
+     <tr>
+      <td>Scala CLI</td>
+      <td><code>scala setup-ide .</code></td>
+     </tr>
+     <tr>
+      <td>Mill</td>
+      <td><code>mill mill.bsp.BSP/install</code></td>
+     </tr>
+     <tr>
+      <td>deder</td>
+      <td><code>deder bsp install</code></td>
+     </tr>
+    </tbody>
+   </table>
+   <h2 id="check-logs">Check logs<a href="#check-logs" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
+   <p>Runtime logs are written to <code>.basamake/logs/basamake.log</code> in the project root.</p>
+  </main>
+  <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
+ </body>
+</html>

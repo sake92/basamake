@@ -21,7 +21,9 @@
   <header class="pico container">
    <nav aria-label="Main navigation">
     <a href="https://sake92.github.io/basamake/">Basamake Documentation</a>
-    <div></div>
+    <div>
+     <a href="https://sake92.github.io/basamake/tutorials">Tutorials</a> <a href="https://sake92.github.io/basamake/how-tos">How-to Guides</a> <a href="https://sake92.github.io/basamake/reference">Reference</a> <a href="https://sake92.github.io/basamake/explanation">Explanation</a>
+    </div>
     <form action="https://sake92.github.io/basamake/search/results.html" method="get" role="search">
      <input name="q" type="search" placeholder="Search" aria-label="Search this site">
     </form>
@@ -65,14 +67,14 @@ for (const link of document.querySelectorAll('body > header > nav > div > a')) {
    </ul>
    <p>No rename refactoring, formatting, or workspace-wide symbol search. Just the tools needed to navigate, understand, and edit Scala code — fast and stable.</p>
    <blockquote>
-    <p><strong>New here?</strong> Start with the <a href="https://sake92.github.io/basamake/install.html">Installation</a> guide, then read <a href="https://sake92.github.io/basamake/how-it-works.html">How it works</a>. Already set up? See the <a href="https://sake92.github.io/basamake/config.html">Configuration</a> page.</p>
+    <p><strong>New here?</strong> Start with the <a href="https://sake92.github.io/basamake/tutorials/getting-started.html">Getting started tutorial</a>, then read <a href="https://sake92.github.io/basamake/explanation/how-it-works.html">How it works</a>. Already set up? See the <a href="https://sake92.github.io/basamake/reference/configuration.html">Configuration reference</a>.</p>
    </blockquote>
    <h2 id="why-basamake">Why Basamake?<a href="#why-basamake" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <ul>
     <li><strong>Snappy</strong> — BSP servers start lazily (nothing spawns at editor startup), dependency indexes are cached on disk and reused across sessions</li>
     <li><strong>Stable</strong> — small surface area and a simple concurrency model, no heavy machinery</li>
     <li><strong>Robust</strong> — workspaces with several build tools just work; crashed build servers don't leave orphan processes behind</li>
-    <li>See <a href="https://sake92.github.io/basamake/why-basamake.html">Why Basamake?</a> for the comparison with Metals and IntelliJ</li>
+    <li>See <a href="https://sake92.github.io/basamake/explanation/why-basamake.html">Why Basamake?</a> for the comparison with Metals and IntelliJ</li>
    </ul>
    <h2 id="features">Features<a href="#features" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <ul>
@@ -86,11 +88,25 @@ for (const link of document.querySelectorAll('body > header > nav > div > a')) {
    </ul>
    <h2 id="site-map">Site map<a href="#site-map" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h2>
    <ul>
-    <li><a href="https://sake92.github.io/basamake/install.html">Installation</a> — VS Code extension and BSP setup</li>
-    <li><a href="https://sake92.github.io/basamake/how-it-works.html">How it works</a> — the main mechanisms, in short</li>
-    <li><a href="https://sake92.github.io/basamake/navigation.html">Navigation &amp; indexing</a> — how definitions and references are resolved</li>
-    <li><a href="https://sake92.github.io/basamake/config.html">Configuration</a> — <code>.basamake/config.json</code></li>
-    <li><a href="https://sake92.github.io/basamake/why-basamake.html">Why Basamake?</a> — Basamake vs Metals and IntelliJ</li>
+    <li><a href="https://sake92.github.io/basamake/tutorials/index.html">Tutorials</a>
+     <ul>
+      <li><a href="https://sake92.github.io/basamake/tutorials/getting-started.html">Getting started</a></li>
+     </ul></li>
+    <li><a href="https://sake92.github.io/basamake/how-tos/index.html">How-to guides</a>
+     <ul>
+      <li><a href="https://sake92.github.io/basamake/how-tos/install-and-configure-bsp.html">Install Basamake and configure BSP</a></li>
+      <li><a href="https://sake92.github.io/basamake/how-tos/build-tool-only-compiling.html">Use the build tool only for compiling</a></li>
+     </ul></li>
+    <li><a href="https://sake92.github.io/basamake/reference/index.html">Reference</a>
+     <ul>
+      <li><a href="https://sake92.github.io/basamake/reference/configuration.html">Configuration</a></li>
+     </ul></li>
+    <li><a href="https://sake92.github.io/basamake/explanation/index.html">Explanation</a>
+     <ul>
+      <li><a href="https://sake92.github.io/basamake/explanation/how-it-works.html">How it works</a></li>
+      <li><a href="https://sake92.github.io/basamake/explanation/navigation-and-indexing.html">Navigation and indexing</a></li>
+      <li><a href="https://sake92.github.io/basamake/explanation/why-basamake.html">Why Basamake?</a></li>
+     </ul></li>
    </ul>
   </main>
   <footer class="pico container">Basamake Documentation | Basamake LSP Documentation</footer>
