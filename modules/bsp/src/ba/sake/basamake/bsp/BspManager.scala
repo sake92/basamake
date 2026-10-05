@@ -16,12 +16,13 @@ import ba.sake.basamake.index.indexing.{WorkspaceIndex, SemanticdbDirs, IndexedS
   *
   * Owns: connections map, BspRouter, diagnostics state, compile progress.
   * Coordinates WatchFilter, BspWatcher, and per-connection BspConnections —
-  * it manipulates no process state directly (connection.shutdown() only). */
+  * Shutdown also sweeps JVM descendants unless disabled for shared-JVM use. */
 class BspManager (
     workspaceRoot: os.Path,
     workspaceIndex: WorkspaceIndex,
     depsSymbolTable: IndexedSymbolTable,
-    config: BasamakeConfig
+    config: BasamakeConfig,
+    killJvmDescendantsOnShutdown: Boolean = true
 ) extends BspEvents with StrictLogging {
 
   private val connections = new ConcurrentHashMap[BspConnectionId, BspConnection]()
@@ -345,8 +346,10 @@ class BspManager (
     compileProgress.endAllConnections()
     connections.values().asScala.foreach(_.shutdown())
     connections.clear()
-    val killed = ProcessUtils.terminateProcessHandleTree(java.lang.ProcessHandle.current())
-    if (killed > 0) logger.info(s"Killed $killed descendant process node(s) during shutdown")
+    if (killJvmDescendantsOnShutdown) {
+      val killed = ProcessUtils.terminateProcessHandleTree(java.lang.ProcessHandle.current())
+      if (killed > 0) logger.info(s"Killed $killed descendant process node(s) during shutdown")
+    }
   }
 
   private def handleBspChanges(changed: Set[os.Path]): Unit = {

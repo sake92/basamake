@@ -22,7 +22,7 @@ object BspManagerTestSupport {
       symbolTable,
       Some(depsTable)
     )
-    val mgr = new BspManager(root, index, depsTable, BasamakeConfig.load(root))
+    val mgr = new BspManager(root, index, depsTable, BasamakeConfig.load(root), killJvmDescendantsOnShutdown = false)
     mgr.initialize(client, warmDeps = Nil, workDoneProgress = workDoneProgress)
     mgr
   }
