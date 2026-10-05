@@ -2,3 +2,16 @@
 name: Basamake Documentation
 description: Basamake LSP Documentation
 
+categories:
+  tutorials:
+    label: Tutorials
+    description: Learn Basamake through guided lessons
+  how-tos:
+    label: How-to Guides
+    description: Complete common Basamake tasks
+  reference:
+    label: Reference
+    description: Basamake technical reference
+  explanation:
+    label: Explanation
+    description: Understand Basamake's design and behavior

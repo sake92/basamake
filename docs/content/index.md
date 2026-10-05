@@ -20,16 +20,16 @@ and gives you the essentials:
 No rename refactoring, formatting, or workspace-wide symbol search. Just the tools needed to
 navigate, understand, and edit Scala code — fast and stable.
 
-> **New here?** Start with the [Installation](/install.html) guide,
-> then read [How it works](/how-it-works.html).
-> Already set up? See the [Configuration](/config.html) page.
+> **New here?** Start with the [Getting started tutorial](/tutorials/getting-started.html),
+> then read [How it works](/explanation/how-it-works.html).
+> Already set up? See the [Configuration reference](/reference/configuration.html).
 
 ## Why Basamake?
 
 - **Snappy** — BSP servers start lazily (nothing spawns at editor startup), dependency indexes are cached on disk and reused across sessions
 - **Stable** — small surface area and a simple concurrency model, no heavy machinery
 - **Robust** — workspaces with several build tools just work; crashed build servers don't leave orphan processes behind
-- See [Why Basamake?](/why-basamake.html) for the comparison with Metals and IntelliJ
+- See [Why Basamake?](/explanation/why-basamake.html) for the comparison with Metals and IntelliJ
 
 ## Features
 
@@ -43,8 +43,14 @@ navigate, understand, and edit Scala code — fast and stable.
 
 ## Site map
 
-- [Installation](/install.html) — VS Code extension and BSP setup
-- [How it works](/how-it-works.html) — the main mechanisms, in short
-- [Navigation & indexing](/navigation.html) — how definitions and references are resolved
-- [Configuration](/config.html) — `.basamake/config.json`
-- [Why Basamake?](/why-basamake.html) — Basamake vs Metals and IntelliJ
+- [Tutorials](/tutorials/index.html)
+  - [Getting started](/tutorials/getting-started.html)
+- [How-to guides](/how-tos/index.html)
+  - [Install Basamake and configure BSP](/how-tos/install-and-configure-bsp.html)
+  - [Use the build tool only for compiling](/how-tos/build-tool-only-compiling.html)
+- [Reference](/reference/index.html)
+  - [Configuration](/reference/configuration.html)
+- [Explanation](/explanation/index.html)
+  - [How it works](/explanation/how-it-works.html)
+  - [Navigation and indexing](/explanation/navigation-and-indexing.html)
+  - [Why Basamake?](/explanation/why-basamake.html)
