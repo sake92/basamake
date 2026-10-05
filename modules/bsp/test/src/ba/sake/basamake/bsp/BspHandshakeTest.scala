@@ -14,8 +14,12 @@ class BspHandshakeTest extends FunSuite {
     os.makeDir.all(root / ".bsp")
     var process: Option[java.lang.Process] = None
     try {
-      val java = os.Path(System.getProperty("java.home")) / "bin" / "java"
-      val spec = BspConnectionSpec(BspDiscoveryFile("fake", List(java.toString, "-cp", System.getProperty("java.class.path"),
+      val javaExe = os.Path(System.getProperty("java.home")) / "bin" / "java"
+      val classpath = System.getProperty("java.class.path")
+        .split(java.util.regex.Pattern.quote(java.io.File.pathSeparator), -1)
+        .map(entry => if (entry.isEmpty) os.pwd.toString else os.Path(entry).toString)
+        .mkString(java.io.File.pathSeparator)
+      val spec = BspConnectionSpec(BspDiscoveryFile("fake", List(javaExe.toString, "-cp", classpath,
         "ba.sake.basamake.bsp.BspHandshakeFakeServer", (root / "requests.txt").toString)),
         root / ".bsp" / "fake.json", handshakeTimeoutSec = 5, workspaceRoot = root)
       val result = BspHandshake.execute(spec, new BspEvents {
