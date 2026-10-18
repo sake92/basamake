@@ -31,9 +31,12 @@ targeting a build's files opens a prompt with **Compile on change** and
 the second leaves compilation to your build tool. The choice is saved as `autoCompile`
 for that connection in `.basamake/config.json`.
 
-Each build server is offered once per session. Dismissing the prompt leaves it stopped
-until the workspace is reloaded. Filesystem changes alone never start an unimported build.
-Once imported, requests arriving while the server spawns are queued and drained when it is up.
+The prompt appears only while no `autoCompile` value is recorded for that build.
+Once you answer, the choice is saved and the prompt never appears again — not even
+after a restart. A hand-written `autoCompile` also skips the prompt. Dismissing the
+prompt leaves the build stopped until the workspace is reloaded, when it is offered
+again. Filesystem changes alone never start an unimported build. Once imported,
+requests arriving while the server spawns are queued and drained when it is up.
 
 A failed spawn is not fatal: every user action is a fresh attempt, and a crashed server is
 simply restarted on the next request. No orphan processes are left behind on shutdown.

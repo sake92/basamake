@@ -252,6 +252,11 @@ class BspConnection (
       pendingCompileTargetIds.clear()
       pendingCompileTargets.clear()
       compileExecutor.shutdownNow()
+      // An in-flight compile keeps doing bookkeeping after its BSP response
+      // (semanticdb invalidation, data.json) — let it finish before the caller
+      // tears the workspace down, so those writes never race process teardown.
+      try compileExecutor.awaitTermination(ShutdownTimeoutSec, TimeUnit.SECONDS)
+      catch { case _: InterruptedException => Thread.currentThread().interrupt() }
       tryGracefulShutdown()
       killTree()
       // process/buildServer are dead — drop the references

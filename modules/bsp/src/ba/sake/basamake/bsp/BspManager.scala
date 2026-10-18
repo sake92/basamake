@@ -54,15 +54,22 @@ class BspManager (
       catch { case e: Exception => logger.error(s"Failed to process .bsp changes: ${e.getMessage}", e) }
     },
     onConfigChanged = () => {
-      stateLock.lock()
-      try {
-        configState = BasamakeConfig.load(workspaceRoot)
-        connections.values().asScala.foreach { conn =>
-          val enabled = configState.bspOverrides.find(_.bspFile == relativeBspPath(conn.spec.path))
-            .flatMap(_.autoCompile).getOrElse(true)
-          conn.setAutoCompile(enabled)
-        }
-      } finally { stateLock.unlock() }
+      val adopted = {
+        stateLock.lock()
+        try {
+          configState = BasamakeConfig.load(workspaceRoot)
+          val decided = connections.values().asScala.flatMap { conn =>
+            val decision = importDecision(conn)
+            conn.setAutoCompile(decision.getOrElse(true))
+            // An explicit autoCompile is a recorded import decision (prompt answer
+            // or hand edit) — mark it imported so no prompt is ever offered again.
+            if (decision.isDefined && imported.add(conn)) Some(conn) else None
+          }.toList
+          decided.foreach(conn => abortPendingImport(conn))
+          decided
+        } finally { stateLock.unlock() }
+      }
+      adopted.foreach(conn => resumeImport(conn, uri = None))
     },
     onSemanticdbChanged = roots => onAfterCompile(roots)
   )
@@ -153,10 +160,12 @@ class BspManager (
                 selectImportMode(conn, title == compileOnChange.getTitle)
               }
             }
-            resumeImport(conn, uri)
+            resumeImport(conn, uri = Some(uri))
           }, importExecutor).whenComplete((_, error) => {
             pendingImports.remove(conn)
-            if (error != null && !shuttingDown.get()) logger.warn(s"BSP import failed for $bspFile: ${error.getMessage}")
+            if (error != null && !shuttingDown.get() && !error.isInstanceOf[java.util.concurrent.CancellationException]) {
+              logger.warn(s"BSP import failed for $bspFile: ${error.getMessage}")
+            }
           })
         }
       } catch {
@@ -165,12 +174,24 @@ class BspManager (
     }
   }
 
-  private def resumeImport(conn: BspConnection, uri: String, compileIfEmpty: Boolean = false): Unit = {
+  private def resumeImport(conn: BspConnection, uri: Option[String], compileIfEmpty: Boolean = false): Unit = {
     val compileUris = Option(importCompileUris.remove(conn)).toList.flatMap(_.asScala)
-    if (imported.contains(conn)) {
-      if (compileUris.isEmpty) poke(uri, compile = compileIfEmpty)
-      else compileUris.foreach(poke(_, compile = true))
-    }
+    if (!imported.contains(conn)) return
+    if (compileUris.nonEmpty) compileUris.foreach(poke(_, compile = true))
+    else uri.foreach(poke(_, compile = compileIfEmpty))
+  }
+
+  /** The recorded import decision for a connection, if any: the explicit
+    * `autoCompile` persisted for its BSP file. Absent means Basamake has not
+    * asked yet — or the user never chose — so it may still offer the prompt. */
+  private def importDecision(conn: BspConnection): Option[Boolean] =
+    configState.bspOverrides.find(_.bspFile == relativeBspPath(conn.spec.path)).flatMap(_.autoCompile)
+
+  /** A recorded decision made the prompt moot: drop any in-flight request so a
+    * late answer cannot overwrite the config the user just edited. */
+  private def abortPendingImport(conn: BspConnection): Unit = {
+    importOffered.add(conn)
+    Option(pendingImports.remove(conn)).foreach(_.cancel(true))
   }
 
   private def selectImportMode(conn: BspConnection, autoCompile: Boolean): Unit = {
@@ -200,12 +221,12 @@ class BspManager (
       rescanBspConfigs()
       val owning = router.route(uri).flatMap(id => Option(connections.get(id)))
       owning.foreach { connection =>
-        Option(pendingImports.remove(connection)).foreach(_.cancel(true))
+        abortPendingImport(connection)
         selectImportMode(connection, autoCompile)
       }
       owning
     } finally { stateLock.unlock() }
-    conn.foreach(resumeImport(_, uri, compileIfEmpty = true))
+    conn.foreach(resumeImport(_, uri = Some(uri), compileIfEmpty = true))
     conn.isDefined
   }
 
@@ -541,6 +562,12 @@ class BspManager (
     val id = BspConnectionId(specWithRoot.path.toString)
     val conn = BspConnection(specWithRoot, this)
     connections.put(id, conn)
+    // A build whose BSP file already carries an explicit autoCompile was imported
+    // in an earlier session (or configured by hand): skip the import prompt.
+    if (importDecision(conn).isDefined) {
+      imported.add(conn)
+      importOffered.add(conn)
+    }
     val bspDir = specWithRoot.path.toNIO.getParent
     router.registerBspRoot(bspDir, Set(id))
     refreshSemanticdbWatches()

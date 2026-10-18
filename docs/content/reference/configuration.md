@@ -30,18 +30,23 @@ Basamake uses the optional `.basamake/config.json` file in the workspace root.
 |---|---|---|
 | `bspFile` | required | Path to the BSP configuration, relative to the workspace root. |
 | `enabled` | `true` | Enables the connection. Disabling it stops its process, clears its diagnostics, and removes its routes. |
-| `autoCompile` | `true` | Enables Basamake-triggered compilation after file opens, saves, renames, and filesystem changes. |
+| `autoCompile` | `true` | Compile-on-change mode. While no value is recorded (key missing or `null`), Basamake asks once how to import the build and saves your answer here. |
 | `compileTimeoutSec` | `600` | Compile timeout in seconds. |
 | `handshakeTimeoutSec` | `300` | Startup and handshake timeout in seconds. |
 
 At startup, Basamake adds an enabled override with default timeouts for every
-discovered BSP configuration. Existing overrides are preserved. BSP
-configurations discovered later are also added automatically.
+discovered BSP configuration. It leaves `autoCompile` unset (`null`) in that
+template, because a value there means "already imported". Existing overrides are
+preserved. BSP configurations discovered later are also added automatically.
 
 ### `autoCompile`
 
 `autoCompile` controls whether Basamake triggers BSP compiles after file opens,
 saves, renames, and filesystem changes. It defaults to `true`.
+
+Basamake asks how to import a build only while no `autoCompile` value is recorded
+for it. Answering the prompt — or writing the field yourself — records the mode and
+suppresses the prompt, including across restarts.
 
 Set it to `false` for lightweight day-to-day navigation when an sbt/Basamake
 compile loop is getting in the way, such as when an agent changes files and

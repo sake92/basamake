@@ -62,8 +62,8 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(
       cfg.bspOverrides,
       List(
-        BspOverride(".bsp/mill.json", true, Some(600), Some(300), Some(true)),
-        BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300), Some(true))
+        BspOverride(".bsp/mill.json", true, Some(600), Some(300)),
+        BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300))
       )
     )
 
@@ -71,8 +71,18 @@ class BasamakeConfigTest extends FunSuite {
       """{"bspOverrides":[{"bspFile":".bsp/mill.json","enabled":false,"compileTimeoutSec":42}],"ignorePatterns":["keep/"]}""")
     val updated = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/mill.json", "app/.bsp/sbt.json"))
     assertEquals(updated.bspOverrides.head, BspOverride(".bsp/mill.json", false, Some(42), None))
-    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300), Some(true)))
+    assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300)))
     assertEquals(updated.ignorePatterns, List("keep/"))
+  }
+
+  test("ensureBspDefaults: leaves autoCompile unset so the import prompt still applies") {
+    val proj = root / "undecided"
+    os.makeDir.all(proj)
+
+    val cfg = BasamakeConfig.ensureBspDefaults(proj, List(".bsp/sbt.json"))
+    assertEquals(cfg.bspOverrides.map(_.autoCompile), List(None), "no decision recorded yet")
+    assertEquals(BasamakeConfig.load(proj).bspOverrides.map(_.autoCompile), List(None),
+      "the generated config must not look like an answered import prompt")
   }
 
   test("import mode preserves other settings and malformed config") {

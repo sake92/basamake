@@ -55,7 +55,10 @@ object BasamakeConfig {
   }
 
   /** Ensures every discovered BSP file has an explicit override while keeping
-    * all existing user values intact. Malformed existing config is preserved. */
+    * all existing user values intact. Malformed existing config is preserved.
+    * `autoCompile` is deliberately left absent: its presence is what marks a
+    * recorded import decision (see setBspAutoCompile), and defaulting it here
+    * would make Basamake believe every discovered build was already imported. */
   def ensureBspDefaults(workspaceRoot: os.Path, bspFiles: List[String]): BasamakeConfig = {
     val configPath = workspaceRoot / ".basamake" / "config.json"
     val current =
@@ -78,8 +81,7 @@ object BasamakeConfig {
             bspFile = bspFile,
             enabled = true,
             compileTimeoutSec = Some(BspOverride.defaultCompileTimeoutSec),
-            handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec),
-            autoCompile = Some(true)
+            handshakeTimeoutSec = Some(BspOverride.defaultHandshakeTimeoutSec)
           ))
         val updated = if (missing.isEmpty) cfg else cfg.copy(bspOverrides = cfg.bspOverrides ++ missing)
         if (missing.nonEmpty || !os.exists(configPath)) {
@@ -141,7 +143,10 @@ final case class BspOverride(
     enabled: Boolean = true,
     compileTimeoutSec: Option[Long] = None,   // default 600s (10 min)
     handshakeTimeoutSec: Option[Long] = None, // default 300s
-    autoCompile: Option[Boolean] = None     // default true; keep BSP metadata when false
+    /** Compile-on-change mode for this connection. Absent means Basamake has no
+      * recorded import decision yet and will ask once; true (default) keeps
+      * BSP metadata when false. */
+    autoCompile: Option[Boolean] = None
 ) derives JsonRW
 
 object BspOverride {
