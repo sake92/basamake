@@ -25,9 +25,15 @@ No build server is started yet — discovery is read-only.
 
 ## Lazy connections
 
-BSP processes are **not** started when the editor opens. A connection spawns only when the
-first editor message targets a file in its territory (opening a file, saving, go to definition, ...).
-If the server is busy spawning, requests are queued and drained once it is up.
+BSP processes stay stopped until you choose an import mode. The first editor message
+targeting a build's files opens a prompt with **Compile on change** and
+**Don't compile on change**. Both modes connect BSP for target metadata and navigation;
+the second leaves compilation to your build tool. The choice is saved as `autoCompile`
+for that connection in `.basamake/config.json`.
+
+Each build server is offered once per session. Dismissing the prompt leaves it stopped
+until the workspace is reloaded. Filesystem changes alone never start an unimported build.
+Once imported, requests arriving while the server spawns are queued and drained when it is up.
 
 A failed spawn is not fatal: every user action is a fresh attempt, and a crashed server is
 simply restarted on the next request. No orphan processes are left behind on shutdown.

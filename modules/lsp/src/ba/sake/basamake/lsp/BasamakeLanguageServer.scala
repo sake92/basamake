@@ -247,17 +247,19 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
       val root = candidate.root
       val markerKey = candidate.configKey(workspacePath)
       if (!bspManager.isInstallOfferBlacklisted(markerKey) && bspInstallOfferPending.add(root)) {
-        val install = new MessageActionItem("Install")
+        val compileOnChange = new MessageActionItem("Import and compile on change")
+        val externalCompile = new MessageActionItem("Import without compiling on change")
         val never = new MessageActionItem("Do not offer again")
         val request = new ShowMessageRequestParams()
         request.setType(MessageType.Info)
-        request.setMessage(s"No BSP configuration found for this ${tool.displayName} project. Install it?")
-        request.setActions(java.util.List.of(install, never))
+        request.setMessage(s"No BSP configuration found for this ${tool.displayName} project. Install BSP support and import the build?")
+        request.setActions(java.util.List.of(compileOnChange, externalCompile, never))
         client.foreach { lspClient =>
           try {
             lspClient.showMessageRequest(request).thenAccept { choice =>
-              if (choice != null && choice.getTitle == install.getTitle) {
-                Thread.ofVirtual().start(() => installBsp(tool, root, uri))
+              if (choice != null && (choice.getTitle == compileOnChange.getTitle || choice.getTitle == externalCompile.getTitle)) {
+                val autoCompile = choice.getTitle == compileOnChange.getTitle
+                Thread.ofVirtual().start(() => installBsp(tool, root, uri, autoCompile))
               } else if (choice != null && choice.getTitle == never.getTitle) {
                 if (!bspManager.blacklistInstallOffer(markerKey)) {
                   logger.warn(s"Could not persist BSP-install offer dismissal for $markerKey")
@@ -277,14 +279,12 @@ class BasamakeLanguageServer(workspacePath: os.Path) extends LanguageClientAware
     }
   }
 
-  private def installBsp(tool: BspBuildTool, root: os.Path, uri: String): Unit = {
+  private def installBsp(tool: BspBuildTool, root: os.Path, uri: String, autoCompile: Boolean): Unit = {
     try {
       BspInstaller.install(tool, root) match {
         case Right(_) =>
-          bspManager.rescanBspConfigs()
-          if (bspManager.handles(uri)) {
+          if (bspManager.importInstalledBuild(uri, autoCompile)) {
             client.foreach(_.showMessage(new MessageParams(MessageType.Info, s"BSP support installed for ${tool.displayName}.")))
-            bspManager.poke(uri, compile = true)
           } else {
             client.foreach(_.showMessage(new MessageParams(MessageType.Warning,
               s"${tool.displayName} completed, but no BSP configuration was found.")))

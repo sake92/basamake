@@ -74,4 +74,19 @@ class BasamakeConfigTest extends FunSuite {
     assertEquals(updated.bspOverrides(1), BspOverride("app/.bsp/sbt.json", true, Some(600), Some(300), Some(true)))
     assertEquals(updated.ignorePatterns, List("keep/"))
   }
+
+  test("import mode preserves other settings and malformed config") {
+    val proj = root / "import-mode"
+    val path = proj / ".basamake" / "config.json"
+    os.write(path,
+      """{"ignorePatterns":["keep/"],"bspOverrides":[{"bspFile":".bsp/fake.json","enabled":true,"compileTimeoutSec":42}]}""",
+      createFolders = true)
+    assert(BasamakeConfig.setBspAutoCompile(proj, ".bsp/fake.json", false))
+    val updated = BasamakeConfig.load(proj)
+    assertEquals(updated.ignorePatterns, List("keep/"))
+    assertEquals(updated.bspOverrides, List(BspOverride(".bsp/fake.json", true, Some(42), None, Some(false))))
+    os.write.over(path, "{broken")
+    assert(!BasamakeConfig.setBspAutoCompile(proj, ".bsp/fake.json", true))
+    assertEquals(os.read(path), "{broken")
+  }
 }

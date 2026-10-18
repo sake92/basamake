@@ -36,6 +36,24 @@ final case class BasamakeConfig(
 
 object BasamakeConfig {
 
+  /** Save the chosen import mode without replacing malformed user config. */
+  def setBspAutoCompile(workspaceRoot: os.Path, bspFile: String, enabled: Boolean): Boolean = {
+    val configPath = workspaceRoot / ".basamake" / "config.json"
+    try {
+      val current =
+        if (os.exists(configPath)) os.read(configPath).parseJson[BasamakeConfig]
+        else BasamakeConfig()
+      val existing = current.bspOverrides.find(_.bspFile == bspFile).getOrElse(BspOverride(bspFile))
+      val overrides = current.bspOverrides.filterNot(_.bspFile == bspFile) :+ existing.copy(autoCompile = Some(enabled))
+      os.write.over(configPath, ba.sake.tupson.toJson(current.copy(bspOverrides = overrides)), createFolders = true)
+      true
+    } catch {
+      case e: Exception =>
+        com.typesafe.scalalogging.Logger("BasamakeConfig").warn(s"Failed to save import mode in $configPath: ${e.getMessage}")
+        false
+    }
+  }
+
   /** Ensures every discovered BSP file has an explicit override while keeping
     * all existing user values intact. Malformed existing config is preserved. */
   def ensureBspDefaults(workspaceRoot: os.Path, bspFiles: List[String]): BasamakeConfig = {

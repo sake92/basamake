@@ -27,6 +27,32 @@ class LspIntegrationTest extends FunSuite {
        |    println(Utils.message)
        |""".stripMargin
 
+  test("dismissing import keeps BSP stopped across open, save, and navigation over JSON-RPC") {
+    val root = BspProjectFixture.prepare("simple", "lsp-e2e-deferred-import")
+    val client = LspTestClient.start(root, importMode = "Dismiss")
+    try {
+      client.initialize()
+      assertEquals(client.shownMessageRequests, Nil)
+      assert(!client.loggedMessages.exists(_.getMessage.startsWith("Connecting to")))
+      client.open("Main.scala")
+      client.awaitUntil(10, pollMs = 50) { client.shownMessageRequests.size }(_ == 1)
+      assertEquals(client.shownMessageRequests.head.getActions.asScala.map(_.getTitle).toList,
+        List("Compile on change", "Don't compile on change"))
+      client.open("Utils.scala")
+      client.replaceAndSave("Main.scala", FixedMain)
+      client.awaitUntil(30, pollMs = 100) {
+        client.goToDefinition("Main.scala", 3, 12)
+      }(_.exists(loc => os.Path(java.net.URI.create(loc.getUri)).last == "Utils.scala"))
+      Thread.sleep(700) // allow background editor and watcher work to run
+      assertEquals(client.shownMessageRequests.size, 1)
+      assert(!client.loggedMessages.exists(_.getMessage.startsWith("Connecting to")))
+      assert(!os.exists(root / ".basamake" / "bsp"), "no BSP process or handshake metadata before import")
+    } finally {
+      client.close()
+      os.remove.all(root)
+    }
+  }
+
   test("autoCompile=false imports BSP targets, follows external SemanticDB, and re-enables without reconnecting") {
     import ba.sake.basamake.bsp.BspTargetData
     import ba.sake.tupson.{given, *}
@@ -39,7 +65,7 @@ class LspIntegrationTest extends FunSuite {
     writeConfig(false)
     val main = "object Main:\n  def main(args: Array[String]): Unit =\n    println(ext.message)\n"
     os.write.over(root / "Main.scala", main)
-    val client = LspTestClient.start(root)
+    val client = LspTestClient.start(root, importMode = "Don't compile on change")
     try {
       client.initialize()
       client.open("Main.scala")

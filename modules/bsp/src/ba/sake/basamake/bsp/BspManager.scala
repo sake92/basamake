@@ -1,6 +1,6 @@
 package ba.sake.basamake.bsp
 
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{CompletableFuture, ConcurrentHashMap, Executors, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
@@ -26,6 +26,11 @@ class BspManager (
 ) extends BspEvents with StrictLogging {
 
   private val connections = new ConcurrentHashMap[BspConnectionId, BspConnection]()
+  private val importOffered = ConcurrentHashMap.newKeySet[BspConnection]()
+  private val imported = ConcurrentHashMap.newKeySet[BspConnection]()
+  private val importCompileUris = new ConcurrentHashMap[BspConnection, java.util.Set[String]]()
+  private val pendingImports = new ConcurrentHashMap[BspConnection, CompletableFuture[org.eclipse.lsp4j.MessageActionItem]]()
+  private val importExecutor = Executors.newVirtualThreadPerTaskExecutor()
   private val router = new BspRouter
   private var client: Option[LanguageClient] = None
   /** BSP compile tasks → window/workDoneProgress (spinner). Falls back to
@@ -49,12 +54,15 @@ class BspManager (
       catch { case e: Exception => logger.error(s"Failed to process .bsp changes: ${e.getMessage}", e) }
     },
     onConfigChanged = () => {
-      configState = BasamakeConfig.load(workspaceRoot)
-      connections.values().asScala.foreach { conn =>
-        val enabled = configState.bspOverrides.find(_.bspFile == relativeBspPath(conn.spec.path))
-          .flatMap(_.autoCompile).getOrElse(true)
-        conn.setAutoCompile(enabled)
-      }
+      stateLock.lock()
+      try {
+        configState = BasamakeConfig.load(workspaceRoot)
+        connections.values().asScala.foreach { conn =>
+          val enabled = configState.bspOverrides.find(_.bspFile == relativeBspPath(conn.spec.path))
+            .flatMap(_.autoCompile).getOrElse(true)
+          conn.setAutoCompile(enabled)
+        }
+      } finally { stateLock.unlock() }
     },
     onSemanticdbChanged = roots => onAfterCompile(roots)
   )
@@ -103,6 +111,11 @@ class BspManager (
     val connOpt = router.route(uri).flatMap(id => Option(connections.get(id)))
     connOpt match {
       case Some(conn) =>
+        if (!imported.contains(conn)) {
+          if (compile) importCompileUris.computeIfAbsent(conn, _ => ConcurrentHashMap.newKeySet[String]()).add(uri)
+          offerImport(conn, uri)
+          return
+        }
         try {
           if (compile) {
             logger.info(s"Compile trigger for $uri → ${conn.spec.content.name}")
@@ -116,6 +129,84 @@ class BspManager (
       case None =>
         logger.debug(s"No BSP connection for $uri — poke is a no-op")
     }
+  }
+
+  private def offerImport(conn: BspConnection, uri: String): Unit = {
+    if (!importOffered.add(conn)) return
+    val compileOnChange = new org.eclipse.lsp4j.MessageActionItem("Compile on change")
+    val externalCompile = new org.eclipse.lsp4j.MessageActionItem("Don't compile on change")
+    val request = new org.eclipse.lsp4j.ShowMessageRequestParams()
+    request.setType(org.eclipse.lsp4j.MessageType.Info)
+    val bspFile = relativeBspPath(conn.spec.path)
+    request.setMessage(s"Import ${conn.spec.content.name} build ($bspFile)? Choose when Basamake compiles.")
+    request.setActions(java.util.List.of(compileOnChange, externalCompile))
+    client.foreach { c =>
+      stateLock.lock()
+      try {
+        if (!shuttingDown.get() && !imported.contains(conn) && connections.get(BspConnectionId(conn.spec.path.toString)) == conn) {
+          val response = c.showMessageRequest(request)
+          pendingImports.put(conn, response)
+          response.thenAcceptAsync(choice => {
+            if (choice != null) {
+              val title = choice.getTitle
+              if (title == compileOnChange.getTitle || title == externalCompile.getTitle) {
+                selectImportMode(conn, title == compileOnChange.getTitle)
+              }
+            }
+            resumeImport(conn, uri)
+          }, importExecutor).whenComplete((_, error) => {
+            pendingImports.remove(conn)
+            if (error != null && !shuttingDown.get()) logger.warn(s"BSP import failed for $bspFile: ${error.getMessage}")
+          })
+        }
+      } catch {
+        case e: Exception => logger.warn(s"Failed to offer BSP import for $bspFile: ${e.getMessage}", e)
+      } finally { stateLock.unlock() }
+    }
+  }
+
+  private def resumeImport(conn: BspConnection, uri: String, compileIfEmpty: Boolean = false): Unit = {
+    val compileUris = Option(importCompileUris.remove(conn)).toList.flatMap(_.asScala)
+    if (imported.contains(conn)) {
+      if (compileUris.isEmpty) poke(uri, compile = compileIfEmpty)
+      else compileUris.foreach(poke(_, compile = true))
+    }
+  }
+
+  private def selectImportMode(conn: BspConnection, autoCompile: Boolean): Unit = {
+    stateLock.lock()
+    try {
+      val current = connections.get(BspConnectionId(conn.spec.path.toString))
+      if (!shuttingDown.get() && current == conn && !imported.contains(conn)) {
+        val bspFile = relativeBspPath(conn.spec.path)
+        if (BasamakeConfig.setBspAutoCompile(workspaceRoot, bspFile, autoCompile)) {
+          configState = BasamakeConfig.load(workspaceRoot)
+          conn.setAutoCompile(autoCompile)
+          importOffered.add(conn)
+          imported.add(conn)
+        } else {
+          client.foreach(_.showMessage(new org.eclipse.lsp4j.MessageParams(org.eclipse.lsp4j.MessageType.Error,
+            "Could not save the BSP import mode. Check .basamake/config.json and reload the workspace.")))
+        }
+      }
+    } finally { stateLock.unlock() }
+  }
+
+  /** The install prompt already selected a mode. Discover and approve the new
+    * connection atomically so editor events cannot offer a second prompt. */
+  def importInstalledBuild(uri: String, autoCompile: Boolean): Boolean = {
+    stateLock.lock()
+    val conn = try {
+      rescanBspConfigs()
+      val owning = router.route(uri).flatMap(id => Option(connections.get(id)))
+      owning.foreach { connection =>
+        Option(pendingImports.remove(connection)).foreach(_.cancel(true))
+        selectImportMode(connection, autoCompile)
+      }
+      owning
+    } finally { stateLock.unlock() }
+    conn.foreach(resumeImport(_, uri, compileIfEmpty = true))
+    conn.isDefined
   }
 
   /** Whether a discovered BSP configuration owns this URI. This deliberately
@@ -140,7 +231,7 @@ class BspManager (
   /** Re-run discovery after an external tool has created BSP config files.
     * The watcher normally notices this too, but an explicit rescan makes the
     * install action deterministic even when a client has no file watcher. */
-  def rescanBspConfigs(): Unit = {
+  private def rescanBspConfigs(): Unit = {
     if (!shuttingDown.get()) {
       router.invalidateBootstrapCache()
       try handleBspChanges(Set.empty)
@@ -181,7 +272,7 @@ class BspManager (
       val firstUriByConn = mutable.Map.empty[BspConnection, String]
       uris.foreach { uri =>
         router.route(uri).flatMap(id => Option(connections.get(id))).foreach { conn =>
-          if (!firstUriByConn.contains(conn)) firstUriByConn(conn) = uri
+          if (imported.contains(conn) && !firstUriByConn.contains(conn)) firstUriByConn(conn) = uri
         }
       }
       firstUriByConn.foreach { case (conn, uri) =>
@@ -340,8 +431,16 @@ class BspManager (
 
   // ---- Lifecycle ----
   def shutdown(): Unit = {
-    if (!shuttingDown.compareAndSet(false, true)) return
-    logger.info("BspManager shutdown started...")
+    stateLock.lock()
+    try {
+      if (!shuttingDown.compareAndSet(false, true)) return
+      logger.info("BspManager shutdown started...")
+      pendingImports.values().asScala.foreach(_.cancel(true))
+      pendingImports.clear()
+      importExecutor.shutdownNow()
+    } finally { stateLock.unlock() }
+    try importExecutor.awaitTermination(5, TimeUnit.SECONDS)
+    catch { case _: InterruptedException => Thread.currentThread().interrupt() }
     bspWatcher.stop()
     compileProgress.endAllConnections()
     connections.values().asScala.foreach(_.shutdown())
@@ -407,6 +506,10 @@ class BspManager (
 
   private[bsp] def detachConnection(connId: BspConnectionId): Unit = {
     Option(connections.remove(connId)).foreach { conn =>
+      imported.remove(conn)
+      importCompileUris.remove(conn)
+      importOffered.remove(conn)
+      Option(pendingImports.remove(conn)).foreach(_.cancel(true))
       // Clear ONLY the URIs this connection published diagnostics for. Other
       // connections' diagnostics (same or different URIs) stay untouched.
       stateLock.lock()
