@@ -9,7 +9,9 @@ Use this lightweight mode when another process, such as sbt or an agent, owns
 compilation. It keeps navigation and BSP target metadata active while
 preventing Basamake from triggering builds, avoiding compile loops.
 
-Set `autoCompile` to `false` for the connection in `.basamake/config.json`:
+Choose **Don't compile on change** when Basamake asks how to import the build.
+To change the mode after importing, set `autoCompile` to `false` for the connection
+in `.basamake/config.json`:
 
 ```json
 {

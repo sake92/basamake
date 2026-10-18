@@ -87,6 +87,7 @@ final class LspTestClient private (
     client.awaitCompileSucceeded(timeoutSec)
 
   def loggedMessages: List[MessageParams] = client.loggedMessages
+  def shownMessageRequests: List[ShowMessageRequestParams] = client.shownMessageRequests
 
   /** Go-to-definition at (line, character) — both 0-based. */
   def goToDefinition(relPath: String, line: Int, char: Int): List[Location] =
@@ -185,8 +186,9 @@ final class LspTestClient private (
 
 object LspTestClient {
   /** Start a BasamakeLanguageServer on `root` and return a live client. */
-  def start(root: os.Path): LspTestClient = {
+  def start(root: os.Path, importMode: String = "Compile on change"): LspTestClient = {
     val client = new TestLanguageClient
+    client.respondToMessageRequestsWith(importMode)
 
     // Real OS pipes (NIO), not PipedInput/OutputStreams: the in-memory pipes
     // track the FIRST writer thread and break when LSP responses are written

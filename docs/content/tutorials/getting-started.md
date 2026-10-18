@@ -33,9 +33,9 @@ This creates a `.bsp` configuration that Basamake can discover.
 Open the project directory in VS Code. If VS Code asks which language server to
 use for Scala files, select **Basamake**.
 
-Open a `.scala` file, then use **Go to Definition** on a local or library symbol.
-Basamake starts the Scala CLI build server when it is first needed and opens the
-symbol's definition.
+Open a `.scala` file and choose **Compile on change** in the import prompt.
+Basamake starts the Scala CLI build server. Use **Go to Definition** on a local
+or library symbol to open its definition.
 
 You can now use go to definition, find references, hover, completion, and build
 diagnostics. For another build tool, follow

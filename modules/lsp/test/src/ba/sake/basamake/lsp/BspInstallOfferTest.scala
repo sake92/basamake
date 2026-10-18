@@ -76,9 +76,10 @@ class BspInstallOfferTest extends FunSuite {
       while (client.shownMessageRequests.isEmpty && System.currentTimeMillis() < deadline) Thread.sleep(20)
       assertEquals(client.shownMessageRequests.size, 1)
       val request = client.shownMessageRequests.head
-      assertEquals(request.getMessage, "No BSP configuration found for this Deder project. Install it?")
-      assertEquals(request.getActions.get(0).getTitle, "Install")
-      assertEquals(request.getActions.get(1).getTitle, "Do not offer again")
+      assertEquals(request.getMessage, "No BSP configuration found for this Deder project. Install BSP support and import the build?")
+      assertEquals(request.getActions.get(0).getTitle, "Import and compile on change")
+      assertEquals(request.getActions.get(1).getTitle, "Import without compiling on change")
+      assertEquals(request.getActions.get(2).getTitle, "Do not offer again")
 
       val dismissedBy = System.currentTimeMillis() + 5000
       while (!BasamakeConfig.load(root).offerInstallBlacklist.contains("deder.pkl") && System.currentTimeMillis() < dismissedBy) Thread.sleep(20)

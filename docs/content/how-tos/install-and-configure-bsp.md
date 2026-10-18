@@ -25,8 +25,9 @@ server to use for `.scala` and `.sbt` files.
 When you open a source file in a Deder, sbt, or Mill project that has no BSP
 configuration, Basamake asks whether it should run that build tool's BSP install
 command (`deder bsp install`, `sbt bspConfig`, or
-`mill mill.bsp.BSP/install`). Choose **Install** to create the configuration and
-connect it automatically.
+`mill mill.bsp.BSP/install`). Choose **Import and compile on change** or
+**Import without compiling on change**. Basamake creates the configuration and
+connects using that mode, without a second prompt.
 
 Choose **Do not offer again** to disable the prompt for that build marker. The
 choice is stored in `offerInstallBlacklist`; remove the marker from that list to
