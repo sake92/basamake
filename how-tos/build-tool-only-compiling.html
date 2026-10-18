@@ -53,7 +53,7 @@ for (const link of document.querySelectorAll('body > header > nav > div > a')) {
    </div>
    <h1 id="use-the-build-tool-only-for-compiling">Use the build tool only for compiling<a href="#use-the-build-tool-only-for-compiling" class="flatmark-anchor" aria-label="Anchor"> 🔗</a></h1>
    <p>Use this lightweight mode when another process, such as sbt or an agent, owns compilation. It keeps navigation and BSP target metadata active while preventing Basamake from triggering builds, avoiding compile loops.</p>
-   <p>Set <code>autoCompile</code> to <code>false</code> for the connection in <code>.basamake/config.json</code>:</p>
+   <p>Choose <strong>Don't compile on change</strong> when Basamake asks how to import the build. To change the mode after importing, set <code>autoCompile</code> to <code>false</code> for the connection in <code>.basamake/config.json</code>:</p>
    <pre><code class="language-json hljs" data-highlighted="yes"><span class="hljs-punctuation">{</span>
   <span class="hljs-attr">"bspOverrides"</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span>
     <span class="hljs-punctuation">{</span>
